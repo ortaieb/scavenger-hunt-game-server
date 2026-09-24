@@ -67,6 +67,19 @@ Invalid values (e.g. `GAME_SERVER_PORT=0`) stop the server at startup with a val
 Dependencies are managed with uv only: `uv add <pkg>` / `uv add --dev <pkg>`; never edit `uv.lock`
 by hand. See [CLAUDE.md](CLAUDE.md) for the full conventions.
 
+### Continuous integration
+
+[`.github/workflows/pr-build.yml`](.github/workflows/pr-build.yml) validates every pull request
+(into any branch) when it is opened, reopened or updated with new commits. A newer push cancels
+the run still in progress for the same PR.
+
+- **validate**: installs uv, installs the Python pinned in `.python-version` (uv-managed only,
+  no caches, so every run starts clean), creates a fresh virtualenv with `uv sync --locked`,
+  then runs `ruff check`, `ruff format --check`, `mypy`, `uv build` and `pytest` with coverage.
+- **docker**: builds the Docker image without pushing it.
+
+CI does not auto-fix. Run `make check` locally before pushing to catch the same issues.
+
 ### Project layout
 
 ```

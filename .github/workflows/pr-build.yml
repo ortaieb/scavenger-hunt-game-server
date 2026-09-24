@@ -1,0 +1,74 @@
+name: PR build
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+# A new push to the same PR supersedes the previous run.
+concurrency:
+  group: pr-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # Always use the uv-managed interpreter pinned in .python-version, never the runner's Python.
+  UV_PYTHON_PREFERENCE: only-managed
+  FORCE_COLOR: "1"
+
+jobs:
+  validate:
+    name: Lint, type-check, build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          # Build from scratch: no cached packages or interpreters.
+          enable-cache: false
+          cache-python: false
+
+      - name: Install Python (from .python-version)
+        run: uv python install
+
+      - name: Create fresh virtualenv and install dependencies
+        run: uv sync --locked
+
+      - name: Lint (ruff)
+        run: uv run ruff check . --output-format=github
+
+      - name: Check formatting (ruff)
+        run: uv run ruff format --check .
+
+      - name: Type-check (mypy)
+        run: uv run mypy .
+
+      - name: Build package
+        run: uv build
+
+      - name: Test (pytest)
+        run: uv run pytest --cov=src --cov-report=term-missing
+
+  docker:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image (not pushed)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          tags: game-server:pr-${{ github.event.pull_request.number }}

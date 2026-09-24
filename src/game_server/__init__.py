@@ -1,0 +1,1 @@
+"""Scavenger hunt game server."""

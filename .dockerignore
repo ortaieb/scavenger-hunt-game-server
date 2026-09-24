@@ -1,0 +1,8 @@
+# Only pyproject.toml, uv.lock, .python-version and src/ are needed to build.
+*
+!pyproject.toml
+!uv.lock
+!.python-version
+!src/
+**/__pycache__
+**/*.py[cod]

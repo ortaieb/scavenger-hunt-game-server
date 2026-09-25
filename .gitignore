@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Challenge images stored by a locally run server (GAME_SERVER_IMAGE_BASE_PATH default)
+/data/

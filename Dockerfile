@@ -36,6 +36,9 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
+# Empty data directory; distroless has no shell to create it in the runtime stage.
+RUN mkdir -p /app/data/images
+
 # ---------------------------------------------------------------------------
 # Runtime: distroless (no shell, no package manager), runs as non-root.
 # ---------------------------------------------------------------------------
@@ -44,14 +47,18 @@ FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 # Paths must match the builder: the venv's interpreter symlinks point into /python.
 COPY --from=builder --chown=nonroot:nonroot /python /python
 COPY --from=builder --chown=nonroot:nonroot /app/.venv /app/.venv
+# Writable by the non-root user; mount a volume here to keep images across restarts.
+COPY --from=builder --chown=nonroot:nonroot /app/data /app/data
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     GAME_SERVER_HOST=0.0.0.0 \
-    GAME_SERVER_PORT=8000
+    GAME_SERVER_PORT=8000 \
+    GAME_SERVER_IMAGE_BASE_PATH=/app/data/images
 
 WORKDIR /app
 USER nonroot
 EXPOSE 8000
+VOLUME ["/app/data"]
 
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "game_server"]

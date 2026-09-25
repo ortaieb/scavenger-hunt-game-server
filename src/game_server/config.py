@@ -1,6 +1,7 @@
 """Application settings, loaded from environment variables and an optional `.env` file."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -27,6 +28,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"  # noqa: S104 - binding all interfaces is intended inside a container
     port: int = Field(default=8000, ge=1, le=65535)
     log_level: LogLevel = "info"
+    image_base_path: Path = Path("data/images")
+    max_image_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
 
 
 @lru_cache

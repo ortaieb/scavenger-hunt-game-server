@@ -10,7 +10,13 @@ from game_server.config import Settings, get_settings
 def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Run each test in an empty directory with no GAME_SERVER_* variables set."""
     monkeypatch.chdir(tmp_path)
-    for name in ("GAME_SERVER_HOST", "GAME_SERVER_PORT", "GAME_SERVER_LOG_LEVEL"):
+    for name in (
+        "GAME_SERVER_HOST",
+        "GAME_SERVER_PORT",
+        "GAME_SERVER_LOG_LEVEL",
+        "GAME_SERVER_IMAGE_BASE_PATH",
+        "GAME_SERVER_MAX_IMAGE_BYTES",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -65,3 +71,27 @@ def test_get_settings_is_cached() -> None:
     get_settings.cache_clear()
 
     assert get_settings() is get_settings()
+
+
+def test_image_settings_defaults() -> None:
+    settings = Settings()
+
+    assert settings.image_base_path == Path("data/images")
+    assert settings.max_image_bytes == 10 * 1024 * 1024
+
+
+def test_image_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_IMAGE_BASE_PATH", "/srv/images")
+    monkeypatch.setenv("GAME_SERVER_MAX_IMAGE_BYTES", "2048")
+
+    settings = Settings()
+
+    assert settings.image_base_path == Path("/srv/images")
+    assert settings.max_image_bytes == 2048
+
+
+def test_non_positive_max_image_bytes_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_MAX_IMAGE_BYTES", "0")
+
+    with pytest.raises(ValidationError):
+        Settings()

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 
-from game_server import challenge, proximity
+from game_server import challenge, checkpoints, proximity
 from game_server.config import get_settings
 from game_server.logging_config import configure_logging
 from game_server.sessions import load_session_repository
@@ -38,6 +38,7 @@ def create_app() -> FastAPI:
 
     app.include_router(challenge.router)
     app.include_router(proximity.router)
+    app.include_router(checkpoints.router)
 
     return app
 

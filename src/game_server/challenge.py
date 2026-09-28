@@ -24,6 +24,7 @@ from game_server.checks import (
 from game_server.checks.duplicate_photo import DuplicatePhotoRejection
 from game_server.clock import Clock, get_clock
 from game_server.config import Settings, get_settings
+from game_server.lookup import find_checkpoint
 from game_server.models import (
     ChallengeMetadata,
     ChallengeVerdict,
@@ -33,7 +34,7 @@ from game_server.models import (
     Verdict,
 )
 from game_server.phash import UndecodableImageError, perceptual_hash
-from game_server.sessions import Checkpoint, GameSession, SessionRepository, get_session_repository
+from game_server.sessions import SessionRepository, get_session_repository
 from game_server.storage import ImageStore
 from game_server.submissions import NewSubmission, SubmissionStore, get_submission_store
 
@@ -82,19 +83,6 @@ def read_jpeg(upload: UploadFile, max_bytes: int) -> bytes:
             "challenge-image is not a valid JPEG",
         )
     return data
-
-
-def find_target(
-    sessions: SessionRepository, metadata: ChallengeMetadata
-) -> tuple[GameSession, Checkpoint]:
-    """Look up the submission's session and checkpoint, or fail with 404."""
-    session = sessions.get_session(metadata.session)
-    if session is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown session")
-    checkpoint = sessions.get_checkpoint(metadata.session, metadata.checkpoint)
-    if checkpoint is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown checkpoint")
-    return session, checkpoint
 
 
 def hash_image(image: bytes) -> int:
@@ -252,7 +240,7 @@ def submit_challenge(
     parsed = parse_metadata(metadata)
     image = read_jpeg(challenge_image, settings.max_image_bytes)
     phash = hash_image(image)  # decoded outside the write lock: it's the slow part
-    session, checkpoint = find_target(sessions, parsed)
+    session, checkpoint = find_checkpoint(sessions, parsed.session, parsed.checkpoint)
     ctx = SubmissionContext(parsed, received_at, session, checkpoint, image, phash)
     submission, attempt, image_path = judge_and_record(ctx, checks, images, submissions)
     logger.info(describe(submission, attempt, image_path))

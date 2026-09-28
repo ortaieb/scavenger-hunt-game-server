@@ -10,21 +10,38 @@
         "sequence": 1,
         "name": "Stone fountain",
         "clue": "Where a princess is remembered by water that never runs in a straight line.",
-        "location": { "lat": 51.504873, "long": -0.169872 },
-        "proximity": 40
+        "location": {
+          "lat": 51.504873,
+          "long": -0.169872
+        },
+        "proximity": 40,
+        "challenge": {
+          "scene": "The Diana Memorial Fountain: a wide oval ring of pale granite with shallow water running through it, set in open lawn with trees behind.",
+          "pose": "Side profile, looking to your left, with the landmark behind you."
+        }
       },
       {
         "sequence": 2,
         "name": "Boy who never grew up",
         "clue": "He promised never to grow old; find him by the long water.",
-        "location": { "lat": 51.508651, "long": -0.175693 },
-        "proximity": 30
+        "location": {
+          "lat": 51.508651,
+          "long": -0.175693
+        },
+        "proximity": 30,
+        "challenge": {
+          "scene": "The bronze Peter Pan statue on a tall plinth covered in climbing fairies, rabbits and mice, with the Long Water and trees behind.",
+          "pose": "Arms raised as if flying, facing the camera, with the landmark behind you."
+        }
       },
       {
         "sequence": 3,
         "name": "Speakers' Corner",
         "clue": "Stand on a soapbox where anyone may have their say. Open for the last hour only.",
-        "location": { "lat": 51.512346, "long": -0.159203 },
+        "location": {
+          "lat": 51.512346,
+          "long": -0.159203
+        },
         "proximity": 50,
         "window": {
           "opens-at": "2026-10-03T12:00:00+01:00",

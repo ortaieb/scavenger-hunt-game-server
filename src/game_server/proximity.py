@@ -18,6 +18,7 @@ from game_server.checks.time_window import window_is_open
 from game_server.clock import Clock, get_clock
 from game_server.config import Settings, get_settings
 from game_server.geo import distance_m
+from game_server.lookup import find_checkpoint
 from game_server.models import ProximityHint, ProximityHintRequest
 from game_server.rate_limit import RateLimiter
 from game_server.sessions import SessionRepository, get_session_repository
@@ -56,12 +57,7 @@ def proximity_hint(
     logs; nothing is stored and the coordinates are not logged.
     """
     now = clock().astimezone(UTC)
-    session = sessions.get_session(body.session)
-    if session is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown session")
-    checkpoint = sessions.get_checkpoint(body.session, body.checkpoint)
-    if checkpoint is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown checkpoint")
+    session, checkpoint = find_checkpoint(sessions, body.session, body.checkpoint)
     wait = limiter.check((body.session, body.participant), now)
     if wait is not None:
         raise HTTPException(

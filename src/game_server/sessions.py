@@ -55,6 +55,18 @@ class Window(_SessionModel):
         return self
 
 
+class VisualChallenge(_SessionModel):
+    """What the referee checks in the photo.
+
+    `scene` is server-only: it describes what should be visible behind the player, which
+    is effectively the answer to the clue, so no endpoint may return it. `pose` is
+    player-facing: the pose or action the player must show.
+    """
+
+    scene: str = Field(min_length=1, max_length=1000)
+    pose: str = Field(min_length=1, max_length=200)
+
+
 class Checkpoint(_SessionModel):
     """One place participants must find and photograph."""
 
@@ -64,6 +76,8 @@ class Checkpoint(_SessionModel):
     location: Location
     proximity: int = Field(gt=0, description="Metres from `location` that count as arrived")
     window: Window | None = None
+    # Absent: the referee's visual checks for this checkpoint are skipped.
+    challenge: VisualChallenge | None = None
 
 
 class GameSession(_SessionModel):

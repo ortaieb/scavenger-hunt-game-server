@@ -10,6 +10,7 @@ and managed with [uv](https://docs.astral.sh/uv/).
 | `GET`  | `/`          | Liveness check: `200 OK`, `text/plain`: `Hello, World!`    |
 | `POST` | `/challenge` | A participant submits a photo for a scavenger-hunt challenge |
 | `POST` | `/checkpoint/proximity` | **Advisory only:** does the player look in range of an open checkpoint? |
+| `GET`  | `/sessions/{session}/checkpoints/{sequence}/challenge` | The pose the player must strike in the photo |
 
 ### `POST /challenge`
 
@@ -284,6 +285,26 @@ Known limitations, acceptable for the demo:
 Nothing is stored: no submission row, and the coordinates aren't logged. Only the normal
 request line (method and path) appears in the access log.
 
+### `GET /sessions/{session}/checkpoints/{sequence}/challenge`
+
+The pose the player must strike in their photo, so the app can show it **before** they take
+the picture. It comes from the checkpoint's [visual challenge](#game-sessions-and-checkpoints).
+
+```bash
+curl localhost:8000/sessions/aeffe667-4f9f-4108-b5e2-56ae821fe413/checkpoints/1/challenge
+# {"pose": "Side profile, looking to your left, with the landmark behind you."}
+```
+
+| Status | When |
+|--------|------|
+| `200`  | `{"pose": "<text>"}`, or `{"pose": null}` when the checkpoint has no visual challenge |
+| `404`  | Unknown `session` (`"unknown session"`) or `sequence` (`"unknown checkpoint"`) |
+| `422`  | `session` isn't a UUID, or `sequence` isn't an integer ≥ 1 |
+
+`pose` is the **only** field: never the scene description, nor the checkpoint's name, clue,
+location or window. It isn't rate-limited, because the pose isn't secret and reveals nothing
+about the location.
+
 ### Game sessions and checkpoints
 
 A **game session** is one hunt. It has a region, a start and end time, and an ordered list of
@@ -337,6 +358,28 @@ The file is a JSON list of sessions. Abridged from [`sessions.example.json`](ses
 | `checkpoints[].location`   | `{lat, long}`: the answer to the clue (see *Secrecy* below)            |
 | `checkpoints[].proximity`  | Integer > 0: how many metres from `location` counts as "arrived"     |
 | `checkpoints[].window`     | Optional `{opens-at, closes-at}`, `opens-at` < `closes-at`, both within the session's start/end |
+| `checkpoints[].challenge`  | Optional visual challenge for the referee, see below. Without one, the referee's visual checks for the checkpoint are `skipped` |
+| `challenge.scene`          | 1–1 000 characters. **Server-only**: what should be visible in the photo's background, written for the referee, not the player |
+| `challenge.pose`           | 1–200 characters. **Player-facing**: the pose or action the player must show in the photo |
+
+A checkpoint's **visual challenge** tells the referee what to look for in the photo:
+
+```json
+"challenge": {
+  "scene": "The Diana Memorial Fountain: a wide oval ring of pale granite with shallow water running through it, set in open lawn with trees behind.",
+  "pose": "Side profile, looking to your left, with the landmark behind you."
+}
+```
+
+Writing a good challenge:
+
+- **`scene`** describes what the camera should see behind the player. Be concrete: materials,
+  shapes, colours, what surrounds it. It's the answer to the clue, so it is never shown to
+  anyone (see *Secrecy*).
+- **`pose`** is shown to the player *before* they find the checkpoint, via
+  [`GET …/challenge`](#get-sessionssessioncheckpointssequencechallenge). So it **must not
+  describe the place**. "With the fountain behind you" is fine only if the clue already gives
+  that away. Otherwise write "with the landmark behind you".
 
 Unknown fields are rejected everywhere. If the file can't be read, isn't valid JSON, breaks any
 rule above or repeats a session id, the server **refuses to start**. The error lists each
@@ -353,6 +396,12 @@ them without submitting, [`POST /checkpoint/proximity`](#post-checkpointproximit
 rate-limited yes/no and nothing more. Validation errors from the
 sessions file never echo input values, so coordinates don't reach the logs either. Keep the
 real sessions file out of version control: `sessions.json` is git-ignored.
+
+A checkpoint's **`challenge.scene`** is secret in the same way: it describes what the place
+looks like, which gives away the answer. **No endpoint may return the scene**, and validation
+errors never echo it. Only `challenge.pose` is player-facing. A test calls every route (success
+and error paths) with a sentinel scene and fails if any response contains it, or if a route
+is added without being covered.
 
 FastAPI also serves interactive API docs at `/docs` (Swagger UI) and `/redoc`, and the OpenAPI
 schema at `/openapi.json`.
@@ -453,6 +502,8 @@ src/game_server/
   geo.py             # haversine distance_m
   phash.py           # perceptual_hash (Pillow + numpy), hamming_distance
   proximity.py       # `POST /checkpoint/proximity` advisory hint
+  checkpoints.py     # `GET /sessions/{session}/checkpoints/{sequence}/challenge` pose
+  lookup.py          # find_checkpoint: shared session/checkpoint lookup (404s)
   rate_limit.py      # in-memory per-key RateLimiter
   config.py          # Settings (env / .env)
   logging_config.py  # stderr logging for the app's own loggers

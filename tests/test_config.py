@@ -22,6 +22,11 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_MAX_CLOCK_SKEW_SECONDS",
         "GAME_SERVER_PHASH_MAX_DISTANCE",
         "GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS",
+        "GAME_SERVER_ANTHROPIC_API_KEY",
+        "GAME_SERVER_REFEREE_MODEL",
+        "GAME_SERVER_REFEREE_TIMEOUT_SECONDS",
+        "GAME_SERVER_REFEREE_MAX_RETRIES",
+        "GAME_SERVER_REFEREE_MAX_IMAGE_EDGE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -185,3 +190,47 @@ def test_proximity_hint_interval_must_be_positive(
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_referee_defaults() -> None:
+    settings = Settings()
+
+    assert settings.anthropic_api_key is None
+    assert settings.referee_model == "claude-haiku-4-5"
+    assert settings.referee_timeout_seconds == 20
+    assert settings.referee_max_retries == 2
+    assert settings.referee_max_image_edge == 1568
+
+
+def test_api_key_is_read_but_never_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_ANTHROPIC_API_KEY", "sk-ant-SECRET-VALUE")
+
+    settings = Settings()
+
+    assert settings.anthropic_api_key is not None
+    assert settings.anthropic_api_key.get_secret_value() == "sk-ant-SECRET-VALUE"
+    assert "SECRET-VALUE" not in repr(settings)
+    assert "SECRET-VALUE" not in str(settings.model_dump())
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("GAME_SERVER_REFEREE_TIMEOUT_SECONDS", "0"),
+        ("GAME_SERVER_REFEREE_MAX_RETRIES", "-1"),
+        ("GAME_SERVER_REFEREE_MAX_IMAGE_EDGE", "0"),
+    ],
+)
+def test_referee_limits_are_validated(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_zero_retries_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_REFEREE_MAX_RETRIES", "0")
+
+    assert Settings().referee_max_retries == 0

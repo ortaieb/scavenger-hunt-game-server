@@ -3,21 +3,21 @@
 Callers depend on `perceptual_hash`, not on Pillow or numpy directly.
 """
 
-import warnings
-from io import BytesIO
 from math import cos, pi, sqrt
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
+
+from game_server.imaging import (
+    MAX_IMAGE_PIXELS,
+    UndecodableImageError,
+    open_upright,
+)
+
+__all__ = ["MAX_IMAGE_PIXELS", "UndecodableImageError", "hamming_distance", "perceptual_hash"]
 
 _SIZE = 32  # the image is reduced to 32x32 before the DCT
 _KEPT = 8  # the top-left 8x8 low-frequency coefficients become the 64 bits
-
-# Largest image accepted, in pixels. Checked from the header before decoding. 100 MP covers
-# phone cameras (high-resolution sensors save binned 12-50 MP by default); JPEG draft mode
-# keeps the decode itself small, so the cap only guards against decompression bombs.
-MAX_IMAGE_PIXELS = 100_000_000
-Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
 
 def _dct_matrix(n: int) -> np.ndarray:
@@ -31,10 +31,6 @@ def _dct_matrix(n: int) -> np.ndarray:
 
 
 _DCT = _dct_matrix(_SIZE)
-
-
-class UndecodableImageError(ValueError):
-    """The bytes could not be decoded as an image, or the image is too large."""
 
 
 def perceptual_hash(image_bytes: bytes) -> int:
@@ -69,21 +65,6 @@ def from_hex(text: str) -> int:
 
 def _load_greyscale(image_bytes: bytes) -> np.ndarray:
     """Decode to a 32x32 greyscale float array, upright per the EXIF orientation."""
-    try:
-        with warnings.catch_warnings():
-            # Between MAX_IMAGE_PIXELS and twice that, Pillow only warns: treat it as an error.
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(BytesIO(image_bytes)) as image:
-                # Let the JPEG decoder downscale by up to 8x while decoding: far less memory.
-                image.draft("L", (_SIZE * 4, _SIZE * 4))
-                upright = ImageOps.exif_transpose(image)
-                small = upright.convert("L").resize((_SIZE, _SIZE), Image.Resampling.LANCZOS)
-                return np.asarray(small, dtype=np.float64)
-    except (
-        OSError,  # includes UnidentifiedImageError and truncated data
-        SyntaxError,  # raised by some Pillow decoders for malformed headers
-        ValueError,
-        Image.DecompressionBombError,
-        Image.DecompressionBombWarning,
-    ) as exc:
-        raise UndecodableImageError(str(exc)) from exc
+    with open_upright(image_bytes, "L", _SIZE * 4) as image:
+        small = image.convert("L").resize((_SIZE, _SIZE), Image.Resampling.LANCZOS)
+        return np.asarray(small, dtype=np.float64)

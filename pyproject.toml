@@ -7,6 +7,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "anthropic>=1.9.0",
     "fastapi>=0.141.1",
     "numpy>=2.5.3",
     "pillow>=12.3.0",
@@ -56,6 +57,8 @@ plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# Live tests call the real Claude API: opt in with `uv run pytest -m live`.
+addopts = "-ra -m 'not live'"
+markers = ["live: calls the real Claude API; needs GAME_SERVER_ANTHROPIC_API_KEY"]
 # Fail on warnings, e.g. an unclosed sqlite3 connection (ResourceWarning).
 filterwarnings = ["error"]

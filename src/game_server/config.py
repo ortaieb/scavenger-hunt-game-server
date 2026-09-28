@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     max_clock_skew_seconds: int = Field(default=30, gt=0)
     phash_max_distance: int = Field(default=6, ge=0, le=32)
     proximity_hint_interval_seconds: int = Field(default=10, gt=0)
+    # Unset: the referee is disabled and never calls the API.
+    anthropic_api_key: SecretStr | None = None
+    referee_model: str = "claude-haiku-4-5"
+    referee_timeout_seconds: float = Field(default=20, gt=0)
+    referee_max_retries: int = Field(default=2, ge=0)
+    referee_max_image_edge: int = Field(default=1568, gt=0)
 
 
 @lru_cache

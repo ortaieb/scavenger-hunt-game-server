@@ -1,16 +1,35 @@
-"""`POST /challenge`: receive a participant's challenge photo and its metadata."""
+"""`POST /challenge`: receive a participant's challenge photo and decide its verdict."""
 
 import logging
+from collections.abc import Sequence
+from datetime import UTC
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
+from game_server.checks import (
+    Check,
+    Rejection,
+    SubmissionContext,
+    decide_verdict,
+    get_checks,
+    run_checks,
+)
+from game_server.clock import Clock, get_clock
 from game_server.config import Settings, get_settings
-from game_server.models import ChallengeAccepted, ChallengeMetadata
+from game_server.models import (
+    ChallengeMetadata,
+    ChallengeVerdict,
+    CheckpointVerdict,
+    RejectionOut,
+    Verdict,
+)
+from game_server.sessions import Checkpoint, GameSession, SessionRepository, get_session_repository
 from game_server.storage import ImageStore
+from game_server.submissions import NewSubmission, SubmissionStore, get_submission_store
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +78,78 @@ def read_jpeg(upload: UploadFile, max_bytes: int) -> bytes:
     return data
 
 
-def describe(metadata: ChallengeMetadata, image_path: Path) -> str:
-    """Build the log line announcing a received challenge."""
-    location = metadata.location
+def find_target(
+    sessions: SessionRepository, metadata: ChallengeMetadata
+) -> tuple[GameSession, Checkpoint]:
+    """Look up the submission's session and checkpoint, or fail with 404."""
+    session = sessions.get_session(metadata.session)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown session")
+    checkpoint = sessions.get_checkpoint(metadata.session, metadata.checkpoint)
+    if checkpoint is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown checkpoint")
+    return session, checkpoint
+
+
+def store_submission(
+    images: ImageStore,
+    submissions: SubmissionStore,
+    ctx: SubmissionContext,
+    rejections: Sequence[Rejection],
+) -> tuple[NewSubmission, int, Path]:
+    """Save the image and record the submission; remove the image if recording fails."""
+    image_id, image_path = images.save(ctx.image)
+    metadata = ctx.metadata
+    submission = NewSubmission(
+        session=metadata.session,
+        participant=metadata.participant,
+        checkpoint=metadata.checkpoint,
+        received_at=ctx.received_at,
+        capture_time=metadata.capture_time,
+        lat=metadata.location.lat,
+        long=metadata.location.long,
+        image_id=image_id,
+        verdict=decide_verdict(rejections),
+        rejections=rejections,
+    )
+    try:
+        recorded = submissions.record(submission)
+    except BaseException:
+        image_path.unlink(missing_ok=True)
+        raise
+    return submission, recorded.attempt, image_path
+
+
+def describe(submission: NewSubmission, attempt: int, image_path: Path) -> str:
+    """Build the log line announcing a received challenge and its verdict."""
+    codes = ",".join(rejection.code for rejection in submission.rejections) or "-"
     return (
-        f"Received challenge request for {metadata.session}[{metadata.participant}] "
-        f"arrived at {metadata.capture_time.isoformat()} "
-        f"from ({location.lat},{location.long}), image stored in: {image_path}"
+        f"Received challenge request for {submission.session}[{submission.participant}] "
+        f"arrived at {submission.capture_time.isoformat()} "
+        f"from ({submission.lat},{submission.long}), image stored in: {image_path}; "
+        f"checkpoint {submission.checkpoint} attempt {attempt} "
+        f"verdict {submission.verdict} rejections [{codes}]"
+    )
+
+
+def to_response(submission: NewSubmission, attempt: int) -> ChallengeVerdict:
+    """Build the verdict body returned to the client."""
+    return ChallengeVerdict(
+        verdict=Verdict(
+            game=submission.session,
+            participant=submission.participant,
+            checkpoint=CheckpointVerdict(
+                sequence=submission.checkpoint,
+                attempt=attempt,
+                time=submission.received_at,
+                verdict=submission.verdict,
+                rejections=[
+                    RejectionOut(code=rejection.code, message=rejection.message)
+                    for rejection in submission.rejections
+                ],
+            ),
+        ),
+        image_id=submission.image_id,
     )
 
 
@@ -73,6 +157,9 @@ def describe(metadata: ChallengeMetadata, image_path: Path) -> str:
     "/challenge",
     status_code=status.HTTP_202_ACCEPTED,
     responses={
+        200: {"model": ChallengeVerdict, "description": "Recorded; verdict `failed`"},
+        202: {"description": "Recorded; verdict `pending`"},
+        404: {"description": "Unknown session, or unknown checkpoint in the session"},
         413: {"description": "Image larger than the configured limit"},
         415: {"description": "Image part is not image/jpeg"},
     },
@@ -80,21 +167,34 @@ def describe(metadata: ChallengeMetadata, image_path: Path) -> str:
 def submit_challenge(
     metadata: Annotated[
         str,
-        Form(description="JSON: session, participant, location {lat, long}, capture-time"),
+        Form(
+            description="JSON: session, participant, checkpoint, location {lat, long}, capture-time"
+        ),
     ],
     challenge_image: Annotated[
         UploadFile, File(alias="challenge-image", description="The photo, as image/jpeg")
     ],
-    store: Annotated[ImageStore, Depends(get_image_store)],
+    response: Response,
+    clock: Annotated[Clock, Depends(get_clock)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> ChallengeAccepted:
-    """Store the challenge image and log the submission.
+    sessions: Annotated[SessionRepository, Depends(get_session_repository)],
+    checks: Annotated[Sequence[Check], Depends(get_checks)],
+    images: Annotated[ImageStore, Depends(get_image_store)],
+    submissions: Annotated[SubmissionStore, Depends(get_submission_store)],
+) -> ChallengeVerdict:
+    """Check the submission, record it as the next attempt, and return the verdict.
 
-    Metadata and image are both validated before anything is written, so a rejected
-    request never leaves an orphan file behind.
+    Everything is validated and looked up before anything is written, so a rejected
+    request (4xx) stores neither an image nor a row.
     """
+    received_at = clock().astimezone(UTC)
     parsed = parse_metadata(metadata)
-    data = read_jpeg(challenge_image, settings.max_image_bytes)
-    image_id, image_path = store.save(data)
-    logger.info(describe(parsed, image_path))
-    return ChallengeAccepted(image_id=image_id)
+    image = read_jpeg(challenge_image, settings.max_image_bytes)
+    session, checkpoint = find_target(sessions, parsed)
+    ctx = SubmissionContext(parsed, received_at, session, checkpoint, image)
+    rejections = run_checks(checks, ctx)
+    submission, attempt, image_path = store_submission(images, submissions, ctx, rejections)
+    logger.info(describe(submission, attempt, image_path))
+    if submission.verdict == "failed":
+        response.status_code = status.HTTP_200_OK
+    return to_response(submission, attempt)

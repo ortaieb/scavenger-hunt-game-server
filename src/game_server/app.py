@@ -1,5 +1,8 @@
 """FastAPI application and HTTP routes."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 
@@ -7,8 +10,16 @@ from game_server import challenge
 from game_server.config import get_settings
 from game_server.logging_config import configure_logging
 from game_server.sessions import load_session_repository
+from game_server.submissions import open_submission_store
 
 GREETING = "Hello, World!"
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Create the submissions database schema before serving the first request."""
+    open_submission_store(get_settings().db_path)
+    yield
 
 
 def create_app() -> FastAPI:
@@ -19,7 +30,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.log_level)
     load_session_repository(settings.sessions_file)
-    app = FastAPI(title="Scavenger Hunt Game Server")
+    app = FastAPI(title="Scavenger Hunt Game Server", lifespan=lifespan)
 
     @app.get("/", response_class=PlainTextResponse)
     def root() -> str:

@@ -32,6 +32,25 @@ class ChallengeMetadata(BaseModel):
     capture_time: AwareDatetime = Field(alias="capture-time")
 
 
+class ProximityHintRequest(BaseModel):
+    """Body of `POST /checkpoint/proximity`: where the player says they are."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session: UUID
+    participant: UUID
+    checkpoint: int = Field(ge=1, strict=True, description="The checkpoint's `sequence`")
+    location: Location
+
+
+class ProximityHint(BaseModel):
+    """Advisory answer: the only field, so nothing else about the checkpoint can leak."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    in_range: bool
+
+
 class RejectionOut(BaseModel):
     """A reason the submission failed, safe to show the player."""
 

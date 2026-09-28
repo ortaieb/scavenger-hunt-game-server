@@ -6,12 +6,12 @@ received outside the window.
 """
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Self
 
 from game_server.checks.base import Check, Rejection, SubmissionContext
 from game_server.config import Settings
-from game_server.sessions import SessionRepository
+from game_server.sessions import Checkpoint, GameSession, SessionRepository
 
 OUTSIDE_WINDOW = Rejection("outside_window", "This checkpoint isn't open right now.")
 STALE_CAPTURE = Rejection("stale_capture", "Photo was taken too long ago, please take a new one.")
@@ -20,6 +20,12 @@ CAPTURE_IN_FUTURE = Rejection(
     "Photo's capture time is ahead of the server's clock. Check your phone's date and time, "
     "then take a new one.",
 )
+
+
+def window_is_open(session: GameSession, checkpoint: Checkpoint, at: datetime) -> bool:
+    """Whether `at` falls in the checkpoint's effective window, bounds inclusive."""
+    opens_at, closes_at = SessionRepository.effective_window(session, checkpoint)
+    return opens_at <= at <= closes_at
 
 
 @dataclass(frozen=True)
@@ -43,8 +49,7 @@ class TimeWindowCheck:
 
     def within_window(self, ctx: SubmissionContext) -> Rejection | None:
         """`received_at` must fall in the checkpoint's effective window, bounds inclusive."""
-        opens_at, closes_at = SessionRepository.effective_window(ctx.session, ctx.checkpoint)
-        if opens_at <= ctx.received_at <= closes_at:
+        if window_is_open(ctx.session, ctx.checkpoint, ctx.received_at):
             return None
         return OUTSIDE_WINDOW
 

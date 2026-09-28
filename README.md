@@ -9,6 +9,7 @@ and managed with [uv](https://docs.astral.sh/uv/).
 |--------|--------------|------------------------------------------------------------|
 | `GET`  | `/`          | Liveness check: `200 OK`, `text/plain`: `Hello, World!`    |
 | `POST` | `/challenge` | A participant submits a photo for a scavenger-hunt challenge |
+| `POST` | `/checkpoint/proximity` | **Advisory only:** does the player look in range of an open checkpoint? |
 
 ### `POST /challenge`
 
@@ -18,7 +19,8 @@ at that checkpoint and returns a **verdict it decides itself**.
 **Every verdict is decided server-side.** The client supplies only claims: coordinates, capture
 time and the photo. Nothing it sends can mark a check as passed, and unknown metadata fields
 (such as a `verified` or `in-range` flag) are rejected. The web app may warn a player who looks
-out of range, but that is a courtesy and plays no part in the verdict.
+out of range (using [`POST /checkpoint/proximity`](#post-checkpointproximity)), but that is a
+courtesy and plays no part in the verdict.
 
 Request: `multipart/form-data` with two parts.
 
@@ -202,6 +204,57 @@ The schema is created at startup. Later changes, such as new per-check audit col
 applied as ordered migrations tracked with SQLite's `PRAGMA user_version`, so existing
 databases are upgraded in place.
 
+### `POST /checkpoint/proximity`
+
+**Advisory only: a courtesy, never a check.** The web app may warn a player who looks out of
+range before they submit. It can't work that out itself, because sending checkpoint coordinates
+to the browser would hand over the answer to the clue. So the server answers yes or no, and
+nothing else. The answer records nothing and has no effect on any verdict. The geofence verdict
+is always decided by `POST /challenge`.
+
+Request: JSON. It's a POST so the location stays out of URLs and access logs.
+
+```json
+{
+  "session": "aeffe667-4f9f-4108-b5e2-56ae821fe413",
+  "participant": "7c860ccc-9adf-4e22-b54f-3ff158f5d600",
+  "checkpoint": 2,
+  "location": { "lat": 51.5, "long": -0.12 }
+}
+```
+
+Fields follow the same rules as `POST /challenge`'s metadata (strict integer `checkpoint`,
+unknown fields rejected).
+
+Response `200`: `{"in_range": true}` or `{"in_range": false}`. That is the only field. The
+body never contains coordinates, distance, bearing or proximity.
+
+- `true` means the location is within the checkpoint's `proximity` (the boundary counts as in)
+  **and** the checkpoint's effective window is open now. These are the same rules the
+  `out_of_range` and `outside_window` checks use.
+- `false` means either rule failed. The answer doesn't say which, so the app doesn't
+  encourage a submission that's doomed either way.
+
+| Status | When                                                                |
+|--------|---------------------------------------------------------------------|
+| `200`  | `{"in_range": <bool>}`                                              |
+| `404`  | Unknown `session` or `checkpoint`. Doesn't use up the rate limit    |
+| `422`  | Invalid body                                                        |
+| `429`  | Asked again too soon; `Retry-After` gives the seconds to wait       |
+
+**Rate limit.** At most one request per (session, participant) every
+`GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS` (default 10), across all checkpoints. A yes/no
+oracle can still be probed to narrow down the area; the limit makes that impractical.
+Known limitations, acceptable for the demo:
+
+- `participant` isn't authenticated yet, so a client that rotates participant ids gets around
+  the limit. Revisit once participants are authenticated.
+- The limiter is in memory: it isn't shared between server instances and resets on restart.
+  Running more than one instance needs shared state (e.g. Redis).
+
+Nothing is stored: no submission row, and the coordinates aren't logged. Only the normal
+request line (method and path) appears in the access log.
+
 ### Game sessions and checkpoints
 
 A **game session** is one hunt. It has a region, a start and end time, and an ordered list of
@@ -266,7 +319,9 @@ otherwise for the whole session (`start-time` to `end-time`).
 #### Secrecy
 
 A checkpoint's coordinates are the answer to its clue. **No endpoint may return checkpoint
-coordinates, or distances to them**, not even in error messages. Validation errors from the
+coordinates, or distances to them**, not even in error messages. The one endpoint that uses
+them without submitting, [`POST /checkpoint/proximity`](#post-checkpointproximity), answers a
+rate-limited yes/no and nothing more. Validation errors from the
 sessions file never echo input values, so coordinates don't reach the logs either. Keep the
 real sessions file out of version control: `sessions.json` is git-ignored.
 
@@ -305,6 +360,7 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_MAX_IMAGE_BYTES` | `10485760` | Largest accepted challenge image (10 MiB)            |
 | `GAME_SERVER_MAX_CAPTURE_AGE_SECONDS` | `300` | Oldest accepted photo, measured from `capture-time` to `received-at` (> 0). See [time checks](#submission-checks) |
 | `GAME_SERVER_MAX_CLOCK_SKEW_SECONDS` | `30` | How far `capture-time` may be ahead of `received-at`, for phone clock drift (> 0) |
+| `GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS` | `10` | Minimum seconds between [proximity hints](#post-checkpointproximity) per (session, participant) (> 0) |
 | `GAME_SERVER_PHASH_MAX_DISTANCE` | `6` | Hamming distance (0–32 of 64 bits) at or below which a photo is a [duplicate](#submission-checks) of an accepted one |
 | `GAME_SERVER_DB_PATH` | `data/game.sqlite3` | SQLite database of [submissions](#submission-records); created with its directory if missing |
 | `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |
@@ -367,6 +423,8 @@ src/game_server/
   clock.py           # injectable UTC clock
   geo.py             # haversine distance_m
   phash.py           # perceptual_hash (Pillow + numpy), hamming_distance
+  proximity.py       # `POST /checkpoint/proximity` advisory hint
+  rate_limit.py      # in-memory per-key RateLimiter
   config.py          # Settings (env / .env)
   logging_config.py  # stderr logging for the app's own loggers
 tests/          # pytest suite, mirrors src/

@@ -14,6 +14,7 @@ def payload() -> dict[str, Any]:
     return {
         "session": "aeffe667-4f9f-4108-b5e2-56ae821fe413",
         "participant": "7c860ccc-9adf-4e22-b54f-3ff158f5d600",
+        "checkpoint": 2,
         "location": {"lat": 51.509948, "long": -1.485923},
         "capture-time": "2012-03-29T10:05:45-06:00",
     }
@@ -24,6 +25,7 @@ def test_parses_issue_example(payload: dict[str, Any]) -> None:
 
     assert metadata.session == UUID("aeffe667-4f9f-4108-b5e2-56ae821fe413")
     assert metadata.participant == UUID("7c860ccc-9adf-4e22-b54f-3ff158f5d600")
+    assert metadata.checkpoint == 2
     assert metadata.location.lat == 51.509948
     assert metadata.location.long == -1.485923
     assert metadata.capture_time == datetime(
@@ -44,6 +46,10 @@ def test_accepts_utc_z_suffix(payload: dict[str, Any]) -> None:
     [
         ("session", "not-a-uuid"),
         ("participant", 42),
+        ("checkpoint", 0),
+        ("checkpoint", "2"),
+        ("checkpoint", 2.0),
+        ("checkpoint", True),
         ("capture-time", "2012-03-29T10:05:45"),  # no timezone offset
         ("capture-time", "yesterday"),
         ("location", {"lat": 91, "long": 0}),
@@ -58,7 +64,9 @@ def test_rejects_invalid_field(payload: dict[str, Any], field: str, value: objec
         ChallengeMetadata.model_validate(payload)
 
 
-@pytest.mark.parametrize("field", ["session", "participant", "location", "capture-time"])
+@pytest.mark.parametrize(
+    "field", ["session", "participant", "checkpoint", "location", "capture-time"]
+)
 def test_rejects_missing_field(payload: dict[str, Any], field: str) -> None:
     del payload[field]
 

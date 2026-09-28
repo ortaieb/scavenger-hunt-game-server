@@ -12,6 +12,14 @@ and managed with [uv](https://docs.astral.sh/uv/).
 
 ### `POST /challenge`
 
+A participant submits a photo for one checkpoint. The server records it as their next attempt
+at that checkpoint and returns a **verdict it decides itself**.
+
+**Every verdict is decided server-side.** The client supplies only claims: coordinates, capture
+time and the photo. Nothing it sends can mark a check as passed, and unknown metadata fields
+(such as a `verified` or `in-range` flag) are rejected. The web app may warn a player who looks
+out of range, but that is a courtesy and plays no part in the verdict.
+
 Request: `multipart/form-data` with two parts.
 
 1. **`metadata`**: JSON text, sent with `Content-Type: application/json`:
@@ -20,17 +28,19 @@ Request: `multipart/form-data` with two parts.
    {
      "session": "aeffe667-4f9f-4108-b5e2-56ae821fe413",
      "participant": "7c860ccc-9adf-4e22-b54f-3ff158f5d600",
+     "checkpoint": 2,
      "location": { "lat": 51.509948, "long": -1.485923 },
-     "capture-time": "2012-03-29T10:05:45-06:00"
+     "capture-time": "2026-10-03T12:05:45+01:00"
    }
    ```
 
-   | Field          | Rules                                                          |
-   |----------------|----------------------------------------------------------------|
-   | `session`      | UUID of the game session                                       |
-   | `participant`  | UUID of the participant                                        |
-   | `location`     | `lat` in [-90, 90], `long` in [-180, 180], decimal degrees     |
-   | `capture-time` | ISO 8601 date-time **with** a UTC offset (e.g. `-06:00` or `Z`) |
+   | Field          | Rules                                                               |
+   |----------------|---------------------------------------------------------------------|
+   | `session`      | UUID of a [loaded game session](#game-sessions-and-checkpoints)     |
+   | `participant`  | UUID of the participant (a claim: not authenticated yet)            |
+   | `checkpoint`   | The checkpoint's `sequence` in that session: a JSON integer ≥ 1. `"2"`, `2.0` and `true` are rejected |
+   | `location`     | `lat` in [-90, 90], `long` in [-180, 180], decimal degrees          |
+   | `capture-time` | ISO 8601 date-time **with** a UTC offset (e.g. `-06:00` or `Z`)      |
 
    All fields are required. Unknown fields are rejected.
 
@@ -38,31 +48,92 @@ Request: `multipart/form-data` with two parts.
 
 Processing:
 
-1. The metadata and image are validated first, so a rejected request stores nothing.
-2. The image is written to `<image-base-path>/<random-uuid>.jpeg`
-   (see `GAME_SERVER_IMAGE_BASE_PATH`).
-3. The server logs:
+1. The server stamps **`received-at`** from its own UTC clock. This, not the client's
+   `capture-time`, is the time the verdict uses and reports.
+2. The metadata and image are validated, and the session and checkpoint are looked up.
+   A request rejected at this stage (any `4xx`) stores nothing: no image, no database row.
+3. Every registered check runs, even after one rejects, so the verdict lists every reason.
+   Checks can only rule a submission *out*:
+   - Any rejection → verdict **`failed`**.
+   - No rejections → verdict **`pending`**, never `pass`. A phone can report any location, so
+     passing the deterministic checks doesn't prove the player was there. `pass` is reserved
+     for when presence-proof (the checkpoint's one-time code) and visual-challenge checks exist.
+
+   No checks are registered yet. The time window, geofence and duplicate-photo checks come
+   next (#9, #10, #11).
+4. The image is written to `<image-base-path>/<random-uuid>.jpeg`, and the submission is
+   recorded in the database as the next **attempt** for its (session, participant, checkpoint):
+   1, 2, 3…. Failed submissions count as attempts.
+5. The server logs:
 
    ```
-   Received challenge request for <session>[<participant>] arrived at <capture-time> from (<lat>,<long>), image stored in: <path to image>
+   Received challenge request for <session>[<participant>] arrived at <capture-time> from (<lat>,<long>), image stored in: <path>; checkpoint <n> attempt <n> verdict <verdict> rejections [<code>,...]
    ```
+
+Response body (`200` or `202`):
+
+```json
+{
+  "verdict": {
+    "game": "aeffe667-4f9f-4108-b5e2-56ae821fe413",
+    "participant": "7c860ccc-9adf-4e22-b54f-3ff158f5d600",
+    "checkpoint": {
+      "sequence": 2,
+      "attempt": 1,
+      "time": "2026-10-03T11:06:02.113Z",
+      "verdict": "failed",
+      "rejections": [
+        { "code": "outside_window", "message": "This checkpoint isn't open right now." }
+      ]
+    }
+  },
+  "image_id": "fb5fb9c2-cdde-480f-8864-904829c53716"
+}
+```
+
+- `time` is `received-at`, in UTC.
+- Each rejection has a stable snake_case `code` for clients to branch on, and a `message` that
+  is safe to show the player. It never contains checkpoint coordinates, distances or bearings.
 
 Responses:
 
 | Status | When                                                                           |
 |--------|--------------------------------------------------------------------------------|
-| `202`  | Accepted; body `{"image_id": "<uuid>"}` (the stored file's name)               |
+| `200`  | Recorded, verdict `failed` (at least one rejection)                            |
+| `202`  | Recorded, verdict `pending` (no rejections)                                    |
+| `404`  | Unknown `session` (`{"detail": "unknown session"}`), or no checkpoint with that `sequence` in the session (`"unknown checkpoint"`) |
 | `413`  | Image larger than `GAME_SERVER_MAX_IMAGE_BYTES`                                |
 | `415`  | `challenge-image` content type is not `image/jpeg`                             |
-| `422`  | Missing part, invalid metadata (JSON or fields), or image bytes are not a JPEG |
+| `422`  | Missing part, invalid metadata (JSON, fields, unknown fields), or image bytes are not a JPEG |
 
 Example:
 
 ```bash
 curl -i localhost:8000/challenge \
-  -F 'metadata={"session":"aeffe667-4f9f-4108-b5e2-56ae821fe413","participant":"7c860ccc-9adf-4e22-b54f-3ff158f5d600","location":{"lat":51.509948,"long":-1.485923},"capture-time":"2012-03-29T10:05:45-06:00"};type=application/json' \
+  -F 'metadata={"session":"aeffe667-4f9f-4108-b5e2-56ae821fe413","participant":"7c860ccc-9adf-4e22-b54f-3ff158f5d600","checkpoint":2,"location":{"lat":51.509948,"long":-1.485923},"capture-time":"2026-10-03T12:05:45+01:00"};type=application/json' \
   -F 'challenge-image=@photo.jpg;type=image/jpeg'
 ```
+
+#### Submission records
+
+Submissions are stored in SQLite (`GAME_SERVER_DB_PATH`), in a `submissions` table:
+
+| Column                      | Content                                                   |
+|-----------------------------|-----------------------------------------------------------|
+| `id`                        | Row id                                                    |
+| `session`, `participant`    | UUIDs from the request                                    |
+| `checkpoint`, `attempt`     | Checkpoint `sequence` and this attempt's number           |
+| `received_at`               | Server receive time, ISO 8601 UTC                         |
+| `capture_time`              | The client's claim, as sent                               |
+| `lat`, `long`               | The client's claimed position                             |
+| `image_id`                  | Stored image's file name (without `.jpeg`)                |
+| `verdict`                   | `failed`, `pending` (or later `pass`)                     |
+| `rejections`                | JSON list of `{code, message}`                            |
+
+The attempt number is allocated and the row inserted in one transaction, so concurrent
+submissions can't share an attempt number. A unique constraint backs this up. Every row carries
+its `session`, so all of a session's data can be deleted together when the session closes.
+The schema is created at startup.
 
 ### Game sessions and checkpoints
 
@@ -165,6 +236,7 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_LOG_LEVEL`  | `info`    | `critical`, `error`, `warning`, `info`, `debug` or `trace`  |
 | `GAME_SERVER_IMAGE_BASE_PATH` | `data/images` | Where challenge images are stored; created if missing. Relative paths resolve against the working directory |
 | `GAME_SERVER_MAX_IMAGE_BYTES` | `10485760` | Largest accepted challenge image (10 MiB)            |
+| `GAME_SERVER_DB_PATH` | `data/game.sqlite3` | SQLite database of [submissions](#submission-records); created with its directory if missing |
 | `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |
 
 To use a `.env` file:
@@ -214,6 +286,9 @@ src/game_server/
   models.py          # request/response models
   sessions.py        # game session/checkpoint models, file loading, SessionRepository
   storage.py         # ImageStore: writes images to disk
+  checks.py          # Check protocol, SubmissionContext, Rejection, verdict decision
+  submissions.py     # SubmissionStore: SQLite record of submissions and attempts
+  clock.py           # injectable UTC clock
   config.py          # Settings (env / .env)
   logging_config.py  # stderr logging for the app's own loggers
 tests/          # pytest suite, mirrors src/
@@ -243,8 +318,9 @@ The image is a multi-stage build:
   virtualenv. It has no shell or package manager and runs as the unprivileged `nonroot` user
   (uid 65532).
 
-In the image, challenge images are stored in `/app/data/images`, which is writable by `nonroot`.
-`/app/data` is declared as a volume. Mount one to keep images across container restarts:
+In the image, challenge images are stored in `/app/data/images` and the submissions database
+in `/app/data/game.sqlite3`. Both are writable by `nonroot`.
+`/app/data` is declared as a volume. Mount one to keep images and submissions across container restarts:
 
 ```bash
 docker run --rm -p 8000:8000 -v game-server-data:/app/data game-server:dev

@@ -20,6 +20,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_DB_PATH",
         "GAME_SERVER_MAX_CAPTURE_AGE_SECONDS",
         "GAME_SERVER_MAX_CLOCK_SKEW_SECONDS",
+        "GAME_SERVER_PHASH_MAX_DISTANCE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -145,6 +146,27 @@ def test_capture_limits_must_be_positive(
     monkeypatch: pytest.MonkeyPatch, name: str, value: str
 ) -> None:
     monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_phash_max_distance_default() -> None:
+    assert Settings().phash_max_distance == 6
+
+
+@pytest.mark.parametrize("value", ["0", "32"])
+def test_phash_max_distance_range_is_inclusive(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("GAME_SERVER_PHASH_MAX_DISTANCE", value)
+
+    assert Settings().phash_max_distance == int(value)
+
+
+@pytest.mark.parametrize("value", ["-1", "33"])
+def test_phash_max_distance_out_of_range_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("GAME_SERVER_PHASH_MAX_DISTANCE", value)
 
     with pytest.raises(ValidationError):
         Settings()

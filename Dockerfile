@@ -22,7 +22,8 @@ RUN uv python install \
     && cd /python/cpython-* \
     && rm -rf include share lib/*.a lib/pkgconfig \
     && cd lib/python3.* \
-    && rm -rf ensurepip idlelib tkinter turtledemo test lib2to3 site-packages/pip*
+    && rm -rf ensurepip idlelib tkinter turtledemo test lib2to3 site-packages/pip* \
+       lib-dynload/_tkinter*.so
 
 # Dependencies only (no project code) for better layer caching.
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -39,6 +40,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Empty data directory; distroless has no shell to create it in the runtime stage.
 RUN mkdir -p /app/data/images
 
+# System libraries that binary wheels link against but distroless/cc doesn't ship.
+# numpy's wheel needs zlib. Check with ldd over the venv's *.so when adding native deps.
+RUN mkdir -p /runtime-libs && cp -L "/lib/$(uname -m)-linux-gnu/libz.so.1" /runtime-libs/
+
 # ---------------------------------------------------------------------------
 # Runtime: distroless (no shell, no package manager), runs as non-root.
 # ---------------------------------------------------------------------------
@@ -49,6 +54,8 @@ COPY --from=builder --chown=nonroot:nonroot /python /python
 COPY --from=builder --chown=nonroot:nonroot /app/.venv /app/.venv
 # Writable by the non-root user; mount a volume here to keep images across restarts.
 COPY --from=builder --chown=nonroot:nonroot /app/data /app/data
+# /usr/lib is on the dynamic linker's default search path on every architecture.
+COPY --from=builder /runtime-libs/ /usr/lib/
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

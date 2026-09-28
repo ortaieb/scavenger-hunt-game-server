@@ -14,8 +14,10 @@ from uuid import UUID
 from fastapi import Depends
 
 from game_server.checks import Rejection
+from game_server.checks.base import AcceptedPhoto
 from game_server.config import Settings, get_settings
 from game_server.models import VerdictStatus
+from game_server.phash import from_hex, to_hex
 
 # The table as first released (#8). Never edit it: later changes go in _MIGRATIONS.
 _SCHEMA = """
@@ -42,6 +44,10 @@ CREATE INDEX IF NOT EXISTS submissions_by_session ON submissions (session);
 _MIGRATIONS: tuple[str, ...] = (
     # 1 (#10): geofence distance from the submitted location to the checkpoint, in metres.
     "ALTER TABLE submissions ADD COLUMN distance_m REAL",
+    # 2 (#11): perceptual hash of the photo, 16 hex digits (SQLite integers are signed).
+    "ALTER TABLE submissions ADD COLUMN phash TEXT",
+    # 3 (#11): on a duplicate_photo rejection, the accepted submission it matched.
+    "ALTER TABLE submissions ADD COLUMN phash_match_id INTEGER",
 )
 
 _BUSY_TIMEOUT_SECONDS = 5.0
@@ -62,6 +68,8 @@ class NewSubmission:
     verdict: VerdictStatus
     rejections: Sequence[Rejection]
     distance_m: float
+    phash: int
+    phash_match_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -90,44 +98,73 @@ class SubmissionStore:
         ) as conn:
             yield conn
 
-    def record(self, submission: NewSubmission) -> RecordedSubmission:
-        """Insert `submission` as the next attempt for its (session, participant, checkpoint).
+    @contextmanager
+    def transaction(self) -> Iterator["SubmissionTransaction"]:
+        """Open a write transaction: commit on success, roll back on any exception.
 
-        The count and insert run in one `BEGIN IMMEDIATE` transaction, which takes the
-        database write lock up front, so concurrent submissions can't get the same attempt.
+        `BEGIN IMMEDIATE` takes the database write lock up front, so everything read and
+        written inside is serialised against other submissions: concurrent submissions
+        can't share an attempt number, and two uploads of one photo can't both be accepted.
         """
-        key = (str(submission.session), str(submission.participant), submission.checkpoint)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                (earlier,) = conn.execute(
-                    "SELECT COUNT(*) FROM submissions"
-                    " WHERE session = ? AND participant = ? AND checkpoint = ?",
-                    key,
-                ).fetchone()
-                attempt = int(earlier) + 1
-                cursor = conn.execute(
-                    "INSERT INTO submissions (session, participant, checkpoint, attempt,"
-                    " received_at, capture_time, lat, long, image_id, verdict, rejections,"
-                    " distance_m)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        *key,
-                        attempt,
-                        submission.received_at.isoformat(),
-                        submission.capture_time.isoformat(),
-                        submission.lat,
-                        submission.long,
-                        str(submission.image_id),
-                        submission.verdict,
-                        json.dumps([asdict(rejection) for rejection in submission.rejections]),
-                        submission.distance_m,
-                    ),
-                )
+                yield SubmissionTransaction(conn)
                 conn.execute("COMMIT")
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
+
+    def record(self, submission: NewSubmission) -> RecordedSubmission:
+        """Record `submission` in a transaction of its own."""
+        with self.transaction() as transaction:
+            return transaction.record(submission)
+
+
+class SubmissionTransaction:
+    """Reads and writes inside one `SubmissionStore.transaction()`."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def accepted_photos(self, session: UUID) -> tuple[AcceptedPhoto, ...]:
+        """Photos of this session's submissions whose verdict is not `failed`."""
+        rows = self._conn.execute(
+            "SELECT id, phash FROM submissions"
+            " WHERE session = ? AND verdict != 'failed' AND phash IS NOT NULL ORDER BY id",
+            (str(session),),
+        ).fetchall()
+        return tuple(AcceptedPhoto(submission_id=id_, phash=from_hex(hex_)) for id_, hex_ in rows)
+
+    def record(self, submission: NewSubmission) -> RecordedSubmission:
+        """Insert `submission` as the next attempt for its (session, participant, checkpoint)."""
+        key = (str(submission.session), str(submission.participant), submission.checkpoint)
+        (earlier,) = self._conn.execute(
+            "SELECT COUNT(*) FROM submissions"
+            " WHERE session = ? AND participant = ? AND checkpoint = ?",
+            key,
+        ).fetchone()
+        attempt = int(earlier) + 1
+        cursor = self._conn.execute(
+            "INSERT INTO submissions (session, participant, checkpoint, attempt,"
+            " received_at, capture_time, lat, long, image_id, verdict, rejections,"
+            " distance_m, phash, phash_match_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                *key,
+                attempt,
+                submission.received_at.isoformat(),
+                submission.capture_time.isoformat(),
+                submission.lat,
+                submission.long,
+                str(submission.image_id),
+                submission.verdict,
+                json.dumps([asdict(rejection) for rejection in submission.rejections]),
+                submission.distance_m,
+                to_hex(submission.phash),
+                submission.phash_match_id,
+            ),
+        )
         if cursor.lastrowid is None:  # pragma: no cover - sqlite3 always sets it after INSERT
             raise RuntimeError("sqlite3 did not report the inserted row id")
         return RecordedSubmission(id=cursor.lastrowid, attempt=attempt)

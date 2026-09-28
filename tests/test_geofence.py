@@ -33,7 +33,7 @@ def make_ctx(submitted: Location) -> SubmissionContext:
         capture_time=datetime(2026, 1, 1, 12, tzinfo=UTC),
     )
     return SubmissionContext(
-        metadata, datetime(2026, 1, 1, 12, tzinfo=UTC), session, checkpoint, b"img"
+        metadata, datetime(2026, 1, 1, 12, tzinfo=UTC), session, checkpoint, b"img", 0
     )
 
 

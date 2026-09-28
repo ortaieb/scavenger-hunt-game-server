@@ -30,6 +30,14 @@ class Rejection:
 
 
 @dataclass(frozen=True)
+class AcceptedPhoto:
+    """A photo from a submission in the same session whose verdict is not `failed`."""
+
+    submission_id: int
+    phash: int
+
+
+@dataclass(frozen=True)
 class SubmissionContext:
     """Everything a check may look at for one submission.
 
@@ -44,6 +52,10 @@ class SubmissionContext:
     session: GameSession
     checkpoint: Checkpoint
     image: bytes
+    phash: int
+    # Snapshot taken inside the write transaction the submission is recorded in, so it
+    # can't go stale before the insert. Only ever this session's photos.
+    accepted_photos: tuple[AcceptedPhoto, ...] = ()
 
     @cached_property
     def distance_m(self) -> float:

@@ -88,7 +88,7 @@ Processing:
    Received challenge request for <session>[<participant>] arrived at <capture-time> from (<lat>,<long>), image stored in: <path>; checkpoint <n> attempt <n> distance <metres>m referee <status> model=<model> latency_ms=<ms> tokens=<in>/<out> verdict <verdict> checks [<check>:<outcome>,...] rejections [<code>,...]
    ```
 
-   When the referee isn't consulted, that part reads `referee not_consulted`. The model's reasons are never logged.
+   When the referee isn't consulted, that part reads `referee not_consulted`, and without an API key `referee disabled`. The model's reasons are never logged.
 
 Response body (`200` or `202`):
 

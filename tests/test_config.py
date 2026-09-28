@@ -27,6 +27,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_REFEREE_TIMEOUT_SECONDS",
         "GAME_SERVER_REFEREE_MAX_RETRIES",
         "GAME_SERVER_REFEREE_MAX_IMAGE_EDGE",
+        "GAME_SERVER_REFEREE_MIN_CONFIDENCE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -234,3 +235,26 @@ def test_zero_retries_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GAME_SERVER_REFEREE_MAX_RETRIES", "0")
 
     assert Settings().referee_max_retries == 0
+
+
+def test_referee_min_confidence_default() -> None:
+    assert Settings().referee_min_confidence == 0.8
+
+
+@pytest.mark.parametrize("value", ["0", "1", "0.65"])
+def test_referee_min_confidence_accepts_zero_to_one(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("GAME_SERVER_REFEREE_MIN_CONFIDENCE", value)
+
+    assert Settings().referee_min_confidence == float(value)
+
+
+@pytest.mark.parametrize("value", ["-0.1", "1.01"])
+def test_referee_min_confidence_out_of_range_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("GAME_SERVER_REFEREE_MIN_CONFIDENCE", value)
+
+    with pytest.raises(ValidationError):
+        Settings()

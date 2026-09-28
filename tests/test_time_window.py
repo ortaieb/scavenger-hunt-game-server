@@ -56,7 +56,7 @@ def make_ctx(
         location=Location(lat=0, long=0),
         capture_time=capture_time or received_at,
     )
-    return SubmissionContext(metadata, received_at, session, checkpoint, b"img")
+    return SubmissionContext(metadata, received_at, session, checkpoint, b"img", 0)
 
 
 def rejections(ctx: SubmissionContext) -> list[Rejection]:

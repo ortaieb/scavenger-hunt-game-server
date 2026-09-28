@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     db_path: Path = Path("data/game.sqlite3")
     max_capture_age_seconds: int = Field(default=300, gt=0)
     max_clock_skew_seconds: int = Field(default=30, gt=0)
+    phash_max_distance: int = Field(default=6, ge=0, le=32)
 
 
 @lru_cache

@@ -15,6 +15,7 @@ from game_server.checks import (
     get_checks,
     run_checks,
 )
+from game_server.checks.duplicate_photo import DuplicatePhotoCheck
 from game_server.checks.geofence import GeofenceCheck
 from game_server.checks.time_window import TimeWindowCheck
 from game_server.config import Settings
@@ -48,7 +49,7 @@ def ctx() -> SubmissionContext:
         }
     )
     return SubmissionContext(
-        metadata, datetime(2026, 1, 1, 12, tzinfo=UTC), session, checkpoint, b"img"
+        metadata, datetime(2026, 1, 1, 12, tzinfo=UTC), session, checkpoint, b"img", 0
     )
 
 
@@ -94,9 +95,9 @@ def test_verdict_is_never_pass_without_rejections() -> None:
 
 
 def test_registered_checks() -> None:
-    settings = Settings(max_capture_age_seconds=60, max_clock_skew_seconds=5)
+    settings = Settings(max_capture_age_seconds=60, max_clock_skew_seconds=5, phash_max_distance=4)
 
-    *time_rules, geofence = get_checks(settings)
+    *time_rules, geofence, duplicate = get_checks(settings)
 
     methods = [cast(MethodType, rule) for rule in time_rules]
     assert [method.__name__ for method in methods] == [
@@ -108,6 +109,7 @@ def test_registered_checks() -> None:
         TimeWindowCheck(timedelta(seconds=60), timedelta(seconds=5))
     }
     assert geofence == GeofenceCheck()
+    assert duplicate == DuplicatePhotoCheck(max_distance=4)
 
 
 def test_context_distance_is_computed_once(ctx: SubmissionContext, mocker: MockerFixture) -> None:
@@ -132,7 +134,9 @@ def test_context_supports_lazily_shared_values(ctx: SubmissionContext) -> None:
             computed.append(1)
             return len(self.image)
 
-    extended = Extended(ctx.metadata, ctx.received_at, ctx.session, ctx.checkpoint, ctx.image)
+    extended = Extended(
+        ctx.metadata, ctx.received_at, ctx.session, ctx.checkpoint, ctx.image, ctx.phash
+    )
 
     assert (extended.image_size, extended.image_size) == (3, 3)
     assert computed == [1]

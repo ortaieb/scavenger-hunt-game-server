@@ -33,6 +33,7 @@ SUBMISSION = NewSubmission(
     verdict="pending",
     rejections=(),
     distance_m=12.5,
+    phash=0xFEDC_BA98_7654_3210,
 )
 
 
@@ -159,6 +160,8 @@ def test_dependency_uses_configured_path(db_path: Path) -> None:
 # --- schema migrations -------------------------------------------------------
 
 # The table exactly as #8 created it, before any migration.
+LATEST_VERSION = 3
+
 V0_SCHEMA = """
 CREATE TABLE submissions (
     id INTEGER PRIMARY KEY, session TEXT NOT NULL, participant TEXT NOT NULL,
@@ -181,7 +184,7 @@ def user_version(db_path: Path) -> int:
 
 
 def test_new_database_is_fully_migrated(store: SubmissionStore, db_path: Path) -> None:
-    assert user_version(db_path) == 1
+    assert user_version(db_path) == LATEST_VERSION
     store.record(SUBMISSION)
     assert rows(db_path)[0]["distance_m"] == 12.5
 
@@ -192,7 +195,7 @@ def test_migrates_database_created_before_distance_column(db_path: Path) -> None
 
     store = SubmissionStore(db_path)
 
-    assert user_version(db_path) == 1
+    assert user_version(db_path) == LATEST_VERSION
     (old,) = rows(db_path)
     assert old["distance_m"] is None  # recorded before distances were measured
     assert store.record(SUBMISSION).attempt == 2  # the old row still counts as an attempt
@@ -203,5 +206,19 @@ def test_reopening_does_not_rerun_migrations(store: SubmissionStore, db_path: Pa
 
     SubmissionStore(db_path)
 
-    assert user_version(db_path) == 1
+    assert user_version(db_path) == LATEST_VERSION
     assert len(rows(db_path)) == 1
+
+
+def test_failed_migration_rolls_back_and_stops(db_path: Path) -> None:
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.executescript(V0_SCHEMA)
+        # Version 1, but migration 2's column already exists: migration 2 will fail.
+        conn.executescript(
+            "ALTER TABLE submissions ADD COLUMN phash TEXT; PRAGMA user_version = 1;"
+        )
+
+    with pytest.raises(sqlite3.OperationalError, match="duplicate column"):
+        SubmissionStore(db_path)
+
+    assert user_version(db_path) == 1

@@ -1,29 +1,40 @@
 import json
 import logging
 import sqlite3
+import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from threading import Barrier
 from typing import Any
 from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
+from images import jpeg, scene
 from pytest_mock import MockerFixture
 
 from game_server.app import create_app
+from game_server.challenge import judge_and_record
 from game_server.checks import Check, Rejection, SubmissionContext, get_checks
+from game_server.checks.duplicate_photo import DuplicatePhotoCheck
 from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
+from game_server.models import ChallengeMetadata
+from game_server.phash import perceptual_hash, to_hex
 from game_server.sessions import SessionRepository, get_session_repository, parse_sessions
+from game_server.storage import ImageStore
+from game_server.submissions import SubmissionStore
 
-JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00fake-jpeg-body\xff\xd9"
+JPEG = jpeg(scene(0, (16, 16)), quality=50)  # a real, decodable JPEG under 1 KiB
 MAX_IMAGE_BYTES = 1024
 
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
-OTHER_SESSION = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
+OTHER_SESSION = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"  # not loaded: unknown
+SECOND_SESSION = "9d2f4c1a-6b3e-4f8a-9c7d-1e2f3a4b5c6d"
 PARTICIPANT = "7c860ccc-9adf-4e22-b54f-3ff158f5d600"
 OTHER_PARTICIPANT = "5d0a8b8e-7f6c-4d4b-8f0e-2b1a9c3d4e5f"
 NOW = datetime(2026, 10, 3, 9, 30, tzinfo=UTC)
@@ -38,23 +49,20 @@ METADATA: dict[str, Any] = {
 
 
 def sessions_repository() -> SessionRepository:
+    """Two identical sessions: SESSION and SECOND_SESSION."""
     checkpoint = {"name": "Spot", "clue": "Find it", "location": {"lat": 51.5, "long": -0.1}}
+    session = {
+        "name": "Test hunt",
+        "location": "Somewhere",
+        "start-time": "2026-10-03T10:00:00+01:00",
+        "end-time": "2026-10-03T13:00:00+01:00",
+        "checkpoints": [
+            {**checkpoint, "sequence": 1, "proximity": 40},
+            {**checkpoint, "sequence": 2, "proximity": 25},
+        ],
+    }
     return parse_sessions(
-        json.dumps(
-            [
-                {
-                    "id": SESSION,
-                    "name": "Test hunt",
-                    "location": "Somewhere",
-                    "start-time": "2026-10-03T10:00:00+01:00",
-                    "end-time": "2026-10-03T13:00:00+01:00",
-                    "checkpoints": [
-                        {**checkpoint, "sequence": 1, "proximity": 40},
-                        {**checkpoint, "sequence": 2, "proximity": 25},
-                    ],
-                }
-            ]
-        )
+        json.dumps([{**session, "id": SESSION}, {**session, "id": SECOND_SESSION}])
     )
 
 
@@ -272,6 +280,8 @@ def test_records_submission_row(client: TestClient, checks: list[Check], db_path
             [{"code": "outside_window", "message": "Rejected: outside_window"}]
         ),
         "distance_m": pytest.approx(11.1, abs=0.1),
+        "phash": to_hex(perceptual_hash(JPEG)),
+        "phash_match_id": None,
     }
 
 
@@ -287,7 +297,7 @@ def test_image_removed_if_recording_fails(
     client: TestClient, image_dir: Path, mocker: MockerFixture
 ) -> None:
     mocker.patch(
-        "game_server.submissions.SubmissionStore.record", side_effect=sqlite3.OperationalError
+        "game_server.submissions.SubmissionTransaction.record", side_effect=sqlite3.OperationalError
     )
 
     with pytest.raises(sqlite3.OperationalError):
@@ -525,3 +535,137 @@ def test_response_leaks_no_checkpoint_coordinates_or_distance(
     text = response.text.lower()
     for leak in ("51.5", "-0.1", "distance", "lat", "long", "metre", "meter"):
         assert leak not in text
+
+
+# --- duplicate photos, end to end --------------------------------------------
+
+PHOTO = jpeg(scene(7))
+
+
+def codes(response: Response) -> list[str]:
+    return [r["code"] for r in checkpoint_verdict(response)["rejections"]]
+
+
+def test_another_participants_accepted_photo_is_a_duplicate(
+    real_checks_client: TestClient, db_path: Path
+) -> None:
+    first = post_challenge(real_checks_client, image=PHOTO)
+    second = post_challenge(
+        real_checks_client, {**METADATA, "participant": OTHER_PARTICIPANT}, image=PHOTO
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 200
+    assert codes(second) == ["duplicate_photo"]
+    accepted, duplicate = stored_rows(db_path)
+    assert duplicate["phash_match_id"] == accepted["id"]
+    assert accepted["phash_match_id"] is None
+    assert duplicate["phash"] == accepted["phash"]
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        pytest.param(jpeg(scene(7), quality=45), id="re-encoded"),
+        pytest.param(jpeg(scene(7).resize((320, 240))), id="resized-50%"),
+        pytest.param(jpeg(scene(7).rotate(90, expand=True), orientation=6), id="exif-rotated"),
+    ],
+)
+def test_altered_copy_of_accepted_photo_is_a_duplicate(
+    real_checks_client: TestClient, variant: bytes
+) -> None:
+    post_challenge(real_checks_client, image=PHOTO)
+
+    response = post_challenge(real_checks_client, {**METADATA, "checkpoint": 2}, image=variant)
+
+    assert codes(response) == ["duplicate_photo"]
+
+
+def test_different_photo_is_not_a_duplicate(real_checks_client: TestClient) -> None:
+    post_challenge(real_checks_client, image=PHOTO)
+
+    response = post_challenge(
+        real_checks_client, {**METADATA, "checkpoint": 2}, image=jpeg(scene(8))
+    )
+
+    assert response.status_code == 202
+
+
+def test_photo_from_a_failed_attempt_can_be_resubmitted(
+    real_checks_client: TestClient, db_path: Path
+) -> None:
+    failed = post_challenge(real_checks_client, {**METADATA, "location": FAR_AWAY}, image=PHOTO)
+    retry = post_challenge(real_checks_client, image=PHOTO)
+
+    assert codes(failed) == ["out_of_range"]
+    assert retry.status_code == 202
+    assert [row["attempt"] for row in stored_rows(db_path)] == [1, 2]
+
+
+def test_photos_are_never_compared_across_sessions(real_checks_client: TestClient) -> None:
+    post_challenge(real_checks_client, image=PHOTO)
+
+    response = post_challenge(
+        real_checks_client, {**METADATA, "session": SECOND_SESSION}, image=PHOTO
+    )
+
+    assert response.status_code == 202
+
+
+def test_duplicate_response_reveals_no_match(real_checks_client: TestClient) -> None:
+    post_challenge(real_checks_client, image=PHOTO)
+
+    response = post_challenge(
+        real_checks_client, {**METADATA, "participant": OTHER_PARTICIPANT}, image=PHOTO
+    )
+
+    [rejection] = checkpoint_verdict(response)["rejections"]
+    assert set(rejection) == {"code", "message"}
+    assert PARTICIPANT not in response.text
+    assert "matched" not in response.text
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        pytest.param(PHOTO[:3000], id="truncated"),
+        pytest.param(b"\xff\xd8\xff" + b"junk" * 100, id="jpeg-magic-then-junk"),
+    ],
+)
+def test_undecodable_jpeg_is_422_and_stores_nothing(
+    real_checks_client: TestClient, image_dir: Path, db_path: Path, image: bytes
+) -> None:
+    response = post_challenge(real_checks_client, image=image)
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "challenge-image could not be decoded"}
+    assert_nothing_stored(image_dir, db_path)
+
+
+def test_concurrent_uploads_of_one_photo_accept_exactly_one(image_dir: Path, db_path: Path) -> None:
+    """Both requests pass the checks' own logic unless the snapshot and insert are atomic."""
+    barrier = Barrier(2)
+
+    def slow_check(ctx: SubmissionContext) -> None:
+        time.sleep(0.2)  # widen the window between reading accepted photos and inserting
+
+    checks: list[Check] = [DuplicatePhotoCheck(max_distance=6), slow_check]
+    images = ImageStore(image_dir)
+    store = SubmissionStore(db_path)
+    repository = sessions_repository()
+    session = repository.get_session(UUID(SESSION))
+    checkpoint = repository.get_checkpoint(UUID(SESSION), 1)
+    assert session is not None
+    assert checkpoint is not None
+
+    def submit(participant: str) -> str:
+        metadata = ChallengeMetadata.model_validate({**METADATA, "participant": participant})
+        ctx = SubmissionContext(metadata, NOW, session, checkpoint, PHOTO, perceptual_hash(PHOTO))
+        barrier.wait()
+        submission, _, _ = judge_and_record(ctx, checks, images, store)
+        return submission.verdict
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        verdicts = list(pool.map(submit, [PARTICIPANT, OTHER_PARTICIPANT]))
+
+    assert sorted(verdicts) == ["failed", "pending"]

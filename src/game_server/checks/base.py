@@ -1,4 +1,4 @@
-"""The check contract (`Check`, `SubmissionContext`, `Rejection`) and verdict decision.
+"""The check contract (`Check`, `SubmissionContext`, `CheckResult`) and verdict decision.
 
 Every verdict is decided here, from the server's own data and clock. The client only
 supplies claims (coordinates, capture time, the photo); nothing it sends can mark a check
@@ -9,10 +9,10 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
-from typing import Protocol
+from typing import Protocol, Self
 
 from game_server import geo
-from game_server.models import ChallengeMetadata, VerdictStatus
+from game_server.models import ChallengeMetadata, CheckOutcome, VerdictStatus
 from game_server.sessions import Checkpoint, GameSession
 
 
@@ -66,22 +66,61 @@ class SubmissionContext:
         return geo.distance_m(self.metadata.location, self.checkpoint.location)
 
 
+@dataclass(frozen=True)
+class CheckResult:
+    """The outcome of one check on one submission.
+
+    `check` is a stable snake_case name phrased as a positive assertion (`in_range`).
+    `reason` is shown to the player, under the same rules as `Rejection.message`: no
+    coordinates, distances, bearings or window times. `detail` is for moderators only:
+    it is stored, never returned. `rejection` is set exactly when the check `failed`.
+    """
+
+    check: str
+    outcome: CheckOutcome
+    confidence: float
+    reason: str
+    rejection: Rejection | None = None
+    detail: str | None = None
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError(f"confidence must be in [0, 1], got {self.confidence}")
+        if (self.outcome == "failed") != (self.rejection is not None):
+            raise ValueError("a rejection is required for, and only for, a failed check")
+
+    @classmethod
+    def passed(cls, check: str, reason: str) -> Self:
+        """A deterministic pass: confidence 1.0."""
+        return cls(check, "passed", 1.0, reason)
+
+    @classmethod
+    def failed(cls, check: str, rejection: Rejection) -> Self:
+        """A deterministic failure: confidence 1.0, reason = the rejection's message."""
+        return cls(check, "failed", 1.0, rejection.message, rejection)
+
+
 class Check(Protocol):
-    """A deterministic rule that can rule a submission out, but never proves it valid."""
+    """A rule that can rule a submission out; a deterministic pass never proves it valid."""
 
-    def __call__(self, ctx: SubmissionContext, /) -> Rejection | None: ...
-
-
-def run_checks(checks: Iterable[Check], ctx: SubmissionContext) -> list[Rejection]:
-    """Run every check, without stopping at the first rejection, and collect rejections."""
-    return [rejection for check in checks if (rejection := check(ctx)) is not None]
+    def __call__(self, ctx: SubmissionContext, /) -> CheckResult: ...
 
 
-def decide_verdict(rejections: Sequence[Rejection]) -> VerdictStatus:
-    """`failed` if any check rejected, otherwise `pending`.
+def run_checks(checks: Iterable[Check], ctx: SubmissionContext) -> list[CheckResult]:
+    """Run every check, in order, without stopping at the first failure."""
+    return [check(ctx) for check in checks]
+
+
+def rejections(results: Iterable[CheckResult]) -> list[Rejection]:
+    """The failed results' rejections, in check order."""
+    return [result.rejection for result in results if result.rejection is not None]
+
+
+def decide_verdict(results: Sequence[CheckResult]) -> VerdictStatus:
+    """`failed` if any check failed, otherwise `pending`.
 
     Never `pass`: the deterministic checks can only rule a submission out. A phone can
     report any location, so passing them doesn't prove presence. `pass` is reserved for
     when presence-proof and visual-challenge checks exist.
     """
-    return "failed" if rejections else "pending"
+    return "failed" if any(result.outcome == "failed" for result in results) else "pending"

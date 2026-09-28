@@ -8,6 +8,9 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 # `pass` is reserved: nothing can award it until presence-proof and visual checks exist.
 VerdictStatus = Literal["failed", "pending", "pass"]
+# `uncertain` and `skipped` are for the referee's visual checks; deterministic checks
+# only ever pass or fail.
+CheckOutcome = Literal["passed", "failed", "uncertain", "skipped"]
 
 
 class Location(BaseModel):
@@ -58,6 +61,18 @@ class RejectionOut(BaseModel):
     message: str
 
 
+class CheckOut(BaseModel):
+    """One check that ran, as shown to the player.
+
+    Deliberately has no `detail`: moderator-only text can't be serialised by accident.
+    """
+
+    check: str
+    outcome: CheckOutcome
+    confidence: float
+    reason: str
+
+
 class CheckpointVerdict(BaseModel):
     """The server's verdict on one attempt at one checkpoint."""
 
@@ -65,7 +80,8 @@ class CheckpointVerdict(BaseModel):
     attempt: int
     time: datetime = Field(description="When the server received the submission (UTC)")
     verdict: VerdictStatus
-    rejections: list[RejectionOut]
+    checks: list[CheckOut] = Field(description="Every check that ran, in order")
+    rejections: list[RejectionOut] = Field(description="The failed checks' rejections")
 
 
 class Verdict(BaseModel):

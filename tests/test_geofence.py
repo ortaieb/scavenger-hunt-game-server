@@ -48,9 +48,11 @@ def make_ctx(submitted: Location) -> SubmissionContext:
     ],
 )
 def test_submitted_location(submitted: Location, in_range: bool) -> None:
-    rejection = GeofenceCheck()(make_ctx(submitted))
+    result = GeofenceCheck()(make_ctx(submitted))
 
-    assert rejection == (None if in_range else OUT_OF_RANGE)
+    assert result.check == "in_range"
+    assert result.outcome == ("passed" if in_range else "failed")
+    assert result.rejection == (None if in_range else OUT_OF_RANGE)
 
 
 @pytest.mark.parametrize(
@@ -66,9 +68,9 @@ def test_boundary_counts_as_in_range(
 ) -> None:
     mocker.patch("game_server.checks.base.geo.distance_m", return_value=distance)
 
-    rejection = GeofenceCheck()(make_ctx(CHECKPOINT_AT))
+    result = GeofenceCheck()(make_ctx(CHECKPOINT_AT))
 
-    assert rejection == (None if in_range else OUT_OF_RANGE)
+    assert result.rejection == (None if in_range else OUT_OF_RANGE)
 
 
 def test_message_reveals_no_distance_direction_or_coordinates() -> None:

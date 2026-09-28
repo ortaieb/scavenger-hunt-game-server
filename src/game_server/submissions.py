@@ -13,7 +13,8 @@ from uuid import UUID
 
 from fastapi import Depends
 
-from game_server.checks import Rejection
+from game_server.checks import CheckResult, Rejection
+from game_server.checks import rejections as rejections_of
 from game_server.checks.base import AcceptedPhoto
 from game_server.config import Settings, get_settings
 from game_server.models import VerdictStatus
@@ -48,6 +49,8 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE submissions ADD COLUMN phash TEXT",
     # 3 (#11): on a duplicate_photo rejection, the accepted submission it matched.
     "ALTER TABLE submissions ADD COLUMN phash_match_id INTEGER",
+    # 4 (#19): every check that ran, as JSON {check, outcome, confidence, reason, detail}.
+    "ALTER TABLE submissions ADD COLUMN checks TEXT",
 )
 
 _BUSY_TIMEOUT_SECONDS = 5.0
@@ -66,10 +69,15 @@ class NewSubmission:
     long: float
     image_id: UUID
     verdict: VerdictStatus
-    rejections: Sequence[Rejection]
+    checks: Sequence[CheckResult]
     distance_m: float
     phash: int
     phash_match_id: int | None = None
+
+    @property
+    def rejections(self) -> list[Rejection]:
+        """The failed checks' rejections, in check order."""
+        return rejections_of(self.checks)
 
 
 @dataclass(frozen=True)
@@ -148,8 +156,8 @@ class SubmissionTransaction:
         cursor = self._conn.execute(
             "INSERT INTO submissions (session, participant, checkpoint, attempt,"
             " received_at, capture_time, lat, long, image_id, verdict, rejections,"
-            " distance_m, phash, phash_match_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " distance_m, phash, phash_match_id, checks)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 *key,
                 attempt,
@@ -163,11 +171,23 @@ class SubmissionTransaction:
                 submission.distance_m,
                 to_hex(submission.phash),
                 submission.phash_match_id,
+                json.dumps([_check_record(result) for result in submission.checks]),
             ),
         )
         if cursor.lastrowid is None:  # pragma: no cover - sqlite3 always sets it after INSERT
             raise RuntimeError("sqlite3 did not report the inserted row id")
         return RecordedSubmission(id=cursor.lastrowid, attempt=attempt)
+
+
+def _check_record(result: CheckResult) -> dict[str, object]:
+    """A check result as stored: everything but the rejection, including `detail`."""
+    return {
+        "check": result.check,
+        "outcome": result.outcome,
+        "confidence": result.confidence,
+        "reason": result.reason,
+        "detail": result.detail,
+    }
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

@@ -14,10 +14,11 @@ from pydantic import ValidationError
 
 from game_server.checks import (
     Check,
-    Rejection,
+    CheckResult,
     SubmissionContext,
     decide_verdict,
     get_checks,
+    rejections,
     run_checks,
 )
 from game_server.checks.duplicate_photo import DuplicatePhotoRejection
@@ -26,6 +27,7 @@ from game_server.config import Settings, get_settings
 from game_server.models import (
     ChallengeMetadata,
     ChallengeVerdict,
+    CheckOut,
     CheckpointVerdict,
     RejectionOut,
     Verdict,
@@ -107,7 +109,7 @@ def hash_image(image: bytes) -> int:
 
 
 def new_submission(
-    ctx: SubmissionContext, image_id: UUID, rejections: Sequence[Rejection]
+    ctx: SubmissionContext, image_id: UUID, results: Sequence[CheckResult]
 ) -> NewSubmission:
     """The row to record for a judged submission."""
     metadata = ctx.metadata
@@ -120,12 +122,16 @@ def new_submission(
         lat=metadata.location.lat,
         long=metadata.location.long,
         image_id=image_id,
-        verdict=decide_verdict(rejections),
-        rejections=rejections,
+        verdict=decide_verdict(results),
+        checks=results,
         distance_m=ctx.distance_m,
         phash=ctx.phash,
         phash_match_id=next(
-            (r.matched_submission_id for r in rejections if isinstance(r, DuplicatePhotoRejection)),
+            (
+                r.matched_submission_id
+                for r in rejections(results)
+                if isinstance(r, DuplicatePhotoRejection)
+            ),
             None,
         ),
     )
@@ -147,10 +153,10 @@ def judge_and_record(
     try:
         with submissions.transaction() as transaction:
             ctx = replace(ctx, accepted_photos=transaction.accepted_photos(ctx.metadata.session))
-            rejections = run_checks(checks, ctx)
+            results = run_checks(checks, ctx)
             image_id, image_path = images.save(ctx.image)
             saved = image_path
-            submission = new_submission(ctx, image_id, rejections)
+            submission = new_submission(ctx, image_id, results)
             recorded = transaction.record(submission)
     except BaseException:
         if saved is not None:
@@ -165,13 +171,14 @@ def describe(submission: NewSubmission, attempt: int, image_path: Path) -> str:
     Includes the distance for moderator review: server logs only, never the response.
     """
     codes = ",".join(rejection.code for rejection in submission.rejections) or "-"
+    checks = ",".join(f"{result.check}:{result.outcome}" for result in submission.checks)
     return (
         f"Received challenge request for {submission.session}[{submission.participant}] "
         f"arrived at {submission.capture_time.isoformat()} "
         f"from ({submission.lat},{submission.long}), image stored in: {image_path}; "
         f"checkpoint {submission.checkpoint} attempt {attempt} "
         f"distance {submission.distance_m:.1f}m "
-        f"verdict {submission.verdict} rejections [{codes}]"
+        f"verdict {submission.verdict} checks [{checks}] rejections [{codes}]"
     )
 
 
@@ -186,6 +193,16 @@ def to_response(submission: NewSubmission, attempt: int) -> ChallengeVerdict:
                 attempt=attempt,
                 time=submission.received_at,
                 verdict=submission.verdict,
+                # Built field by field: `detail` is moderator-only and must never be sent.
+                checks=[
+                    CheckOut(
+                        check=result.check,
+                        outcome=result.outcome,
+                        confidence=result.confidence,
+                        reason=result.reason,
+                    )
+                    for result in submission.checks
+                ],
                 rejections=[
                     RejectionOut(code=rejection.code, message=rejection.message)
                     for rejection in submission.rejections

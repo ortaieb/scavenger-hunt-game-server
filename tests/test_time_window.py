@@ -4,6 +4,7 @@ from uuid import UUID
 import pytest
 
 from game_server.checks.base import Rejection, SubmissionContext, run_checks
+from game_server.checks.base import rejections as rejections_of
 from game_server.checks.time_window import (
     CAPTURE_IN_FUTURE,
     OUTSIDE_WINDOW,
@@ -60,7 +61,7 @@ def make_ctx(
 
 
 def rejections(ctx: SubmissionContext) -> list[Rejection]:
-    return run_checks(CHECK.rules(), ctx)
+    return rejections_of(run_checks(CHECK.rules(), ctx))
 
 
 # --- outside_window ----------------------------------------------------------
@@ -196,8 +197,11 @@ def test_from_settings() -> None:
 def test_configured_limits_are_used() -> None:
     check = TimeWindowCheck(max_capture_age=timedelta(seconds=10), max_clock_skew=SECOND)
 
-    assert run_checks(check.rules(), make_ctx(INSIDE, INSIDE - 11 * SECOND)) == [STALE_CAPTURE]
-    assert run_checks(check.rules(), make_ctx(INSIDE, INSIDE + 2 * SECOND)) == [CAPTURE_IN_FUTURE]
+    stale = make_ctx(INSIDE, INSIDE - 11 * SECOND)
+    future = make_ctx(INSIDE, INSIDE + 2 * SECOND)
+
+    assert rejections_of(run_checks(check.rules(), stale)) == [STALE_CAPTURE]
+    assert rejections_of(run_checks(check.rules(), future)) == [CAPTURE_IN_FUTURE]
 
 
 @pytest.mark.parametrize("rejection", [OUTSIDE_WINDOW, STALE_CAPTURE, CAPTURE_IN_FUTURE])

@@ -10,11 +10,12 @@ one. If radii prove too tight, the moderator widens `proximity` in the sessions 
 
 from dataclasses import dataclass
 
-from game_server.checks.base import Rejection, SubmissionContext
+from game_server.checks.base import CheckResult, Rejection, SubmissionContext
 from game_server.sessions import Checkpoint
 
 # No distance, direction or coordinates, so retries can't be played as hot/cold.
 OUT_OF_RANGE = Rejection("out_of_range", "Your location is outside the checkpoint area.")
+IN_RANGE = "in_range"
 
 
 def within_proximity(distance_m: float, checkpoint: Checkpoint) -> bool:
@@ -26,8 +27,8 @@ def within_proximity(distance_m: float, checkpoint: Checkpoint) -> bool:
 class GeofenceCheck:
     """Rejects when the submitted location is farther than `proximity` from the checkpoint."""
 
-    def __call__(self, ctx: SubmissionContext, /) -> Rejection | None:
+    def __call__(self, ctx: SubmissionContext, /) -> CheckResult:
         """The boundary itself counts as in range."""
         if within_proximity(ctx.distance_m, ctx.checkpoint):
-            return None
-        return OUT_OF_RANGE
+            return CheckResult.passed(IN_RANGE, "Your location is inside the checkpoint area.")
+        return CheckResult.failed(IN_RANGE, OUT_OF_RANGE)

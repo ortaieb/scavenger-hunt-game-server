@@ -8,9 +8,10 @@ can resubmit after e.g. a timing rejection. Never compared across sessions.
 
 from dataclasses import dataclass, field
 
-from game_server.checks.base import AcceptedPhoto, Rejection, SubmissionContext
+from game_server.checks.base import AcceptedPhoto, CheckResult, Rejection, SubmissionContext
 from game_server.phash import hamming_distance
 
+PHOTO_UNIQUE = "photo_unique"
 CODE = "duplicate_photo"
 # Doesn't say whose photo matched or at which checkpoint.
 MESSAGE = "This photo has already been used. Please take a new one."
@@ -32,12 +33,15 @@ class DuplicatePhotoCheck:
 
     max_distance: int
 
-    def __call__(self, ctx: SubmissionContext, /) -> Rejection | None:
+    def __call__(self, ctx: SubmissionContext, /) -> CheckResult:
         """Report the closest match (lowest distance, then earliest submission)."""
         match = self.closest_match(ctx.phash, ctx.accepted_photos)
         if match is None:
-            return None
-        return DuplicatePhotoRejection(CODE, MESSAGE, matched_submission_id=match.submission_id)
+            return CheckResult.passed(PHOTO_UNIQUE, "This photo hasn't been used before.")
+        rejection = DuplicatePhotoRejection(
+            CODE, MESSAGE, matched_submission_id=match.submission_id
+        )
+        return CheckResult.failed(PHOTO_UNIQUE, rejection)
 
     def closest_match(
         self, phash: int, accepted: tuple[AcceptedPhoto, ...]

@@ -5,6 +5,7 @@ import pytest
 
 from game_server.config import get_settings
 from game_server.proximity import hint_rate_limiter
+from game_server.referee import build_referee
 from game_server.submissions import open_submission_store
 
 
@@ -13,7 +14,7 @@ def isolated_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     """Keep every test's database and images in its own temp dir, and reset process caches."""
     monkeypatch.setenv("GAME_SERVER_DB_PATH", str(tmp_path / "default.sqlite3"))
     monkeypatch.setenv("GAME_SERVER_IMAGE_BASE_PATH", str(tmp_path / "default-images"))
-    caches = (get_settings, open_submission_store, hint_rate_limiter)
+    caches = (get_settings, open_submission_store, hint_rate_limiter, build_referee)
     for cache in caches:
         cache.cache_clear()
     yield

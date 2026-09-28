@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     max_image_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
     sessions_file: Path | None = None
     db_path: Path = Path("data/game.sqlite3")
+    max_capture_age_seconds: int = Field(default=300, gt=0)
+    max_clock_skew_seconds: int = Field(default=30, gt=0)
 
 
 @lru_cache

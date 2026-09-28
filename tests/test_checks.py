@@ -1,5 +1,7 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import cached_property
+from types import MethodType
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -12,6 +14,8 @@ from game_server.checks import (
     get_checks,
     run_checks,
 )
+from game_server.checks.time_window import TimeWindowCheck
+from game_server.config import Settings
 from game_server.models import ChallengeMetadata, Location
 from game_server.sessions import Checkpoint, GameSession
 
@@ -87,8 +91,19 @@ def test_verdict_is_never_pass_without_rejections() -> None:
     assert decide_verdict([]) != "pass"
 
 
-def test_no_checks_registered_yet() -> None:
-    assert list(get_checks()) == []
+def test_registered_checks_are_the_time_rules() -> None:
+    settings = Settings(max_capture_age_seconds=60, max_clock_skew_seconds=5)
+
+    rules = [cast(MethodType, check) for check in get_checks(settings)]
+
+    assert [rule.__name__ for rule in rules] == [
+        "within_window",
+        "capture_not_stale",
+        "capture_not_in_future",
+    ]
+    assert {rule.__self__ for rule in rules} == {
+        TimeWindowCheck(timedelta(seconds=60), timedelta(seconds=5))
+    }
 
 
 def test_context_is_immutable(ctx: SubmissionContext) -> None:

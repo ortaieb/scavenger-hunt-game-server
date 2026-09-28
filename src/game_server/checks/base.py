@@ -1,4 +1,4 @@
-"""Server-side submission checks and the verdict they lead to.
+"""The check contract (`Check`, `SubmissionContext`, `Rejection`) and verdict decision.
 
 Every verdict is decided here, from the server's own data and clock. The client only
 supplies claims (coordinates, capture time, the photo); nothing it sends can mark a check
@@ -48,15 +48,6 @@ class Check(Protocol):
     """A deterministic rule that can rule a submission out, but never proves it valid."""
 
     def __call__(self, ctx: SubmissionContext, /) -> Rejection | None: ...
-
-
-# Each check's issue adds its check here.
-REGISTERED_CHECKS: tuple[Check, ...] = ()
-
-
-def get_checks() -> Sequence[Check]:
-    """Dependency providing the checks every submission goes through."""
-    return REGISTERED_CHECKS
 
 
 def run_checks(checks: Iterable[Check], ctx: SubmissionContext) -> list[Rejection]:

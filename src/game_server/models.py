@@ -8,7 +8,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 class Location(BaseModel):
     """WGS84 coordinates in decimal degrees."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     lat: float = Field(ge=-90, le=90)
     long: float = Field(ge=-180, le=180)

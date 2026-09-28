@@ -64,6 +64,74 @@ curl -i localhost:8000/challenge \
   -F 'challenge-image=@photo.jpg;type=image/jpeg'
 ```
 
+### Game sessions and checkpoints
+
+A **game session** is one hunt. It has a region, a start and end time, and an ordered list of
+**checkpoints**. Each checkpoint is a place participants must find from a clue and photograph.
+Moderators write sessions by hand in a JSON file that the server loads at startup (see
+`GAME_SERVER_SESSIONS_FILE`). A moderator API will come later.
+
+The file is a JSON list of sessions. Abridged from [`sessions.example.json`](sessions.example.json):
+
+```json
+[
+  {
+    "id": "aeffe667-4f9f-4108-b5e2-56ae821fe413",
+    "name": "Hyde Park Saturday Hunt",
+    "location": "Hyde Park and Kensington Gardens, London",
+    "start-time": "2026-10-03T10:00:00+01:00",
+    "end-time": "2026-10-03T13:00:00+01:00",
+    "checkpoints": [
+      {
+        "sequence": 1,
+        "name": "Stone fountain",
+        "clue": "Where a princess is remembered by water that never runs in a straight line.",
+        "location": { "lat": 51.504873, "long": -0.169872 },
+        "proximity": 40
+      },
+      {
+        "sequence": 3,
+        "name": "Speakers' Corner",
+        "clue": "...",
+        "location": { "lat": 51.512346, "long": -0.159203 },
+        "proximity": 50,
+        "window": {
+          "opens-at": "2026-10-03T12:00:00+01:00",
+          "closes-at": "2026-10-03T13:00:00+01:00"
+        }
+      }
+    ]
+  }
+]
+```
+
+| Field                      | Rules                                                                |
+|----------------------------|----------------------------------------------------------------------|
+| `id`                       | UUID, unique across the file. Participants send it as `session`      |
+| `name`                     | Non-empty                                                            |
+| `location`                 | Non-empty description of the region (free text, not coordinates)    |
+| `start-time`, `end-time`   | ISO 8601 with a UTC offset; `end-time` must be after `start-time`    |
+| `checkpoints`              | At least one                                                         |
+| `checkpoints[].sequence`   | Integer ≥ 1, unique within the session: the checkpoint's id           |
+| `checkpoints[].name`, `clue` | Non-empty                                                          |
+| `checkpoints[].location`   | `{lat, long}`: the answer to the clue (see *Secrecy* below)            |
+| `checkpoints[].proximity`  | Integer > 0: how many metres from `location` counts as "arrived"     |
+| `checkpoints[].window`     | Optional `{opens-at, closes-at}`, `opens-at` < `closes-at`, both within the session's start/end |
+
+Unknown fields are rejected everywhere. If the file can't be read, isn't valid JSON, breaks any
+rule above or repeats a session id, the server **refuses to start**. The error lists each
+problem as `path: message`, e.g. `[0].checkpoints[1].proximity: Input should be greater than 0`.
+
+**Effective window:** a checkpoint accepts submissions during its `window` if it has one,
+otherwise for the whole session (`start-time` to `end-time`).
+
+#### Secrecy
+
+A checkpoint's coordinates are the answer to its clue. **No endpoint may return checkpoint
+coordinates, or distances to them**, not even in error messages. Validation errors from the
+sessions file never echo input values, so coordinates don't reach the logs either. Keep the
+real sessions file out of version control: `sessions.json` is git-ignored.
+
 FastAPI also serves interactive API docs at `/docs` (Swagger UI) and `/redoc`, and the OpenAPI
 schema at `/openapi.json`.
 
@@ -97,6 +165,7 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_LOG_LEVEL`  | `info`    | `critical`, `error`, `warning`, `info`, `debug` or `trace`  |
 | `GAME_SERVER_IMAGE_BASE_PATH` | `data/images` | Where challenge images are stored; created if missing. Relative paths resolve against the working directory |
 | `GAME_SERVER_MAX_IMAGE_BYTES` | `10485760` | Largest accepted challenge image (10 MiB)            |
+| `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |
 
 To use a `.env` file:
 
@@ -104,7 +173,8 @@ To use a `.env` file:
 cp .env.example .env    # then edit; .env is git-ignored
 ```
 
-Invalid values (e.g. `GAME_SERVER_PORT=0`) stop the server at startup with a validation error.
+Invalid values (e.g. `GAME_SERVER_PORT=0`), or an invalid sessions file, stop the server at
+startup with a validation error.
 
 ## Development
 
@@ -142,6 +212,7 @@ src/game_server/
   app.py             # FastAPI app factory, `GET /`
   challenge.py       # `POST /challenge` route and request handling
   models.py          # request/response models
+  sessions.py        # game session/checkpoint models, file loading, SessionRepository
   storage.py         # ImageStore: writes images to disk
   config.py          # Settings (env / .env)
   logging_config.py  # stderr logging for the app's own loggers
@@ -177,6 +248,15 @@ In the image, challenge images are stored in `/app/data/images`, which is writab
 
 ```bash
 docker run --rm -p 8000:8000 -v game-server-data:/app/data game-server:dev
+```
+
+To load game sessions, mount the file read-only and point the setting at it:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -v "$PWD/sessions.json:/app/sessions.json:ro" \
+  -e GAME_SERVER_SESSIONS_FILE=/app/sessions.json \
+  game-server:dev
 ```
 
 Because there is no shell, use `docker logs` to inspect a container rather than `docker exec`.

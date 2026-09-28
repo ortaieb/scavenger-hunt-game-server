@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     log_level: LogLevel = "info"
     image_base_path: Path = Path("data/images")
     max_image_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    sessions_file: Path | None = None
 
 
 @lru_cache

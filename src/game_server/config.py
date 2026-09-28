@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     image_base_path: Path = Path("data/images")
     max_image_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
     sessions_file: Path | None = None
+    db_path: Path = Path("data/game.sqlite3")
 
 
 @lru_cache

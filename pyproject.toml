@@ -54,3 +54,5 @@ plugins = ["pydantic.mypy"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+# Fail on warnings, e.g. an unclosed sqlite3 connection (ResourceWarning).
+filterwarnings = ["error"]

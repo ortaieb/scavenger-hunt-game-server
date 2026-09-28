@@ -17,6 +17,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_IMAGE_BASE_PATH",
         "GAME_SERVER_MAX_IMAGE_BYTES",
         "GAME_SERVER_SESSIONS_FILE",
+        "GAME_SERVER_DB_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -106,3 +107,13 @@ def test_sessions_file_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GAME_SERVER_SESSIONS_FILE", "/etc/game/sessions.json")
 
     assert Settings().sessions_file == Path("/etc/game/sessions.json")
+
+
+def test_db_path_default() -> None:
+    assert Settings().db_path == Path("data/game.sqlite3")
+
+
+def test_db_path_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_DB_PATH", "/srv/game.db")
+
+    assert Settings().db_path == Path("/srv/game.db")

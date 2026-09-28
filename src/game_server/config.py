@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     referee_timeout_seconds: float = Field(default=20, gt=0)
     referee_max_retries: int = Field(default=2, ge=0)
     referee_max_image_edge: int = Field(default=1568, gt=0)
+    # The model's confidence is self-reported, not calibrated: tuned with an eval (#23).
+    referee_min_confidence: float = Field(default=0.8, ge=0, le=1)
 
 
 @lru_cache

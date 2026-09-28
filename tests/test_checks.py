@@ -22,6 +22,7 @@ from game_server.checks.base import AcceptedPhoto
 from game_server.checks.duplicate_photo import DuplicatePhotoCheck
 from game_server.checks.geofence import GeofenceCheck
 from game_server.checks.time_window import TimeWindowCheck
+from game_server.checks.visual import PoseCorrectCheck, SceneMatchesCheck
 from game_server.config import Settings
 from game_server.models import ChallengeMetadata, CheckOutcome, Location
 from game_server.sessions import Checkpoint, GameSession
@@ -101,7 +102,10 @@ def test_runs_every_check_after_a_failure(ctx: SubmissionContext) -> None:
     ("results", "verdict"),
     [
         ([], "pending"),
-        ([PASSED], "pending"),
+        ([PASSED], "pass"),
+        ([PASSED, PASSED], "pass"),
+        ([PASSED, UNCERTAIN], "pending"),
+        ([PASSED, SKIPPED], "pending"),
         ([PASSED, UNCERTAIN, SKIPPED], "pending"),
         ([WINDOW_FAILED], "failed"),
         ([PASSED, WINDOW_FAILED, GEOFENCE_FAILED], "failed"),
@@ -141,7 +145,7 @@ def test_verdict_is_never_pass_without_rejections() -> None:
 def test_registered_checks() -> None:
     settings = Settings(max_capture_age_seconds=60, max_clock_skew_seconds=5, phash_max_distance=4)
 
-    *time_rules, geofence, duplicate = get_checks(settings)
+    *time_rules, geofence, duplicate, scene_check, pose_check = get_checks(settings)
 
     methods = [cast(MethodType, rule) for rule in time_rules]
     assert [method.__name__ for method in methods] == [
@@ -154,6 +158,8 @@ def test_registered_checks() -> None:
     }
     assert geofence == GeofenceCheck()
     assert duplicate == DuplicatePhotoCheck(max_distance=4)
+    assert scene_check == SceneMatchesCheck(min_confidence=0.8)
+    assert pose_check == PoseCorrectCheck(min_confidence=0.8)
 
 
 def test_context_distance_is_computed_once(ctx: SubmissionContext, mocker: MockerFixture) -> None:

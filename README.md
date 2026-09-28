@@ -56,13 +56,27 @@ Processing:
 2. The metadata and image are validated, the photo is decoded and
    [fingerprinted](#submission-checks), and the session and checkpoint are looked up.
    A request rejected at this stage (any `4xx`) stores nothing: no image, no database row.
-3. Every registered check runs, in a fixed order, even after one fails. The verdict lists
-   every check with its outcome, so a player (and a moderator) can see what was checked, not
-   just what failed. Deterministic checks can only rule a submission *out*:
+3. The checks run in a fixed order, in two stages, and every one of them is reported:
+   - **Outside the write lock:** the time and geofence checks.
+   - **The [referee](#referee-visual-challenge)** is then asked to judge the photo, but only
+     if none of those checks failed *and* the checkpoint has a visual challenge. A model call
+     takes seconds, so it happens before the write transaction opens; otherwise it would
+     queue every submission in the game behind it. Skipping it for an already-failed
+     submission saves cost, and that photo isn't sent to a third party.
+   - **Inside the write transaction:** the duplicate-photo check and the two visual checks,
+     which read the referee's report.
+
+   The verdict follows from the checks:
    - Any check `failed` → verdict **`failed`**.
-   - Otherwise → verdict **`pending`**, never `pass`. A phone can report any location, so
-     passing the deterministic checks doesn't prove the player was there. `pass` is reserved
-     for when presence-proof (the checkpoint's one-time code) and visual-challenge checks exist.
+   - Every check `passed` → verdict **`pass`**.
+   - Otherwise (some check `uncertain` or `skipped`) → verdict **`pending`**: a moderator
+     reviews it. That is always the case without an API key or without a visual challenge on
+     the checkpoint.
+
+   **What `pass` means.** Presence is *evidenced*, not proven: the phone's claimed location
+   is inside the checkpoint area, and the referee judged that the photo shows the described
+   place, photographed for real, with the player posing as asked. The `code_visible` and
+   `bib_visible` checks are deferred.
 
    The registered checks are described in [Submission checks](#submission-checks).
 4. The image is written to `<image-base-path>/<random-uuid>.jpeg`, and the submission is
@@ -71,8 +85,10 @@ Processing:
 5. The server logs:
 
    ```
-   Received challenge request for <session>[<participant>] arrived at <capture-time> from (<lat>,<long>), image stored in: <path>; checkpoint <n> attempt <n> distance <metres>m verdict <verdict> checks [<check>:<outcome>,...] rejections [<code>,...]
+   Received challenge request for <session>[<participant>] arrived at <capture-time> from (<lat>,<long>), image stored in: <path>; checkpoint <n> attempt <n> distance <metres>m referee <status> model=<model> latency_ms=<ms> tokens=<in>/<out> verdict <verdict> checks [<check>:<outcome>,...] rejections [<code>,...]
    ```
+
+   When the referee isn't consulted, that part reads `referee not_consulted`, and without an API key `referee disabled`. The model's reasons are never logged.
 
 Response body (`200` or `202`):
 
@@ -120,8 +136,8 @@ Responses:
 
 | Status | When                                                                           |
 |--------|--------------------------------------------------------------------------------|
-| `200`  | Recorded, verdict `failed` (at least one rejection)                            |
-| `202`  | Recorded, verdict `pending` (no rejections)                                    |
+| `200`  | Recorded, with a final verdict: `failed` (at least one rejection) or `pass` (every check passed) |
+| `202`  | Recorded, verdict `pending`: a moderator will review it                        |
 | `404`  | Unknown `session` (`{"detail": "unknown session"}`), or no checkpoint with that `sequence` in the session (`"unknown checkpoint"`) |
 | `413`  | Image larger than `GAME_SERVER_MAX_IMAGE_BYTES`                                |
 | `415`  | `challenge-image` content type is not `image/jpeg`                             |
@@ -148,6 +164,10 @@ the player.
 | 3 | `capture_time_plausible` | `capture_in_future` | "Photo's capture time is plausible." |
 | 4 | `in_range`               | `out_of_range`      | "Your location is inside the checkpoint area." |
 | 5 | `photo_unique`           | `duplicate_photo`   | "This photo hasn't been used before." |
+| 6 | `scene_matches`          | `scene_mismatch`    | "Your photo matches this checkpoint." |
+| 7 | `pose_correct`           | `pose_incorrect`    | "Your pose matches the challenge." |
+
+Clients should branch on the body's `verdict`, not the HTTP status.
 
 **Time** (`checks/time_window.py`). The deciding clock is the server's `received-at`. The
 client's `capture-time` is a claim: it can get a submission rejected, but it can never rescue
@@ -174,8 +194,9 @@ proximities of tens to hundreds of metres.
 
 - **Claim, not proof.** A phone can report any location it likes. So the geofence can rule a
   submission *out* (the claim itself says "not here"), but passing it proves nothing about
-  presence. That's what the checkpoint's one-time code will be for, and why a submission with
-  no rejections is `pending`, never `pass`.
+  presence. `pass` also needs the referee's visual checks (the photo shows the described
+  place, for real, with the player posing as asked), and even then presence is evidenced, not
+  proven.
 - **The fence is never widened.** There's no allowance for GPS accuracy, and the client can't
   send an accuracy value (unknown metadata fields are rejected). If radii prove too tight in
   the field, the moderator widens `proximity` in the sessions file.
@@ -207,6 +228,36 @@ compares **perceptual hashes** (64-bit pHash).
 - **Privacy.** The hash is a fingerprint of the photo. It is stored per session, compared only
   within its session, and deleted with the session's other data when the session closes.
 
+**Visual** (`checks/visual.py`). `scene_matches` and `pose_correct` turn the
+[referee's](#referee-visual-challenge) report into results. The model's confidence counts only
+at or above `GAME_SERVER_REFEREE_MIN_CONFIDENCE` (default 0.8). It's self-reported, not
+calibrated, so #23 tunes it.
+
+| Referee report | Outcome | Confidence |
+|---|---|---|
+| No `challenge` configured on the checkpoint | `skipped` | 0 |
+| Referee disabled (no API key) | `skipped` | 0 |
+| Referee not consulted (an earlier check failed) | `skipped` | 0 |
+| Referee error | `uncertain` | 0 |
+| Model `pass`, confidence ≥ threshold | `passed` | model's |
+| Model `fail`, confidence ≥ threshold | `failed` | model's |
+| Anything else (`unsure`, or below the threshold) | `uncertain` | model's |
+
+**The player sees fixed text; the model's reason is for the moderator.** The model's reason
+describes the scene, which is the answer to the clue. So it goes into the check's `detail`,
+which is stored and never returned:
+
+| Check | Outcome | Code | Player-facing `reason` |
+|---|---|---|---|
+| `scene_matches` | passed | | "Your photo matches this checkpoint." |
+| `scene_matches` | failed | `scene_mismatch` | "We couldn't match your photo to this checkpoint. Make sure the place is clearly visible behind you, then take a new photo." |
+| `pose_correct` | passed | | "Your pose matches the challenge." |
+| `pose_correct` | failed | `pose_incorrect` | "Your pose doesn't match the challenge. Check the instructions and take a new photo." |
+| either | uncertain | | "The referee couldn't decide on this. A moderator will review your photo." |
+| either | skipped | | "Not checked for this attempt." |
+
+A `pass` counts as accepted for the duplicate-photo check, like `pending`.
+
 #### Submission records
 
 Submissions are stored in SQLite (`GAME_SERVER_DB_PATH`), in a `submissions` table:
@@ -225,7 +276,11 @@ Submissions are stored in SQLite (`GAME_SERVER_DB_PATH`), in a `submissions` tab
 | `distance_m`                | Metres from the claimed position to the checkpoint (server-side only; empty for rows recorded before #10) |
 | `phash`                     | The photo's 64-bit perceptual hash, 16 hex digits (empty for rows recorded before #11) |
 | `phash_match_id`            | On a `duplicate_photo` rejection, the `id` of the accepted submission it matched (server-side only) |
-| `checks`                    | JSON list of every check that ran: `{check, outcome, confidence, reason, detail}`. `detail` is moderator-only and never returned (empty for rows recorded before #19) |
+| `checks`                    | JSON list of every check that ran: `{check, outcome, confidence, reason, detail}`. `detail` is moderator-only and never returned; for the visual checks it holds the model's reason (empty for rows recorded before #19) |
+| `referee_status`            | `ok`, `disabled` or `error`; empty when the referee wasn't consulted |
+| `referee_model`, `referee_error` | The model used, and the error code on `error` (`timeout`, `api_error`, `refusal`, `max_tokens`, `invalid_output`, `invalid_image`) |
+| `referee_judgement`         | JSON of the model's verdicts, confidences and **reasons**, which describe the photo. Server-side only |
+| `referee_input_tokens`, `referee_output_tokens`, `referee_latency_ms` | For cost tracking |
 
 The attempt number is allocated and the row inserted in one transaction, so concurrent
 submissions can't share an attempt number. A unique constraint backs this up. Every row carries
@@ -316,8 +371,8 @@ check it answers `pass`, `fail` or `unsure`, with a confidence (0–1) and a sho
 | `scene_matches` | The background is the checkpoint described in its `challenge.scene`, photographed for real (not a screen, print or another photo of it) |
 | `pose_correct`  | Exactly one clearly visible person is in the photo, posing as `challenge.pose` asks |
 
-> The referee is built and tested (`referee.py`) but **not yet used in verdicts**: wiring it
-> into `POST /challenge` is #22.
+The referee's report feeds the two [visual checks](#submission-checks), which decide whether
+a submission can `pass`.
 
 **How it works.**
 
@@ -340,15 +395,16 @@ check it answers `pass`, `fail` or `unsure`, with a confidence (0–1) and a sho
   `disabled` or `error`. Errors are timeouts and API errors (after
   `GAME_SERVER_REFEREE_MAX_RETRIES` SDK retries), a refusal, hitting the token limit, output
   that fails validation, or an image that can't be decoded. Each is reported as an error with
-  a code, and the referee never raises. #22 will treat an error as `uncertain`, never as a
-  `failed` verdict or a 500.
+  a code, and the referee never raises. An error makes both visual checks `uncertain`, so the
+  verdict is `pending`: never `failed`, and never a 500.
 - **No key, no calls.** Without `GAME_SERVER_ANTHROPIC_API_KEY` the referee is **disabled**:
   it makes no network call and reports `disabled`. Local development and CI never need a key.
   Other Anthropic credentials in the environment (`ANTHROPIC_API_KEY`, `ant auth` profiles)
   are deliberately ignored: only the game server's own setting enables the referee.
 - **Logging.** One line per call: model, status or error code, latency, tokens, and each
   check's verdict and confidence. **Never the image and never the reasons**, which describe
-  the photo. Reasons are stored with the submission and deleted with the session (#22).
+  the photo. They're stored with the submission (`referee_judgement` and the visual checks'
+  `detail`) and deleted with the session's other data when it closes.
 
 ### Game sessions and checkpoints
 
@@ -488,10 +544,16 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_REFEREE_TIMEOUT_SECONDS` | `20` | Per-request timeout (> 0) |
 | `GAME_SERVER_REFEREE_MAX_RETRIES` | `2` | SDK retries on connection errors, 429 and 5xx (≥ 0) |
 | `GAME_SERVER_REFEREE_MAX_IMAGE_EDGE` | `1568` | Long edge, in px, of the image sent to the model (> 0) |
+| `GAME_SERVER_REFEREE_MIN_CONFIDENCE` | `0.8` | Model confidence (0–1) at or above which a visual check's `pass`/`fail` counts; below it the check is `uncertain` |
 | `GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS` | `10` | Minimum seconds between [proximity hints](#post-checkpointproximity) per (session, participant) (> 0) |
 | `GAME_SERVER_PHASH_MAX_DISTANCE` | `6` | Hamming distance (0–32 of 64 bits) at or below which a photo is a [duplicate](#submission-checks) of an accepted one |
 | `GAME_SERVER_DB_PATH` | `data/game.sqlite3` | SQLite database of [submissions](#submission-records); created with its directory if missing |
 | `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |
+
+**Deploying on Railway.** To turn the referee on, add `GAME_SERVER_ANTHROPIC_API_KEY` to
+the game-server service's variables and mark it as a secret (sealed). Without it the server
+runs exactly as before: the visual checks are `skipped` and every submission that passes the
+other checks is `pending`.
 
 To use a `.env` file:
 
@@ -548,6 +610,7 @@ src/game_server/
     time_window.py   # outside_window, stale_capture, capture_in_future
     geofence.py      # out_of_range
     duplicate_photo.py  # duplicate_photo
+    visual.py        # scene_matches, pose_correct (from the referee's report)
   submissions.py     # SubmissionStore: SQLite record of submissions and attempts
   clock.py           # injectable UTC clock
   geo.py             # haversine distance_m

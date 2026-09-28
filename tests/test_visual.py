@@ -11,6 +11,7 @@ from game_server.checks.visual import (
     UNCERTAIN_REASON,
     PoseCorrectCheck,
     SceneMatchesCheck,
+    classify,
 )
 from game_server.models import ChallengeMetadata, Location
 from game_server.referee import RefereeJudgement, RefereeReport, VisualCheckJudgement
@@ -215,3 +216,19 @@ def test_player_reason_reveals_nothing(result: CheckResult) -> None:
 def test_visual_checks_run_in_the_transaction() -> None:
     assert isinstance(SCENE, InTransaction)
     assert isinstance(POSE, InTransaction)
+
+
+@pytest.mark.parametrize(
+    ("verdict", "confidence", "outcome"),
+    [
+        ("pass", 0.8, "passed"),
+        ("pass", 0.79, "uncertain"),
+        ("fail", 0.8, "failed"),
+        ("fail", 0.1, "uncertain"),
+        ("unsure", 1.0, "uncertain"),
+    ],
+)
+def test_classify(verdict: Verdict, confidence: float, outcome: str) -> None:
+    judged_check = VisualCheckJudgement(reason="r", verdict=verdict, confidence=confidence)
+
+    assert classify(judged_check, THRESHOLD) == outcome

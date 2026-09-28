@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Referee eval manifest (cases.json)",
+  "$defs": {
+    "EvalCase": {
+      "additionalProperties": false,
+      "description": "One labelled test photo.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "image": {
+          "description": "Relative to the manifest's directory",
+          "format": "path",
+          "title": "Image",
+          "type": "string"
+        },
+        "place": {
+          "description": "Which real place the scene describes",
+          "minLength": 1,
+          "title": "Place",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "right-place-right-pose",
+            "right-place-wrong-pose",
+            "wrong-place",
+            "screen-or-print",
+            "nobody",
+            "several-people",
+            "dark-or-blurry",
+            "injection"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "scene": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Scene",
+          "type": "string"
+        },
+        "pose": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Pose",
+          "type": "string"
+        },
+        "expected": {
+          "$ref": "#/$defs/ExpectedChecks"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "image",
+        "place",
+        "category",
+        "scene",
+        "pose",
+        "expected"
+      ],
+      "title": "EvalCase",
+      "type": "object"
+    },
+    "ExpectedChecks": {
+      "additionalProperties": false,
+      "description": "The expected result for each of the referee's checks.",
+      "properties": {
+        "scene_matches": {
+          "enum": [
+            "pass",
+            "fail",
+            "unsure-ok"
+          ],
+          "title": "Scene Matches",
+          "type": "string"
+        },
+        "pose_correct": {
+          "enum": [
+            "pass",
+            "fail",
+            "unsure-ok"
+          ],
+          "title": "Pose Correct",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scene_matches",
+        "pose_correct"
+      ],
+      "title": "ExpectedChecks",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The whole eval set.",
+  "properties": {
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/EvalCase"
+      },
+      "minItems": 1,
+      "title": "Cases",
+      "type": "array"
+    }
+  },
+  "required": [
+    "cases"
+  ],
+  "type": "object"
+}

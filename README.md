@@ -66,7 +66,7 @@ Processing:
 5. The server logs:
 
    ```
-   Received challenge request for <session>[<participant>] arrived at <capture-time> from (<lat>,<long>), image stored in: <path>; checkpoint <n> attempt <n> verdict <verdict> rejections [<code>,...]
+   Received challenge request for <session>[<participant>] arrived at <capture-time> from (<lat>,<long>), image stored in: <path>; checkpoint <n> attempt <n> distance <metres>m verdict <verdict> rejections [<code>,...]
    ```
 
 Response body (`200` or `202`):
@@ -131,7 +131,27 @@ several of these codes.
 Times are compared as absolute instants, so `2026-10-03T12:00:00Z` and
 `2026-10-03T06:00:00-06:00` behave identically. Messages never reveal a window's times.
 
-The geofence (#10) and duplicate-photo (#11) checks will be added here.
+**Geofence** (`checks/geofence.py`). The server measures the distance itself, from the
+submitted coordinates to the checkpoint's `location`. It uses the haversine great-circle
+formula with the mean Earth radius (6 371 008.8 m), which is well within tolerance for
+proximities of tens to hundreds of metres.
+
+| Code           | Rejects when                                                        | Message |
+|----------------|---------------------------------------------------------------------|---------|
+| `out_of_range` | distance > the checkpoint's `proximity`. Exactly on the boundary counts as in range | "Your location is outside the checkpoint area." |
+
+- **Claim, not proof.** A phone can report any location it likes. So the geofence can rule a
+  submission *out* (the claim itself says "not here"), but passing it proves nothing about
+  presence. That's what the checkpoint's one-time code will be for, and why a submission with
+  no rejections is `pending`, never `pass`.
+- **The fence is never widened.** There's no allowance for GPS accuracy, and the client can't
+  send an accuracy value (unknown metadata fields are rejected). If radii prove too tight in
+  the field, the moderator widens `proximity` in the sessions file.
+- **The answer isn't leaked.** The message carries no distance, direction or coordinates, so
+  retries can't be played as a hot/cold game. The response body never includes the distance.
+  It is stored on the submission row and written to the server log, for moderator review only.
+
+The duplicate-photo check (#11) will be added here.
 
 #### Submission records
 
@@ -148,11 +168,14 @@ Submissions are stored in SQLite (`GAME_SERVER_DB_PATH`), in a `submissions` tab
 | `image_id`                  | Stored image's file name (without `.jpeg`)                |
 | `verdict`                   | `failed`, `pending` (or later `pass`)                     |
 | `rejections`                | JSON list of `{code, message}`                            |
+| `distance_m`                | Metres from the claimed position to the checkpoint (server-side only; empty for rows recorded before #10) |
 
 The attempt number is allocated and the row inserted in one transaction, so concurrent
 submissions can't share an attempt number. A unique constraint backs this up. Every row carries
 its `session`, so all of a session's data can be deleted together when the session closes.
-The schema is created at startup.
+The schema is created at startup. Later changes, such as new per-check audit columns, are
+applied as ordered migrations tracked with SQLite's `PRAGMA user_version`, so existing
+databases are upgraded in place.
 
 ### Game sessions and checkpoints
 
@@ -311,8 +334,10 @@ src/game_server/
     base.py          # Check protocol, SubmissionContext, Rejection, verdict decision
     registry.py      # get_checks: the checks every submission goes through
     time_window.py   # outside_window, stale_capture, capture_in_future
+    geofence.py      # out_of_range
   submissions.py     # SubmissionStore: SQLite record of submissions and attempts
   clock.py           # injectable UTC clock
+  geo.py             # haversine distance_m
   config.py          # Settings (env / .env)
   logging_config.py  # stderr logging for the app's own loggers
 tests/          # pytest suite, mirrors src/

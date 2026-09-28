@@ -189,12 +189,15 @@ def describe(submission: NewSubmission, attempt: int, image_path: Path) -> str:
     codes = ",".join(rejection.code for rejection in submission.rejections) or "-"
     checks = ",".join(f"{result.check}:{result.outcome}" for result in submission.checks)
     report = submission.referee
-    referee = (
-        f"referee {report.status} model={report.model} latency_ms={report.latency_ms} "
-        f"tokens={report.input_tokens}/{report.output_tokens}"
-        if report
-        else "referee not_consulted"
-    )
+    if report is None:
+        referee = "referee not_consulted"
+    elif report.status == "disabled":
+        referee = "referee disabled"
+    else:
+        referee = (
+            f"referee {report.status} model={report.model} latency_ms={report.latency_ms} "
+            f"tokens={report.input_tokens}/{report.output_tokens}"
+        )
     return (
         f"Received challenge request for {submission.session}[{submission.participant}] "
         f"arrived at {submission.capture_time.isoformat()} "

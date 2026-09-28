@@ -289,8 +289,9 @@ def test_no_challenge_skips_the_referee(client: TestClient, referee: FakeReferee
 
 
 def test_no_api_key_is_pending_without_any_api_call(
-    client: TestClient, mocker: MockerFixture, db_path: Path
+    client: TestClient, mocker: MockerFixture, db_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.INFO, logger="game_server")
     wrapper = mocker.patch("game_server.referee._create_structured_message")
     client.app.dependency_overrides.pop(get_referee)  # type: ignore[attr-defined]  # FastAPI app
 
@@ -303,6 +304,7 @@ def test_no_api_key_is_pending_without_any_api_call(
     wrapper.assert_not_called()
     [row] = rows(db_path)
     assert row["referee_status"] == "disabled"
+    assert "referee disabled verdict pending" in caplog.text
 
 
 # --- the model's reasons stay server-side -------------------------------------------

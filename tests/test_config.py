@@ -16,6 +16,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_LOG_LEVEL",
         "GAME_SERVER_IMAGE_BASE_PATH",
         "GAME_SERVER_MAX_IMAGE_BYTES",
+        "GAME_SERVER_SESSIONS_FILE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -95,3 +96,13 @@ def test_non_positive_max_image_bytes_is_rejected(monkeypatch: pytest.MonkeyPatc
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_sessions_file_defaults_to_none() -> None:
+    assert Settings().sessions_file is None
+
+
+def test_sessions_file_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_SESSIONS_FILE", "/etc/game/sessions.json")
+
+    assert Settings().sessions_file == Path("/etc/game/sessions.json")

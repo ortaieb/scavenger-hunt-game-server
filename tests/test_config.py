@@ -21,6 +21,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_MAX_CAPTURE_AGE_SECONDS",
         "GAME_SERVER_MAX_CLOCK_SKEW_SECONDS",
         "GAME_SERVER_PHASH_MAX_DISTANCE",
+        "GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -167,6 +168,20 @@ def test_phash_max_distance_out_of_range_is_rejected(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
     monkeypatch.setenv("GAME_SERVER_PHASH_MAX_DISTANCE", value)
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_proximity_hint_interval_default() -> None:
+    assert Settings().proximity_hint_interval_seconds == 10
+
+
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_proximity_hint_interval_must_be_positive(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS", value)
 
     with pytest.raises(ValidationError):
         Settings()

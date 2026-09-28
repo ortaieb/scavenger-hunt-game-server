@@ -8,7 +8,13 @@ can resubmit after e.g. a timing rejection. Never compared across sessions.
 
 from dataclasses import dataclass, field
 
-from game_server.checks.base import AcceptedPhoto, CheckResult, Rejection, SubmissionContext
+from game_server.checks.base import (
+    AcceptedPhoto,
+    CheckResult,
+    InTransaction,
+    Rejection,
+    SubmissionContext,
+)
 from game_server.phash import hamming_distance
 
 PHOTO_UNIQUE = "photo_unique"
@@ -28,7 +34,7 @@ class DuplicatePhotoRejection(Rejection):
 
 
 @dataclass(frozen=True)
-class DuplicatePhotoCheck:
+class DuplicatePhotoCheck(InTransaction):
     """Rejects when the photo is within `max_distance` bits of an accepted photo."""
 
     max_distance: int

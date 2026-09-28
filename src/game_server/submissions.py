@@ -19,6 +19,7 @@ from game_server.checks.base import AcceptedPhoto
 from game_server.config import Settings, get_settings
 from game_server.models import VerdictStatus
 from game_server.phash import from_hex, to_hex
+from game_server.referee import RefereeReport
 
 # The table as first released (#8). Never edit it: later changes go in _MIGRATIONS.
 _SCHEMA = """
@@ -51,6 +52,16 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE submissions ADD COLUMN phash_match_id INTEGER",
     # 4 (#19): every check that ran, as JSON {check, outcome, confidence, reason, detail}.
     "ALTER TABLE submissions ADD COLUMN checks TEXT",
+    # 5-11 (#22): the referee's report, for moderator audit and cost tracking. NULL when the
+    # referee wasn't consulted. referee_judgement holds the model's verdicts, confidences and
+    # reasons (they describe the photo): server-side only, deleted with the session.
+    "ALTER TABLE submissions ADD COLUMN referee_status TEXT",
+    "ALTER TABLE submissions ADD COLUMN referee_model TEXT",
+    "ALTER TABLE submissions ADD COLUMN referee_error TEXT",
+    "ALTER TABLE submissions ADD COLUMN referee_judgement TEXT",
+    "ALTER TABLE submissions ADD COLUMN referee_input_tokens INTEGER",
+    "ALTER TABLE submissions ADD COLUMN referee_output_tokens INTEGER",
+    "ALTER TABLE submissions ADD COLUMN referee_latency_ms INTEGER",
 )
 
 _BUSY_TIMEOUT_SECONDS = 5.0
@@ -73,6 +84,7 @@ class NewSubmission:
     distance_m: float
     phash: int
     phash_match_id: int | None = None
+    referee: RefereeReport | None = None
 
     @property
     def rejections(self) -> list[Rejection]:
@@ -156,8 +168,10 @@ class SubmissionTransaction:
         cursor = self._conn.execute(
             "INSERT INTO submissions (session, participant, checkpoint, attempt,"
             " received_at, capture_time, lat, long, image_id, verdict, rejections,"
-            " distance_m, phash, phash_match_id, checks)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " distance_m, phash, phash_match_id, checks, referee_status, referee_model,"
+            " referee_error, referee_judgement, referee_input_tokens, referee_output_tokens,"
+            " referee_latency_ms)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 *key,
                 attempt,
@@ -172,6 +186,7 @@ class SubmissionTransaction:
                 to_hex(submission.phash),
                 submission.phash_match_id,
                 json.dumps([_check_record(result) for result in submission.checks]),
+                *_referee_columns(submission.referee),
             ),
         )
         if cursor.lastrowid is None:  # pragma: no cover - sqlite3 always sets it after INSERT
@@ -188,6 +203,22 @@ def _check_record(result: CheckResult) -> dict[str, object]:
         "reason": result.reason,
         "detail": result.detail,
     }
+
+
+def _referee_columns(report: RefereeReport | None) -> tuple[object, ...]:
+    """Values for the referee_* columns, in order; all NULL when it wasn't consulted."""
+    if report is None:
+        return (None,) * 7
+    judgement = report.judgement.model_dump_json() if report.judgement else None
+    return (
+        report.status,
+        report.model,
+        report.error_code,
+        judgement,
+        report.input_tokens,
+        report.output_tokens,
+        report.latency_ms,
+    )
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

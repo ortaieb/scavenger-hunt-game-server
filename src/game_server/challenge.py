@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from game_server.checks import (
     Check,
     CheckResult,
+    InTransaction,
     SubmissionContext,
     decide_verdict,
     get_checks,
@@ -34,6 +35,7 @@ from game_server.models import (
     Verdict,
 )
 from game_server.phash import UndecodableImageError, perceptual_hash
+from game_server.referee import Referee, RefereeReport, get_referee
 from game_server.sessions import SessionRepository, get_session_repository
 from game_server.storage import ImageStore
 from game_server.submissions import NewSubmission, SubmissionStore, get_submission_store
@@ -114,6 +116,7 @@ def new_submission(
         checks=results,
         distance_m=ctx.distance_m,
         phash=ctx.phash,
+        referee=ctx.referee_report,
         phash_match_id=next(
             (
                 r.matched_submission_id
@@ -125,23 +128,48 @@ def new_submission(
     )
 
 
+def split_stages(checks: Sequence[Check]) -> tuple[list[Check], list[Check]]:
+    """Checks to run before the referee (outside the lock), and inside the transaction."""
+    before = [check for check in checks if not isinstance(check, InTransaction)]
+    during: list[Check] = [check for check in checks if isinstance(check, InTransaction)]
+    return before, during
+
+
+def consult_referee(
+    referee: Referee, ctx: SubmissionContext, earlier: Sequence[CheckResult]
+) -> RefereeReport | None:
+    """Ask the referee about the photo, unless there's no point.
+
+    Not consulted when the checkpoint has no visual challenge, or when an earlier check
+    already failed: that saves the cost, and the photo of a submission that has already
+    failed isn't sent to a third party. Called outside the write transaction, because a
+    model call takes seconds and would otherwise queue every submission behind it.
+    """
+    challenge = ctx.checkpoint.challenge
+    if challenge is None or any(result.outcome == "failed" for result in earlier):
+        return None
+    return referee.judge(ctx.image, challenge)
+
+
 def judge_and_record(
     ctx: SubmissionContext,
     checks: Sequence[Check],
     images: ImageStore,
     submissions: SubmissionStore,
+    earlier: Sequence[CheckResult] = (),
 ) -> tuple[NewSubmission, int, Path]:
-    """Run the checks and record the result, all inside one write transaction.
+    """Run the in-transaction checks and record the result, in one write transaction.
 
-    The accepted-photo snapshot, the checks and the insert are serialised against other
-    submissions, so two uploads of the same photo can't both be accepted. If anything
-    fails after the image is saved, the image is removed.
+    `earlier` are the results of the checks already run outside the lock; they come first
+    in the verdict. The accepted-photo snapshot, these checks and the insert are serialised
+    against other submissions, so two uploads of the same photo can't both be accepted.
+    If anything fails after the image is saved, the image is removed.
     """
     saved: Path | None = None
     try:
         with submissions.transaction() as transaction:
             ctx = replace(ctx, accepted_photos=transaction.accepted_photos(ctx.metadata.session))
-            results = run_checks(checks, ctx)
+            results = [*earlier, *run_checks(checks, ctx)]
             image_id, image_path = images.save(ctx.image)
             saved = image_path
             submission = new_submission(ctx, image_id, results)
@@ -160,13 +188,20 @@ def describe(submission: NewSubmission, attempt: int, image_path: Path) -> str:
     """
     codes = ",".join(rejection.code for rejection in submission.rejections) or "-"
     checks = ",".join(f"{result.check}:{result.outcome}" for result in submission.checks)
+    report = submission.referee
+    referee = (
+        f"referee {report.status} model={report.model} latency_ms={report.latency_ms} "
+        f"tokens={report.input_tokens}/{report.output_tokens}"
+        if report
+        else "referee not_consulted"
+    )
     return (
         f"Received challenge request for {submission.session}[{submission.participant}] "
         f"arrived at {submission.capture_time.isoformat()} "
         f"from ({submission.lat},{submission.long}), image stored in: {image_path}; "
         f"checkpoint {submission.checkpoint} attempt {attempt} "
         f"distance {submission.distance_m:.1f}m "
-        f"verdict {submission.verdict} checks [{checks}] rejections [{codes}]"
+        f"{referee} verdict {submission.verdict} checks [{checks}] rejections [{codes}]"
     )
 
 
@@ -205,8 +240,8 @@ def to_response(submission: NewSubmission, attempt: int) -> ChallengeVerdict:
     "/challenge",
     status_code=status.HTTP_202_ACCEPTED,
     responses={
-        200: {"model": ChallengeVerdict, "description": "Recorded; verdict `failed`"},
-        202: {"description": "Recorded; verdict `pending`"},
+        200: {"model": ChallengeVerdict, "description": "Recorded; verdict `failed` or `pass`"},
+        202: {"description": "Recorded; verdict `pending` (moderator review)"},
         404: {"description": "Unknown session, or unknown checkpoint in the session"},
         413: {"description": "Image larger than the configured limit"},
         415: {"description": "Image part is not image/jpeg"},
@@ -230,6 +265,7 @@ def submit_challenge(
     checks: Annotated[Sequence[Check], Depends(get_checks)],
     images: Annotated[ImageStore, Depends(get_image_store)],
     submissions: Annotated[SubmissionStore, Depends(get_submission_store)],
+    referee: Annotated[Referee, Depends(get_referee)],
 ) -> ChallengeVerdict:
     """Check the submission, record it as the next attempt, and return the verdict.
 
@@ -242,8 +278,11 @@ def submit_challenge(
     phash = hash_image(image)  # decoded outside the write lock: it's the slow part
     session, checkpoint = find_checkpoint(sessions, parsed.session, parsed.checkpoint)
     ctx = SubmissionContext(parsed, received_at, session, checkpoint, image, phash)
-    submission, attempt, image_path = judge_and_record(ctx, checks, images, submissions)
+    before, during = split_stages(checks)
+    earlier = run_checks(before, ctx)
+    ctx = replace(ctx, referee_report=consult_referee(referee, ctx, earlier))
+    submission, attempt, image_path = judge_and_record(ctx, during, images, submissions, earlier)
     logger.info(describe(submission, attempt, image_path))
-    if submission.verdict == "failed":
+    if submission.verdict != "pending":  # a final verdict: failed or pass
         response.status_code = status.HTTP_200_OK
     return to_response(submission, attempt)

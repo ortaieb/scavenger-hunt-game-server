@@ -13,6 +13,7 @@ from typing import Protocol, Self
 
 from game_server import geo
 from game_server.models import ChallengeMetadata, CheckOutcome, VerdictStatus
+from game_server.referee import RefereeReport
 from game_server.sessions import Checkpoint, GameSession
 
 
@@ -56,6 +57,9 @@ class SubmissionContext:
     # Snapshot taken inside the write transaction the submission is recorded in, so it
     # can't go stale before the insert. Only ever this session's photos.
     accepted_photos: tuple[AcceptedPhoto, ...] = ()
+    # The referee's report, or None when the referee wasn't consulted (a check before it
+    # failed, or the checkpoint has no visual challenge). Filled in before the transaction.
+    referee_report: RefereeReport | None = None
 
     @cached_property
     def distance_m(self) -> float:
@@ -100,6 +104,15 @@ class CheckResult:
         return cls(check, "failed", 1.0, rejection.message, rejection)
 
 
+class InTransaction:
+    """Marker for checks that run inside the submission's write transaction.
+
+    They need the accepted-photo snapshot or the referee's report, so they run after the
+    referee, under the lock. Checks without the marker run first, outside the lock; if any
+    of them fails the referee isn't consulted. The registry lists unmarked checks first.
+    """
+
+
 class Check(Protocol):
     """A rule that can rule a submission out; a deterministic pass never proves it valid."""
 
@@ -117,10 +130,14 @@ def rejections(results: Iterable[CheckResult]) -> list[Rejection]:
 
 
 def decide_verdict(results: Sequence[CheckResult]) -> VerdictStatus:
-    """`failed` if any check failed, otherwise `pending`.
+    """`failed` if any check failed; `pass` if every check passed; otherwise `pending`.
 
-    Never `pass`: the deterministic checks can only rule a submission out. A phone can
-    report any location, so passing them doesn't prove presence. `pass` is reserved for
-    when presence-proof and visual-challenge checks exist.
+    `pending` means a moderator reviews it: some check was `uncertain` or `skipped` (for
+    example the referee is disabled, or the checkpoint has no visual challenge). With no
+    checks at all nothing was verified, so that's `pending` too, never a vacuous `pass`.
     """
-    return "failed" if any(result.outcome == "failed" for result in results) else "pending"
+    if any(result.outcome == "failed" for result in results):
+        return "failed"
+    if results and all(result.outcome == "passed" for result in results):
+        return "pass"
+    return "pending"

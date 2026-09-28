@@ -160,13 +160,13 @@ def test_no_rejections_gives_pending_202(client: TestClient) -> None:
     UUID(body["image_id"])
 
 
-def test_accepting_check_still_gives_pending(client: TestClient, checks: list[Check]) -> None:
+def test_every_check_passing_gives_pass_200(client: TestClient, checks: list[Check]) -> None:
     checks.append(accepting)
 
     response = post_challenge(client)
 
-    assert response.status_code == 202
-    assert checkpoint_verdict(response)["verdict"] == "pending"
+    assert response.status_code == 200
+    assert checkpoint_verdict(response)["verdict"] == "pass"
 
 
 def test_rejecting_check_gives_failed_200(client: TestClient, checks: list[Check]) -> None:
@@ -299,6 +299,14 @@ def test_records_submission_row(client: TestClient, checks: list[Check], db_path
                 }
             ]
         ),
+        # The referee isn't consulted: the checkpoint has no challenge and a check failed.
+        "referee_status": None,
+        "referee_model": None,
+        "referee_error": None,
+        "referee_judgement": None,
+        "referee_input_tokens": None,
+        "referee_output_tokens": None,
+        "referee_latency_ms": None,
     }
 
 
@@ -336,6 +344,7 @@ def test_logs_received_challenge(
         "arrived at 2026-10-03T10:29:00+01:00 from (51.5001,-0.1), "
         f"image stored in: {image_dir.resolve() / f'{image_id}.jpeg'}; "
         "checkpoint 1 attempt 1 distance 11.1m "
+        "referee not_consulted "
         "verdict failed checks [no_outside_window:failed,no_outside_geofence:failed] "
         "rejections [outside_window,outside_geofence]"
     ]
@@ -549,10 +558,12 @@ def test_response_leaks_no_checkpoint_coordinates_or_distance(
 
     body = response.json()
     checks = body["verdict"]["checkpoint"].pop("checks")
-    assert {check["confidence"] for check in checks} == {1.0}
+    confidences = [check["confidence"] for check in checks]
+    # Deterministic checks report 1.0; the skipped visual checks (no challenge) report 0.
+    assert set(confidences) <= {0.0, 1.0}
     # Apart from the checks' confidences, the only numbers are the sequence and attempt.
     assert sorted(json_numbers(body)) == [1, 1]
-    assert sorted(json_numbers(checks)) == [1.0] * len(checks)
+    assert sorted(json_numbers(checks)) == sorted(confidences)
     text = response.text.lower()
     for leak in ("51.5", "-0.1", "distance", "lat", "long", "metre", "meter"):
         assert leak not in text
@@ -690,7 +701,7 @@ def test_concurrent_uploads_of_one_photo_accept_exactly_one(image_dir: Path, db_
     with ThreadPoolExecutor(max_workers=2) as pool:
         verdicts = list(pool.map(submit, [PARTICIPANT, OTHER_PARTICIPANT]))
 
-    assert sorted(verdicts) == ["failed", "pending"]
+    assert sorted(verdicts) == ["failed", "pass"]
 
 
 # --- every check in the verdict (#19) ----------------------------------------
@@ -701,22 +712,30 @@ REGISTRY_ORDER = [
     "capture_time_plausible",
     "in_range",
     "photo_unique",
+    "scene_matches",
+    "pose_correct",
 ]
+VISUAL = {"scene_matches", "pose_correct"}
 
 
 def outcomes(response: Response) -> dict[str, str]:
     return {c["check"]: c["outcome"] for c in checkpoint_verdict(response)["checks"]}
 
 
-def test_happy_path_lists_every_check_passed(real_checks_client: TestClient) -> None:
-    response = post_challenge(real_checks_client)
+def test_without_a_challenge_visual_checks_skip_and_verdict_is_pending(
+    real_checks_client: TestClient,
+) -> None:
+    response = post_challenge(real_checks_client)  # the test checkpoints have no challenge
 
     verdict = checkpoint_verdict(response)
     assert response.status_code == 202
     assert verdict["verdict"] == "pending"
     assert verdict["rejections"] == []
     assert [c["check"] for c in verdict["checks"]] == REGISTRY_ORDER
-    assert {(c["outcome"], c["confidence"]) for c in verdict["checks"]} == {("passed", 1.0)}
+    assert {(c["check"], c["outcome"], c["confidence"]) for c in verdict["checks"]} == {
+        *((name, "passed", 1.0) for name in REGISTRY_ORDER if name not in VISUAL),
+        *((name, "skipped", 0.0) for name in VISUAL),
+    }
     for check in verdict["checks"]:
         assert set(check) == {"check", "outcome", "confidence", "reason"}
 
@@ -777,7 +796,8 @@ def test_each_failure_keeps_its_rejection_and_shows_in_checks(
     assert verdict["verdict"] == "failed"
     assert verdict["rejections"] == [{"code": code, "message": message}]
     assert outcomes(response) == {
-        name: "failed" if name == check else "passed" for name in REGISTRY_ORDER
+        name: "failed" if name == check else "skipped" if name in VISUAL else "passed"
+        for name in REGISTRY_ORDER
     }
     [failed] = [c for c in verdict["checks"] if c["outcome"] == "failed"]
     assert failed["reason"] == message
@@ -810,6 +830,8 @@ def test_checks_complete_and_ordered_when_several_fail(
         "passed",
         "failed",
         "passed",
+        "skipped",
+        "skipped",
     ]
     assert [r["code"] for r in verdict["rejections"]] == [
         "outside_window",

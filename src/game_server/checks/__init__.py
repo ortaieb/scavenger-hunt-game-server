@@ -3,6 +3,7 @@
 from game_server.checks.base import (
     Check,
     CheckResult,
+    InTransaction,
     Rejection,
     SubmissionContext,
     decide_verdict,
@@ -14,6 +15,7 @@ from game_server.checks.registry import get_checks
 __all__ = [
     "Check",
     "CheckResult",
+    "InTransaction",
     "Rejection",
     "SubmissionContext",
     "decide_verdict",

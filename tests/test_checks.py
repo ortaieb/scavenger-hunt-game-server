@@ -5,6 +5,7 @@ from typing import cast
 from uuid import UUID
 
 import pytest
+from pytest_mock import MockerFixture
 
 from game_server.checks import (
     Check,
@@ -14,6 +15,7 @@ from game_server.checks import (
     get_checks,
     run_checks,
 )
+from game_server.checks.geofence import GeofenceCheck
 from game_server.checks.time_window import TimeWindowCheck
 from game_server.config import Settings
 from game_server.models import ChallengeMetadata, Location
@@ -91,19 +93,28 @@ def test_verdict_is_never_pass_without_rejections() -> None:
     assert decide_verdict([]) != "pass"
 
 
-def test_registered_checks_are_the_time_rules() -> None:
+def test_registered_checks() -> None:
     settings = Settings(max_capture_age_seconds=60, max_clock_skew_seconds=5)
 
-    rules = [cast(MethodType, check) for check in get_checks(settings)]
+    *time_rules, geofence = get_checks(settings)
 
-    assert [rule.__name__ for rule in rules] == [
+    methods = [cast(MethodType, rule) for rule in time_rules]
+    assert [method.__name__ for method in methods] == [
         "within_window",
         "capture_not_stale",
         "capture_not_in_future",
     ]
-    assert {rule.__self__ for rule in rules} == {
+    assert {method.__self__ for method in methods} == {
         TimeWindowCheck(timedelta(seconds=60), timedelta(seconds=5))
     }
+    assert geofence == GeofenceCheck()
+
+
+def test_context_distance_is_computed_once(ctx: SubmissionContext, mocker: MockerFixture) -> None:
+    distance = mocker.patch("game_server.checks.base.geo.distance_m", return_value=42.0)
+
+    assert (ctx.distance_m, ctx.distance_m) == (42.0, 42.0)
+    distance.assert_called_once_with(ctx.metadata.location, ctx.checkpoint.location)
 
 
 def test_context_is_immutable(ctx: SubmissionContext) -> None:

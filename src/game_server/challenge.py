@@ -111,6 +111,7 @@ def store_submission(
         image_id=image_id,
         verdict=decide_verdict(rejections),
         rejections=rejections,
+        distance_m=ctx.distance_m,
     )
     try:
         recorded = submissions.record(submission)
@@ -121,13 +122,17 @@ def store_submission(
 
 
 def describe(submission: NewSubmission, attempt: int, image_path: Path) -> str:
-    """Build the log line announcing a received challenge and its verdict."""
+    """Build the log line announcing a received challenge and its verdict.
+
+    Includes the distance for moderator review: server logs only, never the response.
+    """
     codes = ",".join(rejection.code for rejection in submission.rejections) or "-"
     return (
         f"Received challenge request for {submission.session}[{submission.participant}] "
         f"arrived at {submission.capture_time.isoformat()} "
         f"from ({submission.lat},{submission.long}), image stored in: {image_path}; "
         f"checkpoint {submission.checkpoint} attempt {attempt} "
+        f"distance {submission.distance_m:.1f}m "
         f"verdict {submission.verdict} rejections [{codes}]"
     )
 

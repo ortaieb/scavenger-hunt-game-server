@@ -8,8 +8,10 @@ as passed.
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cached_property
 from typing import Protocol
 
+from game_server import geo
 from game_server.models import ChallengeMetadata, VerdictStatus
 from game_server.sessions import Checkpoint, GameSession
 
@@ -42,6 +44,14 @@ class SubmissionContext:
     session: GameSession
     checkpoint: Checkpoint
     image: bytes
+
+    @cached_property
+    def distance_m(self) -> float:
+        """Metres from the submitted (claimed) location to the checkpoint.
+
+        Server-side only: never return it to the client, it would leak the answer.
+        """
+        return geo.distance_m(self.metadata.location, self.checkpoint.location)
 
 
 class Check(Protocol):

@@ -17,7 +17,7 @@ from game_server.checks import Rejection
 from game_server.config import Settings, get_settings
 from game_server.models import VerdictStatus
 
-# Per-check audit columns (e.g. distance, image hash) are added by their own issues.
+# The table as first released (#8). Never edit it: later changes go in _MIGRATIONS.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS submissions (
     id           INTEGER PRIMARY KEY,
@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS submissions (
 CREATE INDEX IF NOT EXISTS submissions_by_session ON submissions (session);
 """
 
+# Applied in order; PRAGMA user_version records how many have run. Append only.
+# Per-check audit columns are nullable: rows recorded before the column existed have none.
+_MIGRATIONS: tuple[str, ...] = (
+    # 1 (#10): geofence distance from the submitted location to the checkpoint, in metres.
+    "ALTER TABLE submissions ADD COLUMN distance_m REAL",
+)
+
 _BUSY_TIMEOUT_SECONDS = 5.0
 
 
@@ -54,6 +61,7 @@ class NewSubmission:
     image_id: UUID
     verdict: VerdictStatus
     rejections: Sequence[Rejection]
+    distance_m: float
 
 
 @dataclass(frozen=True)
@@ -72,6 +80,7 @@ class SubmissionStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            _migrate(conn)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -99,8 +108,9 @@ class SubmissionStore:
                 attempt = int(earlier) + 1
                 cursor = conn.execute(
                     "INSERT INTO submissions (session, participant, checkpoint, attempt,"
-                    " received_at, capture_time, lat, long, image_id, verdict, rejections)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " received_at, capture_time, lat, long, image_id, verdict, rejections,"
+                    " distance_m)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         *key,
                         attempt,
@@ -111,6 +121,7 @@ class SubmissionStore:
                         str(submission.image_id),
                         submission.verdict,
                         json.dumps([asdict(rejection) for rejection in submission.rejections]),
+                        submission.distance_m,
                     ),
                 )
                 conn.execute("COMMIT")
@@ -120,6 +131,20 @@ class SubmissionStore:
         if cursor.lastrowid is None:  # pragma: no cover - sqlite3 always sets it after INSERT
             raise RuntimeError("sqlite3 did not report the inserted row id")
         return RecordedSubmission(id=cursor.lastrowid, attempt=attempt)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply the migrations this database hasn't run yet, each in its own transaction."""
+    (applied,) = conn.execute("PRAGMA user_version").fetchone()
+    for version, statement in enumerate(_MIGRATIONS[applied:], start=applied + 1):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(statement)
+            conn.execute(f"PRAGMA user_version = {version}")  # int from enumerate, not input
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
 
 
 @lru_cache

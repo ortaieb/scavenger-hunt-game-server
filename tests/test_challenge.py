@@ -32,7 +32,7 @@ METADATA: dict[str, Any] = {
     "session": SESSION,
     "participant": PARTICIPANT,
     "checkpoint": 1,
-    "location": {"lat": 51.509948, "long": -1.485923},
+    "location": {"lat": 51.5001, "long": -0.1},  # ~11 m from both test checkpoints
     "capture-time": "2026-10-03T10:29:00+01:00",
 }
 
@@ -264,13 +264,14 @@ def test_records_submission_row(client: TestClient, checks: list[Check], db_path
         "attempt": 1,
         "received_at": "2026-10-03T09:30:00+00:00",
         "capture_time": "2026-10-03T10:29:00+01:00",
-        "lat": 51.509948,
-        "long": -1.485923,
+        "lat": 51.5001,
+        "long": -0.1,
         "image_id": image_id,
         "verdict": "failed",
         "rejections": json.dumps(
             [{"code": "outside_window", "message": "Rejected: outside_window"}]
         ),
+        "distance_m": pytest.approx(11.1, abs=0.1),
     }
 
 
@@ -305,9 +306,10 @@ def test_logs_received_challenge(
 
     assert caplog.messages == [
         f"Received challenge request for {SESSION}[{PARTICIPANT}] "
-        "arrived at 2026-10-03T10:29:00+01:00 from (51.509948,-1.485923), "
+        "arrived at 2026-10-03T10:29:00+01:00 from (51.5001,-0.1), "
         f"image stored in: {image_dir.resolve() / f'{image_id}.jpeg'}; "
-        "checkpoint 1 attempt 1 verdict failed rejections [outside_window,outside_geofence]"
+        "checkpoint 1 attempt 1 distance 11.1m "
+        "verdict failed rejections [outside_window,outside_geofence]"
     ]
 
 
@@ -470,3 +472,56 @@ def test_capture_time_claims_can_fail_submission(
 
     assert response.status_code == 200
     assert [r["code"] for r in checkpoint_verdict(response)["rejections"]] == [code]
+
+
+FAR_AWAY = {"lat": 51.51, "long": -0.1}  # ~1.1 km north of the checkpoints
+
+
+def test_out_of_range_submission_fails(real_checks_client: TestClient, db_path: Path) -> None:
+    response = post_challenge(real_checks_client, {**METADATA, "location": FAR_AWAY})
+
+    assert response.status_code == 200
+    assert checkpoint_verdict(response)["verdict"] == "failed"
+    assert [r["code"] for r in checkpoint_verdict(response)["rejections"]] == ["out_of_range"]
+    [row] = stored_rows(db_path)
+    assert row["distance_m"] == pytest.approx(1112, abs=1)
+
+
+def test_in_range_submission_is_pending_never_pass(
+    real_checks_client: TestClient, db_path: Path
+) -> None:
+    response = post_challenge(real_checks_client)
+
+    assert response.status_code == 202
+    assert checkpoint_verdict(response)["verdict"] == "pending"
+    [row] = stored_rows(db_path)
+    assert row["distance_m"] == pytest.approx(11.1, abs=0.1)
+
+
+def json_numbers(value: object) -> list[float]:
+    """Every number anywhere in a decoded JSON document."""
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, int | float):
+        return [value]
+    if isinstance(value, dict):
+        return [n for item in value.values() for n in json_numbers(item)]
+    if isinstance(value, list):
+        return [n for item in value for n in json_numbers(item)]
+    return []
+
+
+@pytest.mark.parametrize(
+    "location", [METADATA["location"], FAR_AWAY], ids=["in-range", "out-of-range"]
+)
+def test_response_leaks_no_checkpoint_coordinates_or_distance(
+    real_checks_client: TestClient, location: dict[str, float]
+) -> None:
+    response = post_challenge(real_checks_client, {**METADATA, "location": location})
+
+    body = response.json()
+    # The only numbers in the body are the checkpoint sequence and the attempt.
+    assert sorted(json_numbers(body)) == [1, 1]
+    text = response.text.lower()
+    for leak in ("51.5", "-0.1", "distance", "lat", "long", "metre", "meter"):
+        assert leak not in text

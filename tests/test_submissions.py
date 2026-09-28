@@ -32,6 +32,7 @@ SUBMISSION = NewSubmission(
     image_id=UUID(int=3),
     verdict="pending",
     rejections=(),
+    distance_m=12.5,
 )
 
 
@@ -85,6 +86,7 @@ def test_records_all_fields(store: SubmissionStore, db_path: Path) -> None:
     assert (row["lat"], row["long"]) == (51.5, -0.1)
     assert row["image_id"] == str(UUID(int=3))
     assert row["verdict"] == "failed"
+    assert row["distance_m"] == 12.5
     assert json.loads(row["rejections"]) == [
         {"code": "outside_window", "message": "Closed"},
         {"code": "b", "message": "B"},
@@ -152,3 +154,54 @@ def test_dependency_uses_configured_path(db_path: Path) -> None:
 
     assert store.db_path == db_path.resolve()
     assert db_path.exists()
+
+
+# --- schema migrations -------------------------------------------------------
+
+# The table exactly as #8 created it, before any migration.
+V0_SCHEMA = """
+CREATE TABLE submissions (
+    id INTEGER PRIMARY KEY, session TEXT NOT NULL, participant TEXT NOT NULL,
+    checkpoint INTEGER NOT NULL, attempt INTEGER NOT NULL, received_at TEXT NOT NULL,
+    capture_time TEXT NOT NULL, lat REAL NOT NULL, long REAL NOT NULL,
+    image_id TEXT NOT NULL,
+    verdict TEXT NOT NULL CHECK (verdict IN ('failed', 'pending', 'pass')),
+    rejections TEXT NOT NULL, UNIQUE (session, participant, checkpoint, attempt)
+);
+INSERT INTO submissions VALUES
+    (1, '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002',
+     1, 1, '', '', 0, 0, '', 'pending', '[]');
+"""
+
+
+def user_version(db_path: Path) -> int:
+    with closing(sqlite3.connect(db_path)) as conn:
+        version: int = conn.execute("PRAGMA user_version").fetchone()[0]
+        return version
+
+
+def test_new_database_is_fully_migrated(store: SubmissionStore, db_path: Path) -> None:
+    assert user_version(db_path) == 1
+    store.record(SUBMISSION)
+    assert rows(db_path)[0]["distance_m"] == 12.5
+
+
+def test_migrates_database_created_before_distance_column(db_path: Path) -> None:
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.executescript(V0_SCHEMA)
+
+    store = SubmissionStore(db_path)
+
+    assert user_version(db_path) == 1
+    (old,) = rows(db_path)
+    assert old["distance_m"] is None  # recorded before distances were measured
+    assert store.record(SUBMISSION).attempt == 2  # the old row still counts as an attempt
+
+
+def test_reopening_does_not_rerun_migrations(store: SubmissionStore, db_path: Path) -> None:
+    store.record(SUBMISSION)
+
+    SubmissionStore(db_path)
+
+    assert user_version(db_path) == 1
+    assert len(rows(db_path)) == 1

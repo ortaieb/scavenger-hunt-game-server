@@ -50,7 +50,8 @@ Processing:
 
 1. The server stamps **`received-at`** from its own UTC clock. This, not the client's
    `capture-time`, is the time the verdict uses and reports.
-2. The metadata and image are validated, and the session and checkpoint are looked up.
+2. The metadata and image are validated, the photo is decoded and
+   [fingerprinted](#submission-checks), and the session and checkpoint are looked up.
    A request rejected at this stage (any `4xx`) stores nothing: no image, no database row.
 3. Every registered check runs, even after one rejects, so the verdict lists every reason.
    Checks can only rule a submission *out*:
@@ -103,7 +104,7 @@ Responses:
 | `404`  | Unknown `session` (`{"detail": "unknown session"}`), or no checkpoint with that `sequence` in the session (`"unknown checkpoint"`) |
 | `413`  | Image larger than `GAME_SERVER_MAX_IMAGE_BYTES`                                |
 | `415`  | `challenge-image` content type is not `image/jpeg`                             |
-| `422`  | Missing part, invalid metadata (JSON, fields, unknown fields), or image bytes are not a JPEG |
+| `422`  | Missing part, invalid metadata (JSON, fields, unknown fields), image bytes are not a JPEG, or the JPEG can't be decoded (corrupt, truncated, or over 100 megapixels): `{"detail": "challenge-image could not be decoded"}` |
 
 Example:
 
@@ -151,7 +152,29 @@ proximities of tens to hundreds of metres.
   retries can't be played as a hot/cold game. The response body never includes the distance.
   It is stored on the submission row and written to the server log, for moderator review only.
 
-The duplicate-photo check (#11) will be added here.
+**Duplicate photo** (`checks/duplicate_photo.py`, `phash.py`). A photo that already got
+someone through a checkpoint can't get anyone through again, whether it's the same participant
+or another. Re-encoding, resizing or re-screenshotting defeats a byte hash, so the server
+compares **perceptual hashes** (64-bit pHash).
+
+| Code              | Rejects when                                                       | Message |
+|-------------------|--------------------------------------------------------------------|---------|
+| `duplicate_photo` | The photo's hash is within `GAME_SERVER_PHASH_MAX_DISTANCE` bits (default 6 of 64, inclusive) of **any accepted photo in the same session**, from any participant at any checkpoint | "This photo has already been used. Please take a new one." |
+
+- **The hash.** Decode, apply the EXIF orientation (phones rotate via EXIF), convert to
+  greyscale, resize to 32×32, take the 2-D DCT, keep the top-left 8×8 low frequencies, and set
+  each bit where the coefficient is above their median. Re-encoded, resized and EXIF-rotated
+  copies land within 2 bits of the original; unrelated images are typically 26+ bits apart.
+- **Accepted** means the verdict is not `failed` (today: `pending`). A photo from a rejected
+  attempt isn't compared against, so a player can resubmit after e.g. a timing rejection.
+  If a later check turns a `pending` submission into `failed`, it drops out automatically.
+- **No race.** Reading the accepted photos, running the checks and inserting the row happen in
+  one `BEGIN IMMEDIATE` transaction, so two simultaneous uploads of one photo can't both be
+  accepted. The photo is decoded before that transaction, so the slow part doesn't hold the lock.
+- **Nothing is revealed.** The message doesn't say whose photo matched or at which checkpoint.
+  The matched submission is recorded for moderators (`phash_match_id`) and never returned.
+- **Privacy.** The hash is a fingerprint of the photo. It is stored per session, compared only
+  within its session, and deleted with the session's other data when the session closes.
 
 #### Submission records
 
@@ -169,6 +192,8 @@ Submissions are stored in SQLite (`GAME_SERVER_DB_PATH`), in a `submissions` tab
 | `verdict`                   | `failed`, `pending` (or later `pass`)                     |
 | `rejections`                | JSON list of `{code, message}`                            |
 | `distance_m`                | Metres from the claimed position to the checkpoint (server-side only; empty for rows recorded before #10) |
+| `phash`                     | The photo's 64-bit perceptual hash, 16 hex digits (empty for rows recorded before #11) |
+| `phash_match_id`            | On a `duplicate_photo` rejection, the `id` of the accepted submission it matched (server-side only) |
 
 The attempt number is allocated and the row inserted in one transaction, so concurrent
 submissions can't share an attempt number. A unique constraint backs this up. Every row carries
@@ -280,6 +305,7 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_MAX_IMAGE_BYTES` | `10485760` | Largest accepted challenge image (10 MiB)            |
 | `GAME_SERVER_MAX_CAPTURE_AGE_SECONDS` | `300` | Oldest accepted photo, measured from `capture-time` to `received-at` (> 0). See [time checks](#submission-checks) |
 | `GAME_SERVER_MAX_CLOCK_SKEW_SECONDS` | `30` | How far `capture-time` may be ahead of `received-at`, for phone clock drift (> 0) |
+| `GAME_SERVER_PHASH_MAX_DISTANCE` | `6` | Hamming distance (0–32 of 64 bits) at or below which a photo is a [duplicate](#submission-checks) of an accepted one |
 | `GAME_SERVER_DB_PATH` | `data/game.sqlite3` | SQLite database of [submissions](#submission-records); created with its directory if missing |
 | `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |
 
@@ -316,7 +342,8 @@ the run still in progress for the same PR.
 - **validate**: installs uv, installs the Python pinned in `.python-version` (uv-managed only,
   no caches, so every run starts clean), creates a fresh virtualenv with `uv sync --locked`,
   then runs `ruff check`, `ruff format --check`, `mypy`, `uv build` and `pytest` with coverage.
-- **docker**: builds the Docker image without pushing it.
+- **docker**: builds the Docker image without pushing it, then starts it and waits for `GET /`
+  to answer. The start is what catches a native library missing from the distroless runtime.
 
 CI does not auto-fix. Run `make check` locally before pushing to catch the same issues.
 
@@ -335,9 +362,11 @@ src/game_server/
     registry.py      # get_checks: the checks every submission goes through
     time_window.py   # outside_window, stale_capture, capture_in_future
     geofence.py      # out_of_range
+    duplicate_photo.py  # duplicate_photo
   submissions.py     # SubmissionStore: SQLite record of submissions and attempts
   clock.py           # injectable UTC clock
   geo.py             # haversine distance_m
+  phash.py           # perceptual_hash (Pillow + numpy), hamming_distance
   config.py          # Settings (env / .env)
   logging_config.py  # stderr logging for the app's own loggers
 tests/          # pytest suite, mirrors src/
@@ -365,7 +394,9 @@ The image is a multi-stage build:
   no source tree).
 - **Runtime** (`gcr.io/distroless/cc-debian12:nonroot`) contains only the interpreter and the
   virtualenv. It has no shell or package manager and runs as the unprivileged `nonroot` user
-  (uid 65532).
+  (uid 65532). It also carries `libz.so.1`, copied from the builder: numpy's wheel links against
+  it and distroless/cc doesn't ship it. When adding a dependency with native code, run `ldd`
+  over the venv's `*.so` files in the builder and copy in anything the runtime lacks.
 
 In the image, challenge images are stored in `/app/data/images` and the submissions database
 in `/app/data/game.sqlite3`. Both are writable by `nonroot`.

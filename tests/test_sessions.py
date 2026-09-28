@@ -271,6 +271,9 @@ def test_example_file_is_valid() -> None:
     assert session is not None
     assert 2 <= len(session.checkpoints) <= 3
     assert any(checkpoint.window for checkpoint in session.checkpoints)
+    with_challenge = [c for c in session.checkpoints if c.challenge]
+    assert len(with_challenge) >= 2
+    assert len(with_challenge) < len(session.checkpoints)  # at least one without
 
 
 def test_dependency_uses_configured_file(tmp_path: Path) -> None:
@@ -304,3 +307,65 @@ def test_error_does_not_chain_validation_error_with_inputs() -> None:
 
     assert excinfo.value.__cause__ is None
     assert excinfo.value.__suppress_context__
+
+
+# --- visual challenge (#20) --------------------------------------------------
+
+SCENE = "SECRET-SCENE a granite fountain in open lawn"
+POSE = "Side profile, looking to your left, with the landmark behind you."
+
+
+def with_challenge(challenge: object) -> dict[str, Any]:
+    payload = session_payload()
+    payload["checkpoints"][0]["challenge"] = challenge
+    return payload
+
+
+def test_loads_checkpoint_with_challenge() -> None:
+    repository = parse_sessions(to_json(with_challenge({"scene": SCENE, "pose": POSE})))
+
+    checkpoint = repository.get_checkpoint(UUID(SESSION_ID), 1)
+    assert checkpoint is not None
+    assert checkpoint.challenge is not None
+    assert (checkpoint.challenge.scene, checkpoint.challenge.pose) == (SCENE, POSE)
+
+
+def test_challenge_is_optional() -> None:
+    checkpoint = parse_sessions(to_json(session_payload())).get_checkpoint(UUID(SESSION_ID), 1)
+
+    assert checkpoint is not None
+    assert checkpoint.challenge is None
+
+
+@pytest.mark.parametrize(
+    ("challenge", "path", "reason"),
+    [
+        ({"scene": "", "pose": POSE}, "challenge.scene", "at least 1 character"),
+        ({"scene": SCENE + "x" * 1000, "pose": POSE}, "challenge.scene", "at most 1000 characters"),
+        ({"scene": SCENE, "pose": ""}, "challenge.pose", "at least 1 character"),
+        ({"scene": SCENE, "pose": POSE + "x" * 200}, "challenge.pose", "at most 200 characters"),
+        ({"pose": POSE}, "challenge.scene", "Field required"),
+        ({"scene": SCENE}, "challenge.pose", "Field required"),
+        ({"scene": SCENE, "pose": POSE, "hint": "x"}, "challenge.hint", "Extra inputs"),
+        ("a string", "challenge", "Input should be an object"),
+    ],
+)
+def test_invalid_challenge_stops_startup_without_echoing_it(
+    tmp_path: Path, challenge: object, path: str, reason: str
+) -> None:
+    sessions_file = tmp_path / "sessions.json"
+    sessions_file.write_text(to_json(with_challenge(challenge)))
+
+    with pytest.raises(SessionsFileError) as excinfo:
+        load_session_repository(sessions_file)
+
+    message = str(excinfo.value)
+    assert f"[0].checkpoints[0].{path}: " in message
+    assert reason in message
+    assert "SECRET-SCENE" not in message
+    assert "landmark" not in message
+
+
+@pytest.mark.parametrize(("scene_len", "pose_len"), [(1, 1), (1000, 200)])
+def test_challenge_length_limits_are_inclusive(scene_len: int, pose_len: int) -> None:
+    parse_sessions(to_json(with_challenge({"scene": "s" * scene_len, "pose": "p" * pose_len})))

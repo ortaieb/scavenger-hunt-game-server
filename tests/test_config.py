@@ -18,6 +18,8 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_MAX_IMAGE_BYTES",
         "GAME_SERVER_SESSIONS_FILE",
         "GAME_SERVER_DB_PATH",
+        "GAME_SERVER_MAX_CAPTURE_AGE_SECONDS",
+        "GAME_SERVER_MAX_CLOCK_SKEW_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -117,3 +119,32 @@ def test_db_path_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GAME_SERVER_DB_PATH", "/srv/game.db")
 
     assert Settings().db_path == Path("/srv/game.db")
+
+
+def test_capture_limits_defaults() -> None:
+    settings = Settings()
+
+    assert settings.max_capture_age_seconds == 300
+    assert settings.max_clock_skew_seconds == 30
+
+
+def test_capture_limits_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_MAX_CAPTURE_AGE_SECONDS", "600")
+    monkeypatch.setenv("GAME_SERVER_MAX_CLOCK_SKEW_SECONDS", "5")
+
+    settings = Settings()
+
+    assert (settings.max_capture_age_seconds, settings.max_clock_skew_seconds) == (600, 5)
+
+
+@pytest.mark.parametrize(
+    "name", ["GAME_SERVER_MAX_CAPTURE_AGE_SECONDS", "GAME_SERVER_MAX_CLOCK_SKEW_SECONDS"]
+)
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_capture_limits_must_be_positive(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        Settings()

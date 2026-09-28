@@ -59,8 +59,7 @@ Processing:
      passing the deterministic checks doesn't prove the player was there. `pass` is reserved
      for when presence-proof (the checkpoint's one-time code) and visual-challenge checks exist.
 
-   No checks are registered yet. The time window, geofence and duplicate-photo checks come
-   next (#9, #10, #11).
+   The registered checks are described in [Submission checks](#submission-checks).
 4. The image is written to `<image-base-path>/<random-uuid>.jpeg`, and the submission is
    recorded in the database as the next **attempt** for its (session, participant, checkpoint):
    1, 2, 3…. Failed submissions count as attempts.
@@ -113,6 +112,26 @@ curl -i localhost:8000/challenge \
   -F 'metadata={"session":"aeffe667-4f9f-4108-b5e2-56ae821fe413","participant":"7c860ccc-9adf-4e22-b54f-3ff158f5d600","checkpoint":2,"location":{"lat":51.509948,"long":-1.485923},"capture-time":"2026-10-03T12:05:45+01:00"};type=application/json' \
   -F 'challenge-image=@photo.jpg;type=image/jpeg'
 ```
+
+#### Submission checks
+
+Each check can only add a rejection. Codes are stable and messages are safe to show the player.
+
+**Time** (`checks/time_window.py`). The deciding clock is the server's `received-at`. The
+client's `capture-time` is a claim: it can get a submission rejected, but it can never rescue
+one received outside the window. All three rules are evaluated, so a submission can get
+several of these codes.
+
+| Code                | Rejects when                                                                  | Message |
+|---------------------|-------------------------------------------------------------------------------|---------|
+| `outside_window`    | `received-at` is before the checkpoint's [effective window](#game-sessions-and-checkpoints) opens or after it closes. Both bounds are inclusive: exactly at opening or closing is accepted | "This checkpoint isn't open right now." |
+| `stale_capture`     | `received-at − capture-time` > `GAME_SERVER_MAX_CAPTURE_AGE_SECONDS` (default 300). Exactly at the limit is accepted | "Photo was taken too long ago, please take a new one." |
+| `capture_in_future` | `capture-time − received-at` > `GAME_SERVER_MAX_CLOCK_SKEW_SECONDS` (default 30, allowing for phone clock drift) | "Photo's capture time is ahead of the server's clock. Check your phone's date and time, then take a new one." |
+
+Times are compared as absolute instants, so `2026-10-03T12:00:00Z` and
+`2026-10-03T06:00:00-06:00` behave identically. Messages never reveal a window's times.
+
+The geofence (#10) and duplicate-photo (#11) checks will be added here.
 
 #### Submission records
 
@@ -236,6 +255,8 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_LOG_LEVEL`  | `info`    | `critical`, `error`, `warning`, `info`, `debug` or `trace`  |
 | `GAME_SERVER_IMAGE_BASE_PATH` | `data/images` | Where challenge images are stored; created if missing. Relative paths resolve against the working directory |
 | `GAME_SERVER_MAX_IMAGE_BYTES` | `10485760` | Largest accepted challenge image (10 MiB)            |
+| `GAME_SERVER_MAX_CAPTURE_AGE_SECONDS` | `300` | Oldest accepted photo, measured from `capture-time` to `received-at` (> 0). See [time checks](#submission-checks) |
+| `GAME_SERVER_MAX_CLOCK_SKEW_SECONDS` | `30` | How far `capture-time` may be ahead of `received-at`, for phone clock drift (> 0) |
 | `GAME_SERVER_DB_PATH` | `data/game.sqlite3` | SQLite database of [submissions](#submission-records); created with its directory if missing |
 | `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |
 
@@ -286,7 +307,10 @@ src/game_server/
   models.py          # request/response models
   sessions.py        # game session/checkpoint models, file loading, SessionRepository
   storage.py         # ImageStore: writes images to disk
-  checks.py          # Check protocol, SubmissionContext, Rejection, verdict decision
+  checks/
+    base.py          # Check protocol, SubmissionContext, Rejection, verdict decision
+    registry.py      # get_checks: the checks every submission goes through
+    time_window.py   # outside_window, stale_capture, capture_in_future
   submissions.py     # SubmissionStore: SQLite record of submissions and attempts
   clock.py           # injectable UTC clock
   config.py          # Settings (env / .env)

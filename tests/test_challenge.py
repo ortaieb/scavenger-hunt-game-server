@@ -407,3 +407,66 @@ def test_rejects_missing_part(client: TestClient, missing: str) -> None:
     response = client.post("/challenge", files=files)
 
     assert response.status_code == 422
+
+
+# --- registered checks, end to end -------------------------------------------
+
+
+@pytest.fixture
+def clock_now() -> list[datetime]:
+    """The time the real-checks client's clock returns; tests replace element 0."""
+    return [NOW]
+
+
+@pytest.fixture
+def real_checks_client(
+    image_dir: Path, db_path: Path, clock_now: list[datetime]
+) -> Iterator[TestClient]:
+    """Like `client`, but with the registered checks rather than fakes."""
+    app = create_app()
+    settings = Settings(image_base_path=image_dir, db_path=db_path)
+    repository = sessions_repository()
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_session_repository] = lambda: repository
+    app.dependency_overrides[get_clock] = lambda: lambda: clock_now[0]
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_time_rules_pass_inside_window(real_checks_client: TestClient) -> None:
+    response = post_challenge(real_checks_client)
+
+    assert response.status_code == 202
+    assert checkpoint_verdict(response)["verdict"] == "pending"
+
+
+def test_received_after_session_end_fails(
+    real_checks_client: TestClient, clock_now: list[datetime], db_path: Path
+) -> None:
+    clock_now[0] = datetime(2026, 10, 3, 12, 0, 1, tzinfo=UTC)  # session ends 12:00Z
+    # Capture time inside the session and fresh: the claim can't rescue the submission.
+    metadata = {**METADATA, "capture-time": "2026-10-03T13:00:00+01:00"}
+
+    response = post_challenge(real_checks_client, metadata)
+
+    assert response.status_code == 200
+    assert checkpoint_verdict(response)["verdict"] == "failed"
+    assert [r["code"] for r in checkpoint_verdict(response)["rejections"]] == ["outside_window"]
+    [row] = stored_rows(db_path)
+    assert row["verdict"] == "failed"
+
+
+@pytest.mark.parametrize(
+    ("capture_time", "code"),
+    [
+        ("2026-10-03T09:24:59Z", "stale_capture"),  # 301 s before NOW
+        ("2026-10-03T03:30:31-06:00", "capture_in_future"),  # 31 s after NOW
+    ],
+)
+def test_capture_time_claims_can_fail_submission(
+    real_checks_client: TestClient, capture_time: str, code: str
+) -> None:
+    response = post_challenge(real_checks_client, {**METADATA, "capture-time": capture_time})
+
+    assert response.status_code == 200
+    assert [r["code"] for r in checkpoint_verdict(response)["rejections"]] == [code]

@@ -9,9 +9,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from game_server.checks import Rejection
+from game_server.checks import CheckResult, Rejection
 from game_server.config import Settings
 from game_server.submissions import (
+    _MIGRATIONS,
     NewSubmission,
     SubmissionStore,
     get_submission_store,
@@ -31,7 +32,7 @@ SUBMISSION = NewSubmission(
     long=-0.1,
     image_id=UUID(int=3),
     verdict="pending",
-    rejections=(),
+    checks=(),
     distance_m=12.5,
     phash=0xFEDC_BA98_7654_3210,
 )
@@ -73,7 +74,11 @@ def test_records_all_fields(store: SubmissionStore, db_path: Path) -> None:
     submission = replace(
         SUBMISSION,
         verdict="failed",
-        rejections=(Rejection("outside_window", "Closed"), Rejection("b", "B")),
+        checks=(
+            CheckResult.failed("window_open", Rejection("outside_window", "Closed")),
+            CheckResult("scene_matches", "uncertain", 0.5, "Unsure.", detail="blurry"),
+            CheckResult.failed("b_ok", Rejection("b", "B")),
+        ),
     )
 
     recorded = store.record(submission)
@@ -160,7 +165,7 @@ def test_dependency_uses_configured_path(db_path: Path) -> None:
 # --- schema migrations -------------------------------------------------------
 
 # The table exactly as #8 created it, before any migration.
-LATEST_VERSION = 3
+LATEST_VERSION = 4
 
 V0_SCHEMA = """
 CREATE TABLE submissions (
@@ -222,3 +227,19 @@ def test_failed_migration_rolls_back_and_stops(db_path: Path) -> None:
         SubmissionStore(db_path)
 
     assert user_version(db_path) == 1
+
+
+def test_upgrades_version_3_database_with_checks_column(db_path: Path) -> None:
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.executescript(V0_SCHEMA)
+        for statement in _MIGRATIONS[:3]:
+            conn.execute(statement)
+        conn.execute("PRAGMA user_version = 3")
+
+    store = SubmissionStore(db_path)
+
+    assert user_version(db_path) == LATEST_VERSION
+    (old,) = rows(db_path)
+    assert old["checks"] is None  # recorded before checks were listed
+    store.record(SUBMISSION)
+    assert json.loads(rows(db_path)[1]["checks"]) == []

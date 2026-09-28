@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
 from types import MethodType
@@ -9,17 +10,20 @@ from pytest_mock import MockerFixture
 
 from game_server.checks import (
     Check,
+    CheckResult,
     Rejection,
     SubmissionContext,
     decide_verdict,
     get_checks,
+    rejections,
     run_checks,
 )
+from game_server.checks.base import AcceptedPhoto
 from game_server.checks.duplicate_photo import DuplicatePhotoCheck
 from game_server.checks.geofence import GeofenceCheck
 from game_server.checks.time_window import TimeWindowCheck
 from game_server.config import Settings
-from game_server.models import ChallengeMetadata, Location
+from game_server.models import ChallengeMetadata, CheckOutcome, Location
 from game_server.sessions import Checkpoint, GameSession
 
 WINDOW = Rejection("outside_window", "This checkpoint isn't open right now.")
@@ -53,29 +57,40 @@ def ctx() -> SubmissionContext:
     )
 
 
-def returning(result: Rejection | None) -> Check:
+PASSED = CheckResult.passed("ok", "Fine.")
+WINDOW_FAILED = CheckResult.failed("window_open", WINDOW)
+GEOFENCE_FAILED = CheckResult.failed("in_range", GEOFENCE)
+UNCERTAIN = CheckResult("scene_matches", "uncertain", 0.4, "We couldn't tell.")
+SKIPPED = CheckResult("pose_correct", "skipped", 0.0, "Not checked.")
+
+
+def returning(result: CheckResult) -> Check:
     return lambda ctx: result
 
 
-def test_no_checks_no_rejections(ctx: SubmissionContext) -> None:
+def test_no_checks_no_results(ctx: SubmissionContext) -> None:
     assert run_checks([], ctx) == []
 
 
-def test_collects_rejections_in_check_order(ctx: SubmissionContext) -> None:
-    checks = [returning(WINDOW), returning(None), returning(GEOFENCE)]
+def test_returns_every_result_in_check_order(ctx: SubmissionContext) -> None:
+    checks = [returning(WINDOW_FAILED), returning(PASSED), returning(GEOFENCE_FAILED)]
 
-    assert run_checks(checks, ctx) == [WINDOW, GEOFENCE]
+    results = run_checks(checks, ctx)
+
+    assert results == [WINDOW_FAILED, PASSED, GEOFENCE_FAILED]
+    assert rejections(results) == [WINDOW, GEOFENCE]
 
 
-def test_runs_every_check_after_a_rejection(ctx: SubmissionContext) -> None:
+def test_runs_every_check_after_a_failure(ctx: SubmissionContext) -> None:
     calls: list[str] = []
 
-    def first(ctx: SubmissionContext) -> Rejection:
+    def first(ctx: SubmissionContext) -> CheckResult:
         calls.append("first")
-        return WINDOW
+        return WINDOW_FAILED
 
-    def second(ctx: SubmissionContext) -> None:
+    def second(ctx: SubmissionContext) -> CheckResult:
         calls.append("second")
+        return PASSED
 
     run_checks([first, second], ctx)
 
@@ -83,11 +98,40 @@ def test_runs_every_check_after_a_rejection(ctx: SubmissionContext) -> None:
 
 
 @pytest.mark.parametrize(
-    ("rejections", "verdict"),
-    [([], "pending"), ([WINDOW], "failed"), ([WINDOW, GEOFENCE], "failed")],
+    ("results", "verdict"),
+    [
+        ([], "pending"),
+        ([PASSED], "pending"),
+        ([PASSED, UNCERTAIN, SKIPPED], "pending"),
+        ([WINDOW_FAILED], "failed"),
+        ([PASSED, WINDOW_FAILED, GEOFENCE_FAILED], "failed"),
+        ([UNCERTAIN, WINDOW_FAILED], "failed"),
+    ],
 )
-def test_decide_verdict(rejections: list[Rejection], verdict: str) -> None:
-    assert decide_verdict(rejections) == verdict
+def test_decide_verdict(results: list[CheckResult], verdict: str) -> None:
+    assert decide_verdict(results) == verdict
+
+
+def test_passed_and_failed_constructors() -> None:
+    assert CheckResult("ok", "passed", 1.0, "Fine.") == PASSED
+    assert CheckResult("window_open", "failed", 1.0, WINDOW.message, WINDOW) == WINDOW_FAILED
+
+
+@pytest.mark.parametrize("confidence", [-0.01, 1.01])
+def test_confidence_must_be_between_zero_and_one(confidence: float) -> None:
+    with pytest.raises(ValueError, match="confidence"):
+        CheckResult("ok", "passed", confidence, "Fine.")
+
+
+@pytest.mark.parametrize(
+    ("outcome", "rejection"),
+    [("failed", None), ("passed", WINDOW), ("uncertain", WINDOW), ("skipped", WINDOW)],
+)
+def test_rejection_only_and_always_on_failure(
+    outcome: CheckOutcome, rejection: Rejection | None
+) -> None:
+    with pytest.raises(ValueError, match="rejection"):
+        CheckResult("ok", outcome, 1.0, "Reason.", rejection)
 
 
 def test_verdict_is_never_pass_without_rejections() -> None:
@@ -101,9 +145,9 @@ def test_registered_checks() -> None:
 
     methods = [cast(MethodType, rule) for rule in time_rules]
     assert [method.__name__ for method in methods] == [
-        "within_window",
-        "capture_not_stale",
-        "capture_not_in_future",
+        "window_open",
+        "capture_fresh",
+        "capture_time_plausible",
     ]
     assert {method.__self__ for method in methods} == {
         TimeWindowCheck(timedelta(seconds=60), timedelta(seconds=5))
@@ -140,3 +184,52 @@ def test_context_supports_lazily_shared_values(ctx: SubmissionContext) -> None:
 
     assert (extended.image_size, extended.image_size) == (3, 3)
     assert computed == [1]
+
+
+# --- reasons are safe to show (#19) ------------------------------------------
+
+
+def contexts_covering_every_outcome(ctx: SubmissionContext) -> list[SubmissionContext]:
+    """Contexts that between them make every registered check both pass and fail."""
+    late = ctx.session.end_time + timedelta(hours=1)
+    everything_fails = replace(
+        ctx,
+        received_at=late,
+        metadata=ctx.metadata.model_copy(
+            update={
+                "capture_time": late - timedelta(days=1),
+                "location": Location(lat=10, long=10),
+            }
+        ),
+        accepted_photos=(AcceptedPhoto(submission_id=1, phash=ctx.phash),),
+    )
+    in_future = replace(
+        ctx,
+        metadata=ctx.metadata.model_copy(
+            update={"capture_time": ctx.received_at + timedelta(hours=1)}
+        ),
+    )
+    return [ctx, everything_fails, in_future]
+
+
+def every_result(ctx: SubmissionContext) -> list[CheckResult]:
+    checks = get_checks(Settings())
+    return [r for c in contexts_covering_every_outcome(ctx) for r in run_checks(checks, c)]
+
+
+CHECK_NAMES = ["window_open", "capture_fresh", "capture_time_plausible", "in_range", "photo_unique"]
+
+
+@pytest.mark.parametrize("outcome", ["passed", "failed"])
+@pytest.mark.parametrize("check", CHECK_NAMES)
+def test_reason_reveals_no_coordinates_distance_or_times(
+    ctx: SubmissionContext, check: str, outcome: str
+) -> None:
+    results = [r for r in every_result(ctx) if (r.check, r.outcome) == (check, outcome)]
+
+    assert results, f"no {outcome} result for {check}"
+    for result in results:
+        # Coordinates, distances and times all need digits; a reason never has any.
+        assert not any(char.isdigit() for char in result.reason)
+        assert result.detail is None
+        assert result.confidence == 1.0

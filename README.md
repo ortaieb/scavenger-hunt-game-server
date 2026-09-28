@@ -55,10 +55,11 @@ Processing:
 2. The metadata and image are validated, the photo is decoded and
    [fingerprinted](#submission-checks), and the session and checkpoint are looked up.
    A request rejected at this stage (any `4xx`) stores nothing: no image, no database row.
-3. Every registered check runs, even after one rejects, so the verdict lists every reason.
-   Checks can only rule a submission *out*:
-   - Any rejection → verdict **`failed`**.
-   - No rejections → verdict **`pending`**, never `pass`. A phone can report any location, so
+3. Every registered check runs, in a fixed order, even after one fails. The verdict lists
+   every check with its outcome, so a player (and a moderator) can see what was checked, not
+   just what failed. Deterministic checks can only rule a submission *out*:
+   - Any check `failed` → verdict **`failed`**.
+   - Otherwise → verdict **`pending`**, never `pass`. A phone can report any location, so
      passing the deterministic checks doesn't prove the player was there. `pass` is reserved
      for when presence-proof (the checkpoint's one-time code) and visual-challenge checks exist.
 
@@ -69,7 +70,7 @@ Processing:
 5. The server logs:
 
    ```
-   Received challenge request for <session>[<participant>] arrived at <capture-time> from (<lat>,<long>), image stored in: <path>; checkpoint <n> attempt <n> distance <metres>m verdict <verdict> rejections [<code>,...]
+   Received challenge request for <session>[<participant>] arrived at <capture-time> from (<lat>,<long>), image stored in: <path>; checkpoint <n> attempt <n> distance <metres>m verdict <verdict> checks [<check>:<outcome>,...] rejections [<code>,...]
    ```
 
 Response body (`200` or `202`):
@@ -84,6 +85,13 @@ Response body (`200` or `202`):
       "attempt": 1,
       "time": "2026-10-03T11:06:02.113Z",
       "verdict": "failed",
+      "checks": [
+        { "check": "window_open", "outcome": "failed", "confidence": 1.0, "reason": "This checkpoint isn't open right now." },
+        { "check": "capture_fresh", "outcome": "passed", "confidence": 1.0, "reason": "Photo was taken recently." },
+        { "check": "capture_time_plausible", "outcome": "passed", "confidence": 1.0, "reason": "Photo's capture time is plausible." },
+        { "check": "in_range", "outcome": "passed", "confidence": 1.0, "reason": "Your location is inside the checkpoint area." },
+        { "check": "photo_unique", "outcome": "passed", "confidence": 1.0, "reason": "This photo hasn't been used before." }
+      ],
       "rejections": [
         { "code": "outside_window", "message": "This checkpoint isn't open right now." }
       ]
@@ -94,8 +102,18 @@ Response body (`200` or `202`):
 ```
 
 - `time` is `received-at`, in UTC.
-- Each rejection has a stable snake_case `code` for clients to branch on, and a `message` that
-  is safe to show the player. It never contains checkpoint coordinates, distances or bearings.
+- `checks` lists **every check that ran**, in [registry order](#submission-checks), whatever
+  the verdict:
+  - `check`: the check's stable snake_case name, phrased as a positive assertion (`in_range`).
+  - `outcome`: `passed`, `failed`, `uncertain` or `skipped`. The deterministic checks only ever
+    pass or fail; `uncertain` and `skipped` are reserved for the upcoming visual checks.
+  - `confidence`: 0–1. Deterministic checks always report `1.0`.
+  - `reason`: safe to show the player. For a failed check it is the rejection's message.
+- `rejections` lists the failed checks' rejections, unchanged from before `checks` existed, so
+  existing clients keep working. Each has a stable snake_case `code` for clients to branch on,
+  and a `message` that is safe to show the player.
+- No `reason` or `message` ever contains checkpoint coordinates, distances, bearings or window
+  times. Checks can also record moderator-only `detail`; it is stored, never returned.
 
 Responses:
 
@@ -118,18 +136,28 @@ curl -i localhost:8000/challenge \
 
 #### Submission checks
 
-Each check can only add a rejection. Codes are stable and messages are safe to show the player.
+Every submission runs these checks, in this order. Each reports a result named by its check;
+a failed check also carries a rejection whose `code` and `message` are stable and safe to show
+the player.
+
+| # | Check                    | Fails with          | Reason when passed |
+|---|--------------------------|---------------------|--------------------|
+| 1 | `window_open`            | `outside_window`    | "Submitted while the checkpoint was open." |
+| 2 | `capture_fresh`          | `stale_capture`     | "Photo was taken recently." |
+| 3 | `capture_time_plausible` | `capture_in_future` | "Photo's capture time is plausible." |
+| 4 | `in_range`               | `out_of_range`      | "Your location is inside the checkpoint area." |
+| 5 | `photo_unique`           | `duplicate_photo`   | "This photo hasn't been used before." |
 
 **Time** (`checks/time_window.py`). The deciding clock is the server's `received-at`. The
 client's `capture-time` is a claim: it can get a submission rejected, but it can never rescue
 one received outside the window. All three rules are evaluated, so a submission can get
 several of these codes.
 
-| Code                | Rejects when                                                                  | Message |
+| Check → code        | Fails when                                                                    | Message |
 |---------------------|-------------------------------------------------------------------------------|---------|
-| `outside_window`    | `received-at` is before the checkpoint's [effective window](#game-sessions-and-checkpoints) opens or after it closes. Both bounds are inclusive: exactly at opening or closing is accepted | "This checkpoint isn't open right now." |
-| `stale_capture`     | `received-at − capture-time` > `GAME_SERVER_MAX_CAPTURE_AGE_SECONDS` (default 300). Exactly at the limit is accepted | "Photo was taken too long ago, please take a new one." |
-| `capture_in_future` | `capture-time − received-at` > `GAME_SERVER_MAX_CLOCK_SKEW_SECONDS` (default 30, allowing for phone clock drift) | "Photo's capture time is ahead of the server's clock. Check your phone's date and time, then take a new one." |
+| `window_open` → `outside_window` | `received-at` is before the checkpoint's [effective window](#game-sessions-and-checkpoints) opens or after it closes. Both bounds are inclusive: exactly at opening or closing is accepted | "This checkpoint isn't open right now." |
+| `capture_fresh` → `stale_capture` | `received-at − capture-time` > `GAME_SERVER_MAX_CAPTURE_AGE_SECONDS` (default 300). Exactly at the limit is accepted | "Photo was taken too long ago, please take a new one." |
+| `capture_time_plausible` → `capture_in_future` | `capture-time − received-at` > `GAME_SERVER_MAX_CLOCK_SKEW_SECONDS` (default 30, allowing for phone clock drift) | "Photo's capture time is ahead of the server's clock. Check your phone's date and time, then take a new one." |
 
 Times are compared as absolute instants, so `2026-10-03T12:00:00Z` and
 `2026-10-03T06:00:00-06:00` behave identically. Messages never reveal a window's times.
@@ -139,9 +167,9 @@ submitted coordinates to the checkpoint's `location`. It uses the haversine grea
 formula with the mean Earth radius (6 371 008.8 m), which is well within tolerance for
 proximities of tens to hundreds of metres.
 
-| Code           | Rejects when                                                        | Message |
+| Check → code   | Fails when                                                          | Message |
 |----------------|---------------------------------------------------------------------|---------|
-| `out_of_range` | distance > the checkpoint's `proximity`. Exactly on the boundary counts as in range | "Your location is outside the checkpoint area." |
+| `in_range` → `out_of_range` | distance > the checkpoint's `proximity`. Exactly on the boundary counts as in range | "Your location is outside the checkpoint area." |
 
 - **Claim, not proof.** A phone can report any location it likes. So the geofence can rule a
   submission *out* (the claim itself says "not here"), but passing it proves nothing about
@@ -159,9 +187,9 @@ someone through a checkpoint can't get anyone through again, whether it's the sa
 or another. Re-encoding, resizing or re-screenshotting defeats a byte hash, so the server
 compares **perceptual hashes** (64-bit pHash).
 
-| Code              | Rejects when                                                       | Message |
+| Check → code      | Fails when                                                         | Message |
 |-------------------|--------------------------------------------------------------------|---------|
-| `duplicate_photo` | The photo's hash is within `GAME_SERVER_PHASH_MAX_DISTANCE` bits (default 6 of 64, inclusive) of **any accepted photo in the same session**, from any participant at any checkpoint | "This photo has already been used. Please take a new one." |
+| `photo_unique` → `duplicate_photo` | The photo's hash is within `GAME_SERVER_PHASH_MAX_DISTANCE` bits (default 6 of 64, inclusive) of **any accepted photo in the same session**, from any participant at any checkpoint | "This photo has already been used. Please take a new one." |
 
 - **The hash.** Decode, apply the EXIF orientation (phones rotate via EXIF), convert to
   greyscale, resize to 32×32, take the 2-D DCT, keep the top-left 8×8 low frequencies, and set
@@ -196,6 +224,7 @@ Submissions are stored in SQLite (`GAME_SERVER_DB_PATH`), in a `submissions` tab
 | `distance_m`                | Metres from the claimed position to the checkpoint (server-side only; empty for rows recorded before #10) |
 | `phash`                     | The photo's 64-bit perceptual hash, 16 hex digits (empty for rows recorded before #11) |
 | `phash_match_id`            | On a `duplicate_photo` rejection, the `id` of the accepted submission it matched (server-side only) |
+| `checks`                    | JSON list of every check that ran: `{check, outcome, confidence, reason, detail}`. `detail` is moderator-only and never returned (empty for rows recorded before #19) |
 
 The attempt number is allocated and the row inserted in one transaction, so concurrent
 submissions can't share an attempt number. A unique constraint backs this up. Every row carries

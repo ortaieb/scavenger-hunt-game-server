@@ -54,7 +54,9 @@ def with_accepted(ctx: SubmissionContext, *photos: tuple[int, int]) -> Submissio
 
 
 def test_nothing_accepted_yet(ctx: SubmissionContext) -> None:
-    assert CHECK(ctx) is None
+    result = CHECK(ctx)
+
+    assert (result.check, result.outcome, result.rejection) == ("photo_unique", "passed", None)
 
 
 @pytest.mark.parametrize(
@@ -63,13 +65,13 @@ def test_nothing_accepted_yet(ctx: SubmissionContext) -> None:
     ids=["identical", "close", "exactly-at-threshold", "one-over", "unrelated"],
 )
 def test_threshold_is_inclusive(ctx: SubmissionContext, bits: int, duplicate: bool) -> None:
-    rejection = CHECK(with_accepted(ctx, (10, flip(bits))))
+    rejection = CHECK(with_accepted(ctx, (10, flip(bits)))).rejection
 
     assert (rejection is not None) == duplicate
 
 
 def test_rejection_names_the_matched_submission(ctx: SubmissionContext) -> None:
-    rejection = CHECK(with_accepted(ctx, (10, flip(40)), (11, flip(2))))
+    rejection = CHECK(with_accepted(ctx, (10, flip(40)), (11, flip(2)))).rejection
 
     assert isinstance(rejection, DuplicatePhotoRejection)
     assert (rejection.code, rejection.message) == (CODE, MESSAGE)
@@ -77,14 +79,14 @@ def test_rejection_names_the_matched_submission(ctx: SubmissionContext) -> None:
 
 
 def test_closest_match_wins(ctx: SubmissionContext) -> None:
-    rejection = CHECK(with_accepted(ctx, (10, flip(5)), (11, flip(1)), (12, flip(3))))
+    rejection = CHECK(with_accepted(ctx, (10, flip(5)), (11, flip(1)), (12, flip(3)))).rejection
 
     assert isinstance(rejection, DuplicatePhotoRejection)
     assert rejection.matched_submission_id == 11
 
 
 def test_equal_distance_ties_go_to_the_earliest(ctx: SubmissionContext) -> None:
-    rejection = CHECK(with_accepted(ctx, (12, flip(2)), (10, flip(2))))
+    rejection = CHECK(with_accepted(ctx, (12, flip(2)), (10, flip(2)))).rejection
 
     assert isinstance(rejection, DuplicatePhotoRejection)
     assert rejection.matched_submission_id == 10
@@ -93,8 +95,8 @@ def test_equal_distance_ties_go_to_the_earliest(ctx: SubmissionContext) -> None:
 def test_zero_threshold_matches_only_identical(ctx: SubmissionContext) -> None:
     strict = DuplicatePhotoCheck(max_distance=0)
 
-    assert strict(with_accepted(ctx, (10, flip(1)))) is None
-    assert strict(with_accepted(ctx, (10, PHASH))) is not None
+    assert strict(with_accepted(ctx, (10, flip(1)))).rejection is None
+    assert strict(with_accepted(ctx, (10, PHASH))).rejection is not None
 
 
 def test_message_reveals_no_one_or_checkpoint() -> None:

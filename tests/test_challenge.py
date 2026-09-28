@@ -19,7 +19,7 @@ from pytest_mock import MockerFixture
 
 from game_server.app import create_app
 from game_server.challenge import judge_and_record
-from game_server.checks import Check, Rejection, SubmissionContext, get_checks
+from game_server.checks import Check, CheckResult, Rejection, SubmissionContext, get_checks
 from game_server.checks.duplicate_photo import DuplicatePhotoCheck
 from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
@@ -67,11 +67,11 @@ def sessions_repository() -> SessionRepository:
 
 
 def rejecting(code: str) -> Check:
-    return lambda ctx: Rejection(code, f"Rejected: {code}")
+    return lambda ctx: CheckResult.failed(f"no_{code}", Rejection(code, f"Rejected: {code}"))
 
 
-def accepting(ctx: SubmissionContext) -> None:
-    return None
+def accepting(ctx: SubmissionContext) -> CheckResult:
+    return CheckResult.passed("accepting", "Fine.")
 
 
 @pytest.fixture
@@ -151,6 +151,7 @@ def test_no_rejections_gives_pending_202(client: TestClient) -> None:
                 "attempt": 1,
                 "time": "2026-10-03T09:30:00Z",
                 "verdict": "pending",
+                "checks": [],
                 "rejections": [],
             },
         },
@@ -193,7 +194,12 @@ def test_all_rejections_are_listed(client: TestClient, checks: list[Check]) -> N
 
 def test_checks_see_server_data(client: TestClient, checks: list[Check]) -> None:
     seen: list[SubmissionContext] = []
-    checks.append(lambda ctx: seen.append(ctx))
+
+    def spy(ctx: SubmissionContext) -> CheckResult:
+        seen.append(ctx)
+        return accepting(ctx)
+
+    checks.append(spy)
 
     post_challenge(client, {**METADATA, "checkpoint": 2})
 
@@ -282,6 +288,17 @@ def test_records_submission_row(client: TestClient, checks: list[Check], db_path
         "distance_m": pytest.approx(11.1, abs=0.1),
         "phash": to_hex(perceptual_hash(JPEG)),
         "phash_match_id": None,
+        "checks": json.dumps(
+            [
+                {
+                    "check": "no_outside_window",
+                    "outcome": "failed",
+                    "confidence": 1.0,
+                    "reason": "Rejected: outside_window",
+                    "detail": None,
+                }
+            ]
+        ),
     }
 
 
@@ -319,7 +336,8 @@ def test_logs_received_challenge(
         "arrived at 2026-10-03T10:29:00+01:00 from (51.5001,-0.1), "
         f"image stored in: {image_dir.resolve() / f'{image_id}.jpeg'}; "
         "checkpoint 1 attempt 1 distance 11.1m "
-        "verdict failed rejections [outside_window,outside_geofence]"
+        "verdict failed checks [no_outside_window:failed,no_outside_geofence:failed] "
+        "rejections [outside_window,outside_geofence]"
     ]
 
 
@@ -530,8 +548,11 @@ def test_response_leaks_no_checkpoint_coordinates_or_distance(
     response = post_challenge(real_checks_client, {**METADATA, "location": location})
 
     body = response.json()
-    # The only numbers in the body are the checkpoint sequence and the attempt.
+    checks = body["verdict"]["checkpoint"].pop("checks")
+    assert {check["confidence"] for check in checks} == {1.0}
+    # Apart from the checks' confidences, the only numbers are the sequence and attempt.
     assert sorted(json_numbers(body)) == [1, 1]
+    assert sorted(json_numbers(checks)) == [1.0] * len(checks)
     text = response.text.lower()
     for leak in ("51.5", "-0.1", "distance", "lat", "long", "metre", "meter"):
         assert leak not in text
@@ -646,8 +667,9 @@ def test_concurrent_uploads_of_one_photo_accept_exactly_one(image_dir: Path, db_
     """Both requests pass the checks' own logic unless the snapshot and insert are atomic."""
     barrier = Barrier(2)
 
-    def slow_check(ctx: SubmissionContext) -> None:
+    def slow_check(ctx: SubmissionContext) -> CheckResult:
         time.sleep(0.2)  # widen the window between reading accepted photos and inserting
+        return accepting(ctx)
 
     checks: list[Check] = [DuplicatePhotoCheck(max_distance=6), slow_check]
     images = ImageStore(image_dir)
@@ -669,3 +691,162 @@ def test_concurrent_uploads_of_one_photo_accept_exactly_one(image_dir: Path, db_
         verdicts = list(pool.map(submit, [PARTICIPANT, OTHER_PARTICIPANT]))
 
     assert sorted(verdicts) == ["failed", "pending"]
+
+
+# --- every check in the verdict (#19) ----------------------------------------
+
+REGISTRY_ORDER = [
+    "window_open",
+    "capture_fresh",
+    "capture_time_plausible",
+    "in_range",
+    "photo_unique",
+]
+
+
+def outcomes(response: Response) -> dict[str, str]:
+    return {c["check"]: c["outcome"] for c in checkpoint_verdict(response)["checks"]}
+
+
+def test_happy_path_lists_every_check_passed(real_checks_client: TestClient) -> None:
+    response = post_challenge(real_checks_client)
+
+    verdict = checkpoint_verdict(response)
+    assert response.status_code == 202
+    assert verdict["verdict"] == "pending"
+    assert verdict["rejections"] == []
+    assert [c["check"] for c in verdict["checks"]] == REGISTRY_ORDER
+    assert {(c["outcome"], c["confidence"]) for c in verdict["checks"]} == {("passed", 1.0)}
+    for check in verdict["checks"]:
+        assert set(check) == {"check", "outcome", "confidence", "reason"}
+
+
+@pytest.mark.parametrize(
+    ("changes", "now", "check", "code", "message"),
+    [
+        pytest.param(
+            {"capture-time": "2026-10-03T12:00:00Z"},
+            datetime(2026, 10, 3, 12, 0, 1, tzinfo=UTC),
+            "window_open",
+            "outside_window",
+            "This checkpoint isn't open right now.",
+            id="window",
+        ),
+        pytest.param(
+            {"capture-time": "2026-10-03T09:24:59Z"},
+            NOW,
+            "capture_fresh",
+            "stale_capture",
+            "Photo was taken too long ago, please take a new one.",
+            id="stale",
+        ),
+        pytest.param(
+            {"capture-time": "2026-10-03T09:30:31Z"},
+            NOW,
+            "capture_time_plausible",
+            "capture_in_future",
+            "Photo's capture time is ahead of the server's clock. Check your phone's date and "
+            "time, then take a new one.",
+            id="future",
+        ),
+        pytest.param(
+            {"location": FAR_AWAY},
+            NOW,
+            "in_range",
+            "out_of_range",
+            "Your location is outside the checkpoint area.",
+            id="geofence",
+        ),
+    ],
+)
+def test_each_failure_keeps_its_rejection_and_shows_in_checks(
+    real_checks_client: TestClient,
+    clock_now: list[datetime],
+    changes: dict[str, Any],
+    now: datetime,
+    check: str,
+    code: str,
+    message: str,
+) -> None:
+    clock_now[0] = now
+
+    response = post_challenge(real_checks_client, {**METADATA, **changes})
+
+    verdict = checkpoint_verdict(response)
+    assert response.status_code == 200
+    assert verdict["verdict"] == "failed"
+    assert verdict["rejections"] == [{"code": code, "message": message}]
+    assert outcomes(response) == {
+        name: "failed" if name == check else "passed" for name in REGISTRY_ORDER
+    }
+    [failed] = [c for c in verdict["checks"] if c["outcome"] == "failed"]
+    assert failed["reason"] == message
+
+
+def test_duplicate_failure_shows_in_checks(real_checks_client: TestClient) -> None:
+    post_challenge(real_checks_client, image=PHOTO)
+
+    response = post_challenge(
+        real_checks_client, {**METADATA, "participant": OTHER_PARTICIPANT}, image=PHOTO
+    )
+
+    assert codes(response) == ["duplicate_photo"]
+    assert outcomes(response)["photo_unique"] == "failed"
+
+
+def test_checks_complete_and_ordered_when_several_fail(
+    real_checks_client: TestClient, clock_now: list[datetime]
+) -> None:
+    clock_now[0] = datetime(2026, 10, 3, 12, 30, tzinfo=UTC)  # after the session
+    metadata = {**METADATA, "location": FAR_AWAY}  # capture-time 09:29Z: stale as well
+
+    response = post_challenge(real_checks_client, metadata)
+
+    verdict = checkpoint_verdict(response)
+    assert [c["check"] for c in verdict["checks"]] == REGISTRY_ORDER
+    assert [c["outcome"] for c in verdict["checks"]] == [
+        "failed",
+        "failed",
+        "passed",
+        "failed",
+        "passed",
+    ]
+    assert [r["code"] for r in verdict["rejections"]] == [
+        "outside_window",
+        "stale_capture",
+        "out_of_range",
+    ]
+
+
+SENTINEL = "MODERATOR-ONLY-7f3a9c"
+
+
+def test_detail_is_stored_but_never_returned(
+    client: TestClient, checks: list[Check], db_path: Path
+) -> None:
+    checks.append(
+        lambda ctx: CheckResult(
+            "scene_matches", "uncertain", 0.5, "We couldn't tell.", detail=SENTINEL
+        )
+    )
+
+    response = post_challenge(client)
+
+    assert SENTINEL not in response.text
+    assert "detail" not in response.text
+    assert checkpoint_verdict(response)["checks"] == [
+        {
+            "check": "scene_matches",
+            "outcome": "uncertain",
+            "confidence": 0.5,
+            "reason": "We couldn't tell.",
+        }
+    ]
+    [row] = stored_rows(db_path)
+    assert json.loads(row["checks"])[0]["detail"] == SENTINEL
+
+
+def test_check_schema_has_no_detail(client: TestClient) -> None:
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+
+    assert set(schemas["CheckOut"]["properties"]) == {"check", "outcome", "confidence", "reason"}

@@ -219,3 +219,6 @@ __marimo__/
 
 # Challenge images stored by a locally run server (GAME_SERVER_IMAGE_BASE_PATH default)
 /data/
+
+# Real game sessions: checkpoint coordinates are the answers to the clues
+/sessions.json

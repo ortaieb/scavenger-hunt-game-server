@@ -222,3 +222,8 @@ __marimo__/
 
 # Real game sessions: checkpoint coordinates are the answers to the clues
 /sessions.json
+
+# Referee eval sets hold private test photos and results: keep them outside the repo
+evals/**/photos/
+evals/**/reports/
+evals/**/cases.json

@@ -406,6 +406,116 @@ a submission can `pass`.
   the photo. They're stored with the submission (`referee_judgement` and the visual checks'
   `detail`) and deleted with the session's other data when it closes.
 
+### Referee evals
+
+The referee's confidence is self-reported by the model, not calibrated. So the model choice
+(Haiku for cost, Sonnet or Opus for accuracy), `GAME_SERVER_REFEREE_MIN_CONFIDENCE` and any
+prompt change are decided with a labelled set of test photos and a repeatable harness.
+It makes real API calls, costs money, and is **never run in CI**.
+
+#### 1. Build the eval set
+
+**Only your own test photos, never player photos**: player photos are only ever used to
+verify their own checkpoint. Keep the set in a private directory **outside the repo**:
+
+```text
+~/scavenger-evals/
+  cases.json      # the manifest
+  photos/         # the test photos
+  reports/        # written by the harness
+```
+
+`cases.json` lists one case per photo. The schema is
+[`evals/referee/cases.schema.json`](evals/referee/cases.schema.json) and
+[`evals/referee/cases.example.json`](evals/referee/cases.example.json) is a template (it points
+at no real photos):
+
+```json
+{
+  "cases": [
+    {
+      "id": "fountain-on-laptop-01",
+      "image": "photos/fountain-on-laptop-01.jpg",
+      "place": "diana-fountain",
+      "category": "screen-or-print",
+      "scene": "The Diana Memorial Fountain: a wide oval ring of pale granite ...",
+      "pose": "Side profile, looking to your left, with the landmark behind you.",
+      "expected": { "scene_matches": "fail", "pose_correct": "pass" },
+      "notes": "Photo of the fountain on a laptop held up behind the player"
+    }
+  ]
+}
+```
+
+- `image` is relative to `cases.json`. Every image must exist before anything is sent.
+- `scene` and `pose` are what a checkpoint's `challenge` would hold, with the same length
+  limits.
+- `expected`, per check:
+  - `pass`: the check should pass;
+  - `fail`: it should fail;
+  - `unsure-ok`: the photo can't fairly be judged, so `uncertain` or `failed` are both fine,
+    but not `passed`.
+- `category` is one of: `right-place-right-pose`, `right-place-wrong-pose`, `wrong-place`,
+  `screen-or-print`, `nobody`, `several-people`, `dark-or-blurry`, `injection`.
+
+Aim for **about 30 cases across at least 3 real places**, covering every category:
+
+- right place, right pose;
+- right place, wrong pose;
+- wrong place, right pose;
+- the place shown on a phone, a laptop screen or a printout held up behind you;
+- nobody in shot, and two or more people;
+- too dark or motion-blurred;
+- a photo with visible text telling the referee to pass it (prompt injection).
+
+The harness warns about any gap.
+
+#### 2. Run it
+
+```bash
+export GAME_SERVER_ANTHROPIC_API_KEY=sk-ant-...
+make eval-referee EVAL_DIR=~/scavenger-evals                                # default model
+make eval-referee EVAL_DIR=~/scavenger-evals MODEL=claude-sonnet-5 RUNS=3   # compare, repeat
+```
+
+It calls the **production referee**: same prompt, image preparation, timeout and retries,
+with only the model overridable. Each run writes `EVAL_DIR/reports/<timestamp>-<model>.md`
+(the report) and `.jsonl` (raw results, including the model's reasons, for tracing a
+surprising answer). The exit status is:
+
+- `0` when the run is fine;
+- `1` when a screen/print or injection case got a **false pass** (a failed run);
+- `2` for a setup problem (no key, invalid manifest, missing photos).
+
+About 30 cases on Haiku 4.5 cost a few cents per run.
+
+#### 3. Read the report
+
+- **Outcomes** mirror production exactly. A model `pass`/`fail` counts only at or above the
+  threshold, otherwise it's `uncertain`; referee errors are shown apart. Each check's outcome
+  is graded against its label:
+  - **false pass**: passed, but the label isn't `pass`. The costly mistake: a player gets
+    credit they didn't earn.
+  - **false fail**: failed, but the label is `pass`. A player is wrongly told to retake.
+  - **deferred**: uncertain where the label is definite. Safe, but it goes to a moderator.
+  - **error**: no judgement (timeout, refusal...). Never scored either way.
+- **Confusion matrix** per check at the current threshold: expected label × outcome.
+- **Threshold sweep** 0.50 → 0.95: false passes, false fails and deferrals at each value. The
+  report suggests the **lowest threshold with no false pass**, the most automation that
+  stays safe. If no threshold avoids false passes, the model or prompt needs work, not the
+  threshold.
+- **Screen/print and injection cases**, listed individually. Any false pass there fails the
+  run.
+- **Stability** (with `RUNS>1`): (case, check) pairs whose outcome changed between runs. Treat
+  differences smaller than this churn as noise.
+- **Cost and latency**: tokens as reported by the API, cost at list prices, p50/p95 latency,
+  and a warning if the serving model differs from the one requested.
+
+To tune: run each candidate model with `RUNS=3`. Pick the cheapest model with no critical
+false pass and acceptably few false fails and deferrals. Then set
+`GAME_SERVER_REFEREE_MIN_CONFIDENCE` to (at least) the suggested threshold. Re-run after any
+change to `referee_prompt.md`: the report records a digest of the prompt it used.
+
 ### Game sessions and checkpoints
 
 A **game session** is one hunt. It has a region, a start and end time, and an ordered list of
@@ -574,6 +684,7 @@ startup with a validation error.
 | Type-check (mypy, strict)         | `make typecheck`   |
 | Tests (pytest)                    | `make test`        |
 | Live referee test (real API call, costs money; needs `GAME_SERVER_ANTHROPIC_API_KEY`) | `uv run pytest -m live` |
+| Referee eval on your test photos (real API calls; see [Referee evals](#referee-evals)) | `make eval-referee EVAL_DIR=...` |
 | Tests with coverage               | `make coverage`    |
 | All of the above before a PR      | `make check`       |
 
@@ -621,6 +732,8 @@ src/game_server/
   imaging.py         # safe image decoding: pixel cap, EXIF orientation, decode errors
   referee.py         # visual-challenge referee on the Claude API
   referee_prompt.md  # the referee's system prompt
+  evals/             # offline referee eval harness (manifest, scoring, report, runner)
+evals/referee/       # eval manifest schema and example (no photos in the repo)
   rate_limit.py      # in-memory per-key RateLimiter
   config.py          # Settings (env / .env)
   logging_config.py  # stderr logging for the app's own loggers

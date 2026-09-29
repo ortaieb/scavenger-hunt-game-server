@@ -1,0 +1,13 @@
+# Railway config as code: https://docs.railway.com/reference/config-as-code
+# These settings override the same ones in the Railway dashboard.
+# Volumes and variables can't be set here: see the README's "Deploying on Railway".
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Traffic switches to a new deploy only once this answers 200. It checks that the
+# submissions database (on the volume) answers, so a broken volume never goes live.
+healthcheckPath = "/health"
+healthcheckTimeout = 60

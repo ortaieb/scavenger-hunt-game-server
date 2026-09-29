@@ -13,6 +13,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "GAME_SERVER_HOST",
         "GAME_SERVER_PORT",
+        "PORT",
         "GAME_SERVER_LOG_LEVEL",
         "GAME_SERVER_IMAGE_BASE_PATH",
         "GAME_SERVER_MAX_IMAGE_BYTES",
@@ -264,3 +265,36 @@ def test_tests_never_see_the_developers_env_file() -> None:
     """Guard for the shared fixture: no test can pick up a real key from a local .env."""
     assert not Path(".env").exists()
     assert Settings().anthropic_api_key is None
+
+
+def test_platform_port_is_used_when_game_server_port_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PORT", "7342")  # Railway injects PORT
+
+    assert Settings().port == 7342
+
+
+def test_game_server_port_wins_over_platform_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PORT", "7342")
+    monkeypatch.setenv("GAME_SERVER_PORT", "9001")
+
+    assert Settings().port == 9001
+
+
+def test_platform_port_from_dotenv(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("PORT=7400\n")
+
+    assert Settings().port == 7400
+
+
+@pytest.mark.parametrize("value", ["0", "70000", "http"])
+def test_invalid_platform_port_is_rejected(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("PORT", value)
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_port_can_still_be_set_by_name() -> None:
+    assert Settings(port=9300).port == 9300

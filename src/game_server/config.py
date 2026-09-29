@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     Each field can be overridden by an environment variable prefixed with `GAME_SERVER_`
     (e.g. `GAME_SERVER_PORT=9000`) or by the same key in a `.env` file. Real environment
     variables take precedence over `.env`.
+
+    The port also falls back to the platform-standard `PORT` (Railway sets it for the
+    port it routes traffic to): `GAME_SERVER_PORT`, then `PORT`, then 8000.
     """
 
     model_config = SettingsConfigDict(
@@ -23,10 +26,13 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        validate_by_name=True,  # Settings(port=...) still works despite the port's aliases
     )
 
     host: str = "0.0.0.0"  # noqa: S104 - binding all interfaces is intended inside a container
-    port: int = Field(default=8000, ge=1, le=65535)
+    port: int = Field(
+        default=8000, ge=1, le=65535, validation_alias=AliasChoices("GAME_SERVER_PORT", "PORT")
+    )
     log_level: LogLevel = "info"
     image_base_path: Path = Path("data/images")
     max_image_bytes: int = Field(default=10 * 1024 * 1024, gt=0)

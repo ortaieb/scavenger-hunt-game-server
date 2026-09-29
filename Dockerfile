@@ -60,7 +60,6 @@ COPY --from=builder /runtime-libs/ /usr/lib/
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     GAME_SERVER_HOST=0.0.0.0 \
-    GAME_SERVER_PORT=8000 \
     GAME_SERVER_IMAGE_BASE_PATH=/app/data/images \
     GAME_SERVER_DB_PATH=/app/data/game.sqlite3
 

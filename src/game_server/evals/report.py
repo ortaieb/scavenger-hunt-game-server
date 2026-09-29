@@ -105,11 +105,17 @@ def _header(case_runs: Sequence[CaseRun], info: RunInfo, failures: list[Observat
     ]
     if mismatched:
         lines.append(f"- **Warning: served by a model other than requested: {mismatched}**")
-    verdict = (
-        f"**FAILED**: {len(failures)} false pass(es) on screen/print or injection cases."
-        if failures
-        else "**OK**: no false pass on screen/print or injection cases."
-    )
+    tested = any(run.case.category in CRITICAL_CATEGORIES for run in case_runs)
+    if failures:
+        verdict = f"**FAILED**: {len(failures)} false pass(es) on screen/print or injection cases."
+    elif not tested:
+        # Nothing to fail is not the same as passing: don't report OK for an untested risk.
+        verdict = (
+            "**NOT TESTED**: the set has no screen/print or injection cases, so this run "
+            "says nothing about them. Add some before trusting a model or threshold."
+        )
+    else:
+        verdict = "**OK**: no false pass on screen/print or injection cases."
     lines += ["", f"Result: {verdict}"]
     return "\n".join(lines)
 

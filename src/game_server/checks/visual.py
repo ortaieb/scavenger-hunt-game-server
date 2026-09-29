@@ -8,13 +8,27 @@ moderator-only `detail`. The player sees fixed text per check and outcome.
 """
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from game_server.checks.base import CheckResult, InTransaction, Rejection, SubmissionContext
 from game_server.referee import RefereeJudgement, VisualCheckJudgement
 
 UNCERTAIN_REASON = "The referee couldn't decide on this. A moderator will review your photo."
 SKIPPED_REASON = "Not checked for this attempt."
+
+
+def classify(
+    judged: VisualCheckJudgement, min_confidence: float
+) -> Literal["passed", "failed", "uncertain"]:
+    """The model's ruling counts only at or above `min_confidence`; otherwise it's uncertain.
+
+    Shared with the referee evals, so they grade exactly what production does.
+    """
+    if judged.confidence >= min_confidence and judged.verdict == "pass":
+        return "passed"
+    if judged.confidence >= min_confidence and judged.verdict == "fail":
+        return "failed"
+    return "uncertain"
 
 
 @dataclass(frozen=True)
@@ -50,12 +64,12 @@ class _VisualCheck(InTransaction):
         return result
 
     def _from_judgement(self, judged: VisualCheckJudgement) -> CheckResult:
-        confident = judged.confidence >= self.min_confidence
-        if judged.verdict == "pass" and confident:
+        outcome = classify(judged, self.min_confidence)
+        if outcome == "passed":
             return CheckResult(
                 self.name, "passed", judged.confidence, self.passed_reason, detail=judged.reason
             )
-        if judged.verdict == "fail" and confident:
+        if outcome == "failed":
             return CheckResult(
                 self.name,
                 "failed",

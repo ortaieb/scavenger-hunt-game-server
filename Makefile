@@ -3,7 +3,7 @@ TAG   ?= dev
 PORT  ?= 8000
 
 .DEFAULT_GOAL := help
-.PHONY: help install run dev lint format typecheck test coverage check docker-build docker-run clean
+.PHONY: help install run dev lint format typecheck test coverage check eval-referee docker-build docker-run clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -33,6 +33,12 @@ coverage: ## Run tests with a coverage report
 	uv run pytest --cov=src --cov-report=term-missing
 
 check: lint format typecheck test ## Lint, format, type-check and test
+
+RUNS ?= 1
+
+eval-referee: ## Run the referee eval: EVAL_DIR=... [MODEL=...] [RUNS=1] (real API calls; costs money)
+	@test -n "$(EVAL_DIR)" || { echo "Usage: make eval-referee EVAL_DIR=path/to/eval [MODEL=...] [RUNS=1]"; exit 2; }
+	uv run python -m game_server.evals.referee --eval-dir "$(EVAL_DIR)" --runs $(RUNS) $(if $(MODEL),--model $(MODEL))
 
 docker-build: ## Build the Docker image ($(IMAGE):$(TAG))
 	docker build -t $(IMAGE):$(TAG) .

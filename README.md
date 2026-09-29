@@ -516,6 +516,25 @@ false pass and acceptably few false fails and deferrals. Then set
 `GAME_SERVER_REFEREE_MIN_CONFIDENCE` to (at least) the suggested threshold. Re-run after any
 change to `referee_prompt.md`: the report records a digest of the prompt it used.
 
+#### Results so far
+
+**29 Sep 2026: harness smoke test** ([report on #23](https://github.com/ortaieb/scavenger-hunt-game-server/issues/23#issuecomment-5888497828)).
+It used one photo (a three-person pose at one place) judged against two pose texts: 3 runs
+each on `claude-haiku-4-5` and `claude-sonnet-5`, and all 12 calls succeeded. That proves the
+harness end to end, but it's too small to tune on.
+
+- **Decision: keep the defaults**, `claude-haiku-4-5` and
+  `GAME_SERVER_REFEREE_MIN_CONFIDENCE=0.8`, until the full set has been run
+  ([#30](https://github.com/ortaieb/scavenger-hunt-game-server/issues/30)).
+- **Cost and latency:** Haiku ≈ $0.003 per photo, p50 2.4 s. Sonnet ≈ $0.0086 per photo
+  (~2.8×), p50 3.5 s, and ~43% more input tokens for the same image.
+- **Open finding: privacy.** The referee's reasons described people's apparent age, gender
+  and facial hair, despite the prompt's rule. The reasons are moderator-only, but the rule
+  isn't holding yet; the full set includes cases to catch it.
+- **Open finding: one person.** For a pose asking for three people, the one-person rule gave
+  way (Sonnet passed it 3/3). The first iteration is single-player, so the full set includes
+  single-player poses with several people in shot.
+
 ### Game sessions and checkpoints
 
 A **game session** is one hunt. It has a region, a start and end time, and an ordered list of

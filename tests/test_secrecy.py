@@ -118,6 +118,7 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
             client.get(f"/sessions/{SESSION}/checkpoints/2/challenge"),  # 404
             client.get(f"/sessions/{SESSION}/checkpoints/0/challenge"),  # 422
         ],
+        ("GET", "/health"): [client.get("/health")],
         ("GET", "/openapi.json"): [client.get("/openapi.json")],
         ("GET", "/docs"): [client.get("/docs")],
         ("GET", "/docs/oauth2-redirect"): [client.get("/docs/oauth2-redirect")],

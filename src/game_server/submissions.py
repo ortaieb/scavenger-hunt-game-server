@@ -135,6 +135,11 @@ class SubmissionStore:
                 conn.execute("ROLLBACK")
                 raise
 
+    def ping(self) -> None:
+        """Check the database answers and has its schema; raises `sqlite3.Error` if not."""
+        with self._connect() as conn:
+            conn.execute("SELECT 1 FROM submissions LIMIT 1").fetchall()
+
     def record(self, submission: NewSubmission) -> RecordedSubmission:
         """Record `submission` in a transaction of its own."""
         with self.transaction() as transaction:

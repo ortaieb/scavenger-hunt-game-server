@@ -8,6 +8,7 @@ and managed with [uv](https://docs.astral.sh/uv/).
 | Method | Path         | Purpose                                                    |
 |--------|--------------|------------------------------------------------------------|
 | `GET`  | `/`          | Liveness check: `200 OK`, `text/plain`: `Hello, World!`    |
+| `GET`  | `/health`    | Readiness: `200 {"status": "ok"}` when the submissions database answers, else `503 {"status": "unavailable"}` |
 | `POST` | `/challenge` | A participant submits a photo for a scavenger-hunt challenge |
 | `POST` | `/checkpoint/proximity` | **Advisory only:** does the player look in range of an open checkpoint? |
 | `GET`  | `/sessions/{session}/checkpoints/{sequence}/challenge` | The pose the player must strike in the photo |
@@ -662,7 +663,7 @@ then fall back to defaults. Real environment variables win over `.env`.
 | Variable                 | Default   | Description                                                 |
 |--------------------------|-----------|-------------------------------------------------------------|
 | `GAME_SERVER_HOST`       | `0.0.0.0` | Interface to bind to                                        |
-| `GAME_SERVER_PORT`       | `8000`    | HTTP port (1–65535)                                         |
+| `GAME_SERVER_PORT`       | `8000`    | HTTP port (1–65535). When unset, the platform's `PORT` is used (Railway injects it), then 8000 |
 | `GAME_SERVER_LOG_LEVEL`  | `info`    | `critical`, `error`, `warning`, `info`, `debug` or `trace`  |
 | `GAME_SERVER_IMAGE_BASE_PATH` | `data/images` | Where challenge images are stored; created if missing. Relative paths resolve against the working directory |
 | `GAME_SERVER_MAX_IMAGE_BYTES` | `10485760` | Largest accepted challenge image (10 MiB)            |
@@ -679,10 +680,8 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_DB_PATH` | `data/game.sqlite3` | SQLite database of [submissions](#submission-records); created with its directory if missing |
 | `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |
 
-**Deploying on Railway.** To turn the referee on, add `GAME_SERVER_ANTHROPIC_API_KEY` to
-the game-server service's variables and mark it as a secret (sealed). Without it the server
-runs exactly as before: the visual checks are `skipped` and every submission that passes the
-other checks is `pending`.
+**On Railway**, turn the referee on by adding `GAME_SERVER_ANTHROPIC_API_KEY` as a sealed
+service variable; see [Deploying on Railway](#deploying-on-railway).
 
 To use a `.env` file:
 
@@ -719,8 +718,9 @@ the run still in progress for the same PR.
 - **validate**: installs uv, installs the Python pinned in `.python-version` (uv-managed only,
   no caches, so every run starts clean), creates a fresh virtualenv with `uv sync --locked`,
   then runs `ruff check`, `ruff format --check`, `mypy`, `uv build` and `pytest` with coverage.
-- **docker**: builds the Docker image without pushing it, then starts it and waits for `GET /`
-  to answer. The start is what catches a native library missing from the distroless runtime.
+- **docker**: builds the Docker image without pushing it, then starts it the way Railway does
+  (with an injected `PORT`) and waits for `GET /health` to answer `ok`. Starting it is what
+  catches a native library missing from the distroless runtime.
 
 CI does not auto-fix. Run `make check` locally before pushing to catch the same issues.
 
@@ -747,6 +747,7 @@ src/game_server/
   phash.py           # perceptual_hash (Pillow + numpy), hamming_distance
   proximity.py       # `POST /checkpoint/proximity` advisory hint
   checkpoints.py     # `GET /sessions/{session}/checkpoints/{sequence}/challenge` pose
+  health.py          # `GET /health` readiness check
   lookup.py          # find_checkpoint: shared session/checkpoint lookup (404s)
   imaging.py         # safe image decoding: pixel cap, EXIF orientation, decode errors
   referee.py         # visual-challenge referee on the Claude API
@@ -803,6 +804,35 @@ docker run --rm -p 8000:8000 \
 ```
 
 Because there is no shell, use `docker logs` to inspect a container rather than `docker exec`.
+
+## Deploying on Railway
+
+The game server deploys to [Railway](https://railway.com/) from this repository's
+`Dockerfile`. [`railway.toml`](railway.toml) declares the build and the health check. Settings
+in it **override the same settings in the Railway dashboard**.
+
+- **Port.** Railway injects `PORT` and routes traffic to it. The server listens on
+  `GAME_SERVER_PORT` if set, otherwise on `PORT`, otherwise 8000. **Don't set
+  `GAME_SERVER_PORT` on Railway**: it would override `PORT` and traffic wouldn't reach the
+  server.
+- **Health check.** `railway.toml` sets `healthcheckPath = "/health"`. A new deploy only takes
+  traffic once `GET /health` answers `200`, which needs the submissions database to answer.
+
+Set these up once in the dashboard (they can't be declared in `railway.toml`):
+
+1. **A volume mounted at `/app/data`.** Submissions (`game.sqlite3`) and photos
+   (`images/`) live there. Without a volume they're lost on every deploy.
+2. **`RAILWAY_RUN_UID=0` as a service variable.** Railway mounts volumes owned by root, and
+   the image runs as the unprivileged `nonroot` user, so it can't write to the volume. This
+   variable runs the container as root on Railway (Railway's documented fix). It's a
+   trade-off: the non-root hardening doesn't apply there. Without it the server stops at
+   startup with `sqlite3.OperationalError: unable to open database file`, so the deploy never
+   becomes healthy and traffic stays on the previous one.
+3. **Game data variables:**
+   - `GAME_SERVER_SESSIONS_FILE` pointing at a sessions file on the volume, e.g.
+     `/app/data/sessions.json`. Upload it with `railway volume` or the dashboard.
+   - Optionally `GAME_SERVER_ANTHROPIC_API_KEY` (sealed) to turn on the
+     [referee](#referee-visual-challenge).
 
 ## License
 

@@ -1,7 +1,6 @@
 import base64
 import json
 import logging
-import os
 from io import BytesIO
 from typing import Any
 
@@ -433,7 +432,8 @@ def test_error_log_line_names_the_code(
 
 @pytest.mark.live
 @pytest.mark.skipif(
-    not os.environ.get("GAME_SERVER_ANTHROPIC_API_KEY"), reason="needs a real API key"
+    Settings().anthropic_api_key is None,  # evaluated at collection: env or the repo's .env
+    reason="needs a real API key",
 )
 def test_live_judgement_matches_the_schema() -> None:  # pragma: no cover - network
     live = get_referee(Settings())

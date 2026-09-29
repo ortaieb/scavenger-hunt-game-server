@@ -258,3 +258,9 @@ def test_referee_min_confidence_out_of_range_is_rejected(
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_tests_never_see_the_developers_env_file() -> None:
+    """Guard for the shared fixture: no test can pick up a real key from a local .env."""
+    assert not Path(".env").exists()
+    assert Settings().anthropic_api_key is None

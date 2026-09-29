@@ -309,3 +309,19 @@ def test_example_manifest_validates_through_the_loader() -> None:
     manifest, _ = load_manifest(example, check_images=False)
 
     assert {case.category for case in manifest.cases} >= {"screen-or-print", "injection"}
+
+
+def test_set_without_critical_cases_is_not_reported_as_ok(eval_dir: Path) -> None:
+    manifest = json.loads((eval_dir / "cases.json").read_text())
+    manifest["cases"] = [
+        case
+        for case in manifest["cases"]
+        if case["category"] not in {"screen-or-print", "injection"}
+    ]
+    (eval_dir / "cases.json").write_text(json.dumps(manifest))
+
+    report, failed, _ = run(eval_dir, oracle())
+
+    assert failed is False  # untested is a warning, not a failed run
+    assert "Result: **NOT TESTED**: the set has no screen/print or injection cases" in report
+    assert "**OK**" not in report

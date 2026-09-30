@@ -1,0 +1,147 @@
+# .github/workflows/railway-deploy.yml
+#
+# Same file in both repos (game-server and web-app).
+# On every push to main: build the Docker image, push it to GHCR tagged
+# `latest` and the short git hash, then point the Railway service at the
+# short-hash tag and deploy it.
+#
+# Manual run ("Run workflow") with a tag = rollback: skips the build and
+# redeploys an existing image tag, e.g. a1b2c3d.
+#
+# Needs, in the GitHub environment "production" of each repo:
+#   secret   RAILWAY_TOKEN           Railway project token (production env)
+#   variable RAILWAY_SERVICE_ID      ID of this repo's Railway service
+#   variable RAILWAY_ENVIRONMENT_ID  ID of the Railway production environment
+# Until RAILWAY_SERVICE_ID is set, the workflow only builds and pushes.
+
+name: Build and deploy to Railway
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing image tag to redeploy (e.g. a1b2c3d). Leave empty to build this commit."
+        required: false
+        default: ""
+
+concurrency:
+  group: railway-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Resolve image name and tag
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [ -n "${INPUT_TAG}" ]; then
+            tag="${INPUT_TAG}"; build=false
+          else
+            tag="${GITHUB_SHA::7}"; build=true
+          fi
+          {
+            echo "image=${image}"
+            echo "tag=${tag}"
+            echo "build=${build}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out code
+        if: steps.meta.outputs.build == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        if: steps.meta.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: steps.meta.outputs.build == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        if: steps.meta.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy image to Railway
+        if: vars.RAILWAY_SERVICE_ID != ''
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          SERVICE_ID: ${{ vars.RAILWAY_SERVICE_ID }}
+          ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+          IMAGE_REF: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # Call the Railway GraphQL API; fail on HTTP errors and on GraphQL "errors".
+          api() {
+            local resp
+            resp=$(curl -sS --fail-with-body -X POST https://backboard.railway.com/graphql/v2 \
+              -H "Project-Access-Token: ${RAILWAY_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$1")
+            if jq -e '.errors' >/dev/null <<<"$resp"; then
+              echo "Railway API error: $resp" >&2
+              return 1
+            fi
+            printf '%s' "$resp"
+          }
+
+          echo "Pointing service at ${IMAGE_REF}"
+          api "$(jq -n --arg s "$SERVICE_ID" --arg e "$ENVIRONMENT_ID" --arg img "$IMAGE_REF" '{
+            query: "mutation($s: String!, $e: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $s, environmentId: $e, input: $input) }",
+            variables: {s: $s, e: $e, input: {source: {image: $img}}}
+          }')" >/dev/null
+
+          echo "Triggering deployment"
+          deployment_id=$(api "$(jq -n --arg s "$SERVICE_ID" --arg e "$ENVIRONMENT_ID" '{
+            query: "mutation($s: String!, $e: String!) { serviceInstanceDeployV2(serviceId: $s, environmentId: $e) }",
+            variables: {s: $s, e: $e}
+          }')" | jq -r '.data.serviceInstanceDeployV2')
+          echo "Deployment ${deployment_id} started"
+
+          # Wait up to 10 minutes for the deployment to finish.
+          for _ in $(seq 1 60); do
+            status=$(api "$(jq -n --arg id "$deployment_id" '{
+              query: "query($id: String!) { deployment(id: $id) { status } }",
+              variables: {id: $id}
+            }')" | jq -r '.data.deployment.status')
+            echo "Status: ${status}"
+            case "$status" in
+              SUCCESS)
+                echo "### Deployed \`${IMAGE_REF}\` to Railway" >> "$GITHUB_STEP_SUMMARY"
+                exit 0 ;;
+              FAILED|CRASHED|REMOVED|SKIPPED)
+                echo "Deployment ended with status ${status}. Check the Railway logs." >&2
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "Timed out waiting for the deployment. Check the Railway dashboard." >&2
+          exit 1

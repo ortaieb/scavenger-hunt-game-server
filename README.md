@@ -9,6 +9,7 @@ and managed with [uv](https://docs.astral.sh/uv/).
 |--------|--------------|------------------------------------------------------------|
 | `GET`  | `/`          | Liveness check: `200 OK`, `text/plain`: `Hello, World!`    |
 | `POST` | `/join`      | A team joins its session with its join code and the player's photo consent |
+| `GET`  | `/sessions/{session}/participants/{participant}/state` | The team's status, progress and only its current clue |
 | `GET`  | `/health`    | Readiness: `200 {"status": "ok"}` when the submissions database answers, else `503 {"status": "unavailable"}` |
 | `POST` | `/challenge` | A participant submits a photo for a scavenger-hunt challenge |
 | `POST` | `/checkpoint/proximity` | **Advisory only:** does the player look in range of an open checkpoint? |
@@ -367,6 +368,66 @@ authentication comes later.
 `POST /challenge` and `POST /checkpoint/proximity` still accept any participant UUID, so the
 web app keeps working until it joins first. Requiring a joined participant there, and so a
 recorded consent before any photo is accepted, is a later change.
+
+### `GET /sessions/{session}/participants/{participant}/state`
+
+Where a team stands: waiting for the start, playing (with its current clue), finished, or out
+of time. A team sees **one clue at a time**, for the next checkpoint on its own route and
+nothing about the ones after it. Teams visit checkpoints in different orders, so one team's
+later clue is another team's current one, and the server never hands out a clue before it's
+that team's turn.
+
+```json
+{
+  "status": "playing",
+  "team": "Red Foxes",
+  "progress": { "completed": 1, "total": 3 },
+  "current": {
+    "sequence": 2,
+    "position": 2,
+    "clue": "He promised never to grow old; find him by the long water.",
+    "open": true
+  }
+}
+```
+
+| Field      | Meaning |
+|------------|---------|
+| `status`   | `not_started` before `start-time`. `playing` while the team has a checkpoint left. `finished` once it has completed every checkpoint on its route, even after `end-time`. `ended` after `end-time` if it hadn't finished. The session's bounds are inclusive |
+| `progress` | How many checkpoints on the team's route it has completed, and how many there are |
+| `current`  | Only while `playing`, otherwise `null`. `sequence` is what the app sends as `checkpoint` to `POST /challenge`. `position` is its place on the team's route, counting from 1. `clue` is the checkpoint's clue. `open` is whether its effective window is open now |
+
+| Status | When |
+|--------|------|
+| `200`  | As above |
+| `404`  | Unknown session (`"unknown session"`), or a participant that didn't [join](#post-join) this session (`"unknown participant"`) |
+| `422`  | `session` or `participant` isn't a UUID |
+
+It isn't rate-limited: a team only learns about itself.
+
+**Progress comes from the team's submissions**, with no separate table:
+
+- A checkpoint is **completed** once the team's participant has a submission for it whose
+  verdict is `pass` or `pending`. That's "accepted", as the duplicate-photo check already
+  defines it. A `failed` submission doesn't complete it.
+- The current checkpoint is the **first one on the team's route that isn't completed**.
+
+**Decision (1 Oct 2026): `pending` completes a checkpoint.** A `pending` verdict goes to the
+moderator's review, and the team shouldn't wait in the field for it: the review changes the
+team's score, not its progress. With the referee disabled (no API key, locally and in CI),
+every submission that doesn't fail is `pending`, so this is also what lets a hunt be played
+through without the referee. When moderator overrides arrive, they'll be recorded beside the
+original verdict rather than rewriting it, so an override can't move a team backwards.
+
+`POST /challenge` doesn't change: it still accepts a photo for a checkpoint that isn't the
+team's current one, and that photo counts when the checkpoint's turn comes. Holding
+submissions to the team's current checkpoint comes with the one-time code check.
+
+**Secrecy.** The response holds only the current clue: never other checkpoints' clues, any
+checkpoint's name, coordinates, proximity, window times, scene, the team's route, other teams
+or the join code. `open` says whether the window is open now, never when it opens or closes.
+The every-route secrecy test puts sentinels in a checkpoint's name and in the second clue on a
+team's route, and checks neither appears in any response while the team is on its first.
 
 ### `POST /checkpoint/proximity`
 
@@ -865,6 +926,7 @@ src/game_server/
   checkpoints.py     # `GET /sessions/{session}/checkpoints/{sequence}/challenge` pose
   health.py          # `GET /health` readiness check
   join.py            # `POST /join`, and find_participant for later endpoints
+  game_state.py      # team state: team_state() rules and the `…/state` endpoint
   lookup.py          # find_checkpoint: shared session/checkpoint lookup (404s)
   imaging.py         # safe image decoding: pixel cap, EXIF orientation, decode errors
   referee.py         # visual-challenge referee on the Claude API

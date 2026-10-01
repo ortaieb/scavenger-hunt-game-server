@@ -177,6 +177,20 @@ class SubmissionStore:
         with self.transaction() as transaction:
             return transaction.join_team(session, team, now)
 
+    def completed_checkpoints(self, session: UUID, participant: UUID) -> frozenset[int]:
+        """Checkpoints the participant has an accepted submission for (`pass` or `pending`).
+
+        "Accepted" as the duplicate-photo check defines it. A `pending` verdict completes a
+        checkpoint: the moderator's review changes the team's score, not its progress.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT checkpoint FROM submissions"
+                " WHERE session = ? AND participant = ? AND verdict IN ('pass', 'pending')",
+                (str(session), str(participant)),
+            ).fetchall()
+        return frozenset(checkpoint for (checkpoint,) in rows)
+
     def find_participant(self, session: UUID, participant: UUID) -> ParticipantRecord | None:
         """The participant's row, if it joined this session."""
         with self._connect() as conn:

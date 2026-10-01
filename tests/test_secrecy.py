@@ -20,6 +20,8 @@ from game_server.sessions import get_session_repository, parse_sessions
 
 SENTINEL = "SENTINEL-SCENE-4b1d"
 JOIN_CODE = "SENTINEL-CODE-9X"  # a credential: no response may echo it
+NAME = "SENTINEL-NAME-c3"  # checkpoint names are never shown
+LATER_CLUE = "SENTINEL-LATER-CLUE-7e"  # the second clue on the route: not while on the first
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 UNKNOWN = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 NOW = datetime(2026, 10, 3, 10, 30, tzinfo=UTC)
@@ -37,14 +39,21 @@ REPOSITORY = parse_sessions(
                 "checkpoints": [
                     {
                         "sequence": 1,
-                        "name": "Spot",
+                        "name": NAME,
                         "clue": "Find it",
                         "location": {"lat": 51.5, "long": -0.1},
                         "proximity": 40,
                         "challenge": {"scene": f"{SENTINEL} a fountain", "pose": "Wave."},
-                    }
+                    },
+                    {
+                        "sequence": 2,
+                        "name": "Second spot",
+                        "clue": LATER_CLUE,
+                        "location": {"lat": 51.6, "long": -0.2},
+                        "proximity": 40,
+                    },
                 ],
-                "teams": [{"name": "Testers", "join-code": JOIN_CODE, "order": [1]}],
+                "teams": [{"name": "Testers", "join-code": JOIN_CODE, "order": [1, 2]}],
             }
         ]
     )
@@ -99,13 +108,16 @@ def hint(client: TestClient, **changes: Any) -> Response:
 def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Response]]:
     """Successful and failing calls to every route, keyed by (method, route path)."""
     pose = "/sessions/{session}/checkpoints/{sequence}/challenge"
+    state = "/sessions/{session}/participants/{participant}/state"
+    joined = client.post("/join", json={"code": JOIN_CODE, "consent": True})  # 201
+    participant = joined.json()["participant"]
     return {
         ("GET", "/"): [client.get("/")],
         ("POST", "/challenge"): [
             submit(client, metadata()),  # pending
             submit(client, metadata(location={"lat": 51.51, "long": -0.1})),  # failed checks
             submit(client, metadata(), image=PHOTO),  # duplicate
-            submit(client, metadata(checkpoint=2)),  # 404
+            submit(client, metadata(checkpoint=9)),  # 404
             submit(client, metadata(extra=True)),  # 422
             submit(client, metadata(), image=b"\xff\xd8\xffjunk"),  # 422 undecodable
         ],
@@ -117,17 +129,23 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
         ],
         ("GET", pose): [
             client.get(f"/sessions/{SESSION}/checkpoints/1/challenge"),
-            client.get(f"/sessions/{SESSION}/checkpoints/2/challenge"),  # 404
+            client.get(f"/sessions/{SESSION}/checkpoints/9/challenge"),  # 404
             client.get(f"/sessions/{SESSION}/checkpoints/0/challenge"),  # 422
         ],
         ("GET", "/health"): [client.get("/health")],
         ("POST", "/join"): [
-            client.post("/join", json={"code": JOIN_CODE, "consent": True}),  # 201
+            joined,
             client.post("/join", json={"code": JOIN_CODE.lower(), "consent": True}),  # 200
             client.post("/join", json={"code": "NO-SUCH-CODE", "consent": True}),  # 404
             client.post("/join", json={"code": JOIN_CODE}),  # 422: consent missing
             client.post("/join", json={"code": JOIN_CODE, "consent": "true"}),  # 422
             client.post("/join", json={"code": JOIN_CODE, "consent": True, "x": 1}),  # 422
+        ],
+        ("GET", state): [
+            client.get(f"/sessions/{SESSION}/participants/{participant}/state"),  # on its 1st
+            client.get(f"/sessions/{SESSION}/participants/{UNKNOWN}/state"),  # 404
+            client.get(f"/sessions/{UNKNOWN}/participants/{participant}/state"),  # 404
+            client.get(f"/sessions/{SESSION}/participants/not-a-uuid/state"),  # 422
         ],
         ("GET", "/openapi.json"): [client.get("/openapi.json")],
         ("GET", "/docs"): [client.get("/docs")],
@@ -165,6 +183,8 @@ def test_no_route_ever_returns_the_scene(client: TestClient) -> None:
         for response in route_responses:
             assert SENTINEL not in response.text, f"{route} leaked the scene"
             assert JOIN_CODE not in response.text, f"{route} leaked a join code"
+            assert NAME not in response.text, f"{route} leaked a checkpoint name"
+            assert LATER_CLUE not in response.text, f"{route} leaked a later clue"
 
 
 def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
@@ -176,6 +196,11 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
     assert statuses[("POST", "/challenge")] == [200, 202, 404, 422]
     assert statuses[("POST", "/checkpoint/proximity")] == [200, 404, 422, 429]
     assert statuses[("POST", "/join")] == [200, 201, 404, 422]
+    assert statuses[("GET", "/sessions/{session}/participants/{participant}/state")] == [
+        200,
+        404,
+        422,
+    ]
     assert statuses[("GET", "/sessions/{session}/checkpoints/{sequence}/challenge")] == [
         200,
         404,

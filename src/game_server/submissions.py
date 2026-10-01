@@ -1,4 +1,4 @@
-"""SQLite record of every challenge submission, scoped by game session."""
+"""SQLite record of challenge submissions and of the teams that joined, scoped by session."""
 
 import json
 import sqlite3
@@ -9,7 +9,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import Depends
 
@@ -62,6 +62,16 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE submissions ADD COLUMN referee_input_tokens INTEGER",
     "ALTER TABLE submissions ADD COLUMN referee_output_tokens INTEGER",
     "ALTER TABLE submissions ADD COLUMN referee_latency_ms INTEGER",
+    # 12 (#37): one participant per team that has joined, keyed by a server-generated id.
+    # consented_at is updated on every join (the player ticked the consent box again).
+    """CREATE TABLE participants (
+        id           TEXT PRIMARY KEY,
+        session      TEXT NOT NULL,
+        team         TEXT NOT NULL,
+        joined_at    TEXT NOT NULL,
+        consented_at TEXT NOT NULL,
+        UNIQUE (session, team)
+    )""",
 )
 
 _BUSY_TIMEOUT_SECONDS = 5.0
@@ -90,6 +100,25 @@ class NewSubmission:
     def rejections(self) -> list[Rejection]:
         """The failed checks' rejections, in check order."""
         return rejections_of(self.checks)
+
+
+@dataclass(frozen=True)
+class JoinOutcome:
+    """The team's participant id, and whether this join created it."""
+
+    participant: UUID
+    first: bool
+
+
+@dataclass(frozen=True)
+class ParticipantRecord:
+    """A joined team's row."""
+
+    id: UUID
+    session: UUID
+    team: str
+    joined_at: datetime
+    consented_at: datetime
 
 
 @dataclass(frozen=True)
@@ -140,6 +169,32 @@ class SubmissionStore:
         with self._connect() as conn:
             conn.execute("SELECT 1 FROM submissions LIMIT 1").fetchall()
 
+    def join_team(self, session: UUID, team: str, now: datetime) -> JoinOutcome:
+        """Create the team's participant, or return it and record the renewed consent.
+
+        One `BEGIN IMMEDIATE` transaction, so two phones joining at once share one id.
+        """
+        with self.transaction() as transaction:
+            return transaction.join_team(session, team, now)
+
+    def find_participant(self, session: UUID, participant: UUID) -> ParticipantRecord | None:
+        """The participant's row, if it joined this session."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, session, team, joined_at, consented_at FROM participants"
+                " WHERE id = ? AND session = ?",
+                (str(participant), str(session)),
+            ).fetchone()
+        if row is None:
+            return None
+        return ParticipantRecord(
+            id=UUID(row[0]),
+            session=UUID(row[1]),
+            team=row[2],
+            joined_at=datetime.fromisoformat(row[3]),
+            consented_at=datetime.fromisoformat(row[4]),
+        )
+
     def record(self, submission: NewSubmission) -> RecordedSubmission:
         """Record `submission` in a transaction of its own."""
         with self.transaction() as transaction:
@@ -160,6 +215,25 @@ class SubmissionTransaction:
             (str(session),),
         ).fetchall()
         return tuple(AcceptedPhoto(submission_id=id_, phash=from_hex(hex_)) for id_, hex_ in rows)
+
+    def join_team(self, session: UUID, team: str, now: datetime) -> JoinOutcome:
+        """See `SubmissionStore.join_team`."""
+        existing = self._conn.execute(
+            "SELECT id FROM participants WHERE session = ? AND team = ?", (str(session), team)
+        ).fetchone()
+        if existing is not None:
+            self._conn.execute(
+                "UPDATE participants SET consented_at = ? WHERE id = ?",
+                (now.isoformat(), existing[0]),
+            )
+            return JoinOutcome(participant=UUID(existing[0]), first=False)
+        participant = uuid4()
+        self._conn.execute(
+            "INSERT INTO participants (id, session, team, joined_at, consented_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (str(participant), str(session), team, now.isoformat(), now.isoformat()),
+        )
+        return JoinOutcome(participant=participant, first=True)
 
     def record(self, submission: NewSubmission) -> RecordedSubmission:
         """Insert `submission` as the next attempt for its (session, participant, checkpoint)."""

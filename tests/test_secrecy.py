@@ -121,6 +121,14 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
             client.get(f"/sessions/{SESSION}/checkpoints/0/challenge"),  # 422
         ],
         ("GET", "/health"): [client.get("/health")],
+        ("POST", "/join"): [
+            client.post("/join", json={"code": JOIN_CODE, "consent": True}),  # 201
+            client.post("/join", json={"code": JOIN_CODE.lower(), "consent": True}),  # 200
+            client.post("/join", json={"code": "NO-SUCH-CODE", "consent": True}),  # 404
+            client.post("/join", json={"code": JOIN_CODE}),  # 422: consent missing
+            client.post("/join", json={"code": JOIN_CODE, "consent": "true"}),  # 422
+            client.post("/join", json={"code": JOIN_CODE, "consent": True, "x": 1}),  # 422
+        ],
         ("GET", "/openapi.json"): [client.get("/openapi.json")],
         ("GET", "/docs"): [client.get("/docs")],
         ("GET", "/docs/oauth2-redirect"): [client.get("/docs/oauth2-redirect")],
@@ -167,6 +175,7 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
 
     assert statuses[("POST", "/challenge")] == [200, 202, 404, 422]
     assert statuses[("POST", "/checkpoint/proximity")] == [200, 404, 422, 429]
+    assert statuses[("POST", "/join")] == [200, 201, 404, 422]
     assert statuses[("GET", "/sessions/{session}/checkpoints/{sequence}/challenge")] == [
         200,
         404,

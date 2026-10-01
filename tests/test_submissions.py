@@ -165,7 +165,7 @@ def test_dependency_uses_configured_path(db_path: Path) -> None:
 # --- schema migrations -------------------------------------------------------
 
 # The table exactly as #8 created it, before any migration.
-LATEST_VERSION = 11
+LATEST_VERSION = 12
 
 V0_SCHEMA = """
 CREATE TABLE submissions (

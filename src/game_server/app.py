@@ -3,10 +3,12 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, PlainTextResponse
 
-from game_server import challenge, checkpoints, health, proximity
+from game_server import challenge, checkpoints, health, join, proximity
 from game_server.config import get_settings
 from game_server.logging_config import configure_logging
 from game_server.sessions import load_session_repository
@@ -22,6 +24,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
+async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    """A 422 like FastAPI's default, minus each error's `input`.
+
+    The default echoes the submitted values, for a missing field the whole body, which would
+    return a join code (a credential) or a player's coordinates in the response.
+    """
+    errors = [
+        {key: value for key, value in error.items() if key != "input"} for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
+
 def create_app() -> FastAPI:
     """Build the FastAPI application with all routes registered.
 
@@ -31,6 +45,7 @@ def create_app() -> FastAPI:
     configure_logging(settings.log_level)
     load_session_repository(settings.sessions_file)
     app = FastAPI(title="Scavenger Hunt Game Server", lifespan=lifespan)
+    app.add_exception_handler(RequestValidationError, validation_error)  # type: ignore[arg-type]  # Starlette types handlers on the base Exception
 
     @app.get("/", response_class=PlainTextResponse)
     def root() -> str:
@@ -40,6 +55,7 @@ def create_app() -> FastAPI:
     app.include_router(proximity.router)
     app.include_router(checkpoints.router)
     app.include_router(health.router)
+    app.include_router(join.router)
 
     return app
 

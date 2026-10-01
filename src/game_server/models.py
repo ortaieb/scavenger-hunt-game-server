@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 # `pass` is reserved: nothing can award it until presence-proof and visual checks exist.
 VerdictStatus = Literal["failed", "pending", "pass"]
@@ -60,6 +60,54 @@ class PoseInstruction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     pose: str | None = Field(description="`null` when the checkpoint has no visual challenge")
+
+
+CONSENT_TEXT = (
+    "I agree to my photos and checkpoint locations being used as described to verify my "
+    "progress in this game."
+)
+
+
+class JoinRequest(BaseModel):
+    """Body of `POST /join`: a team's join code and the player's consent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=64, description="The team's join code")
+    # Strict: only JSON `true` records consent; false, "true", 1 and a missing field don't.
+    consent: StrictBool = Field(description=f"Must be true: the player ticked: {CONSENT_TEXT}")
+
+    @field_validator("consent")
+    @classmethod
+    def _must_consent(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("consent is required to join")
+        return value
+
+
+def _kebab(name: str) -> str:
+    return name.replace("_", "-")
+
+
+class JoinedSession(BaseModel):
+    """What a team is told about its session: nothing it isn't told anyway."""
+
+    model_config = ConfigDict(alias_generator=_kebab, validate_by_name=True)
+
+    id: UUID
+    name: str
+    location: str
+    start_time: datetime
+    end_time: datetime
+
+
+class JoinResponse(BaseModel):
+    """The team's participant id, used on every later call. Never the code or its order."""
+
+    participant: UUID
+    team: str
+    session: JoinedSession
+    checkpoints: int = Field(description="How many checkpoints, for '1 of 3'-style progress")
 
 
 class RejectionOut(BaseModel):

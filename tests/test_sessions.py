@@ -369,3 +369,227 @@ def test_invalid_challenge_stops_startup_without_echoing_it(
 @pytest.mark.parametrize(("scene_len", "pose_len"), [(1, 1), (1000, 200)])
 def test_challenge_length_limits_are_inclusive(scene_len: int, pose_len: int) -> None:
     parse_sessions(to_json(with_challenge({"scene": "s" * scene_len, "pose": "p" * pose_len})))
+
+
+# --- teams (#36) ---------------------------------------------------------------
+
+CODE_A = "FOX-7Q2K"
+CODE_B = "HERON-4MXP"
+
+
+def with_teams(*teams: dict[str, Any], session_id: str = SESSION_ID) -> dict[str, Any]:
+    payload = session_payload(session_id)
+    payload["teams"] = list(teams)
+    return payload
+
+
+def team(
+    name: str = "Red Foxes", code: str = CODE_A, order: list[int] | None = None
+) -> dict[str, Any]:
+    return {"name": name, "join-code": code, "order": order if order is not None else [1, 2]}
+
+
+def test_loads_teams() -> None:
+    repository = parse_sessions(to_json(with_teams(team(), team("Blue Herons", CODE_B, [2, 1]))))
+
+    session = repository.get_session(UUID(SESSION_ID))
+    assert session is not None
+    assert [(t.name, t.order) for t in session.teams] == [
+        ("Red Foxes", (1, 2)),
+        ("Blue Herons", (2, 1)),
+    ]
+
+
+def test_teams_are_optional() -> None:
+    session = parse_sessions(to_json(session_payload())).get_session(UUID(SESSION_ID))
+
+    assert session is not None
+    assert session.teams == ()
+
+
+@pytest.mark.parametrize("entered", ["FOX-7Q2K", "fox-7q2k", "  Fox-7Q2k \n", "\tFOX-7Q2K"])
+def test_find_team_ignores_case_and_surrounding_spaces(entered: str) -> None:
+    repository = parse_sessions(
+        to_json(
+            with_teams(team()),
+            with_teams(team("Blue Herons", CODE_B), session_id=OTHER_SESSION_ID),
+        )
+    )
+
+    found = repository.find_team(entered)
+
+    assert found is not None
+    session, matched = found
+    assert (session.id, matched.name) == (UUID(SESSION_ID), "Red Foxes")
+
+
+def test_find_team_finds_the_right_session() -> None:
+    repository = parse_sessions(
+        to_json(
+            with_teams(team()),
+            with_teams(team("Blue Herons", CODE_B), session_id=OTHER_SESSION_ID),
+        )
+    )
+
+    found = repository.find_team(CODE_B.lower())
+
+    assert found is not None
+    assert found[0].id == UUID(OTHER_SESSION_ID)
+
+
+@pytest.mark.parametrize("entered", ["FOX-7Q2", "FOX7Q2K", "", "FOX-7Q2K-X"])
+def test_unknown_join_code_is_none(entered: str) -> None:
+    repository = parse_sessions(to_json(with_teams(team())))
+
+    assert repository.find_team(entered) is None
+
+
+def test_get_team_by_name_ignoring_case() -> None:
+    repository = parse_sessions(to_json(with_teams(team())))
+
+    found = repository.get_team(UUID(SESSION_ID), "red foxes")
+
+    assert found is not None
+    assert found.name == "Red Foxes"
+    assert repository.get_team(UUID(SESSION_ID), "Blue Herons") is None
+    assert repository.get_team(UUID(OTHER_SESSION_ID), "Red Foxes") is None
+
+
+def test_join_code_is_hidden_from_repr() -> None:
+    repository = parse_sessions(to_json(with_teams(team())))
+    session = repository.get_session(UUID(SESSION_ID))
+    assert session is not None
+
+    assert CODE_A not in repr(session.teams[0])
+    assert CODE_A not in repr(session)
+
+
+@pytest.mark.parametrize(
+    ("teams", "line"),
+    [
+        pytest.param(
+            [team(order=[1])], "[0].teams[0].order: misses checkpoint(s) 2", id="order-misses"
+        ),
+        pytest.param(
+            [team(order=[1, 1, 2])], "[0].teams[0].order: repeats checkpoint 1", id="order-repeats"
+        ),
+        pytest.param(
+            [team(order=[1, 2, 9])],
+            "[0].teams[0].order: names unknown checkpoint 9",
+            id="order-unknown",
+        ),
+        pytest.param(
+            [team(), team("Blue Herons", CODE_B, [2, 3])],
+            "[0].teams[1].order: names unknown checkpoint 3",
+            id="second-team-order",
+        ),
+        pytest.param(
+            [team(), team("RED FOXES", CODE_B)],
+            "[0].teams[1].name: duplicate team name",
+            id="name-duplicate-ignoring-case",
+        ),
+        pytest.param(
+            [team(), team("Blue Herons", CODE_A.lower())],
+            "[0].teams[1].join-code: duplicate join code",
+            id="code-duplicate-in-session",
+        ),
+        pytest.param(
+            [team(code="FOX12")],
+            "[0].teams[0].join-code: String should have at least 6 characters",
+            id="code-too-short",
+        ),
+        pytest.param(
+            [team(code="F" * 33)],
+            "[0].teams[0].join-code: String should have at most 32 characters",
+            id="code-too-long",
+        ),
+        pytest.param(
+            [team(code="FOX 7Q2K")],
+            "[0].teams[0].join-code: String should match pattern",
+            id="code-space",
+        ),
+        pytest.param(
+            [team(code="FOX_7Q2K")],
+            "[0].teams[0].join-code: String should match pattern",
+            id="code-underscore",
+        ),
+        pytest.param(
+            [{**team(), "colour": "red"}],
+            "[0].teams[0].colour: Extra inputs are not permitted",
+            id="unknown-field",
+        ),
+        pytest.param(
+            [team(name="")],
+            "[0].teams[0].name: String should have at least 1 character",
+            id="name-empty",
+        ),
+        pytest.param(
+            [team(name="N" * 41)],
+            "[0].teams[0].name: String should have at most 40 characters",
+            id="name-too-long",
+        ),
+    ],
+)
+def test_invalid_teams_stop_loading_without_echoing_values(
+    tmp_path: Path, teams: list[dict[str, Any]], line: str
+) -> None:
+    sessions_file = tmp_path / "sessions.json"
+    sessions_file.write_text(to_json(with_teams(*teams)))
+
+    with pytest.raises(SessionsFileError) as excinfo:
+        load_session_repository(sessions_file)
+
+    message = str(excinfo.value)
+    assert f"  {line}" in message
+    for value in (t["join-code"] for t in teams):
+        assert value not in message
+        assert value.upper() not in message
+
+
+def test_join_code_duplicated_across_sessions(tmp_path: Path) -> None:
+    sessions_file = tmp_path / "sessions.json"
+    sessions_file.write_text(
+        to_json(
+            with_teams(team()),
+            with_teams(team("Blue Herons", "  " + CODE_A.lower()), session_id=OTHER_SESSION_ID),
+        )
+    )
+
+    with pytest.raises(SessionsFileError) as excinfo:
+        load_session_repository(sessions_file)
+
+    message = str(excinfo.value)
+    assert "  [1].teams[0].join-code: duplicate join code" in message
+    assert CODE_A not in message.upper()
+
+
+def test_every_duplicate_code_is_reported() -> None:
+    with pytest.raises(SessionsFileError) as excinfo:
+        parse_sessions(
+            to_json(
+                with_teams(team(), team("Blue Herons", CODE_B)),
+                with_teams(team(code=CODE_B), team("Others", CODE_A), session_id=OTHER_SESSION_ID),
+            )
+        )
+
+    message = str(excinfo.value)
+    assert "2 validation error(s)" in message
+    assert "[1].teams[0].join-code: duplicate join code" in message
+    assert "[1].teams[1].join-code: duplicate join code" in message
+
+
+def test_example_file_has_teams_with_different_orders() -> None:
+    session = load_session_repository(EXAMPLE_FILE).get_session(UUID(SESSION_ID))
+
+    assert session is not None
+    assert len(session.teams) >= 2
+    assert len({t.order for t in session.teams}) == len(session.teams)
+
+
+def test_surrounding_spaces_in_the_file_are_trimmed() -> None:
+    repository = parse_sessions(to_json(with_teams(team(code=f"  {CODE_A} "))))
+
+    found = repository.find_team(CODE_A)
+
+    assert found is not None
+    assert found[1].join_code == CODE_A

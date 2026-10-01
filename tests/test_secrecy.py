@@ -19,6 +19,7 @@ from game_server.config import Settings, get_settings
 from game_server.sessions import get_session_repository, parse_sessions
 
 SENTINEL = "SENTINEL-SCENE-4b1d"
+JOIN_CODE = "SENTINEL-CODE-9X"  # a credential: no response may echo it
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 UNKNOWN = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 NOW = datetime(2026, 10, 3, 10, 30, tzinfo=UTC)
@@ -43,6 +44,7 @@ REPOSITORY = parse_sessions(
                         "challenge": {"scene": f"{SENTINEL} a fountain", "pose": "Wave."},
                     }
                 ],
+                "teams": [{"name": "Testers", "join-code": JOIN_CODE, "order": [1]}],
             }
         ]
     )
@@ -154,6 +156,7 @@ def test_no_route_ever_returns_the_scene(client: TestClient) -> None:
     for route, route_responses in responses.items():
         for response in route_responses:
             assert SENTINEL not in response.text, f"{route} leaked the scene"
+            assert JOIN_CODE not in response.text, f"{route} leaked a join code"
 
 
 def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:

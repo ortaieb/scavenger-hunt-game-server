@@ -48,6 +48,26 @@
           "closes-at": "2026-10-03T13:00:00+01:00"
         }
       }
+    ],
+    "teams": [
+      {
+        "name": "Red Foxes",
+        "join-code": "FOX-7Q2K",
+        "order": [
+          1,
+          2,
+          3
+        ]
+      },
+      {
+        "name": "Blue Herons",
+        "join-code": "HERON-4MXP",
+        "order": [
+          2,
+          3,
+          1
+        ]
+      }
     ]
   }
 ]

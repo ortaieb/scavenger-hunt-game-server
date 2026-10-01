@@ -592,6 +592,10 @@ The file is a JSON list of sessions. Abridged from [`sessions.example.json`](ses
 | `checkpoints[].challenge`  | Optional visual challenge for the referee, see below. Without one, the referee's visual checks for the checkpoint are `skipped` |
 | `challenge.scene`          | 1–1 000 characters. **Server-only**: what should be visible in the photo's background, written for the referee, not the player |
 | `challenge.pose`           | 1–200 characters. **Player-facing**: the pose or action the player must show in the photo |
+| `teams`                    | Optional, default empty. Without teams, nobody can join the session |
+| `teams[].name`             | 1–40 characters, unique within the session ignoring case. Shown to the team |
+| `teams[].join-code`        | 6–32 letters, digits or `-`; surrounding spaces are trimmed. Unique **across the whole file**, ignoring case, because joining finds the session by the code alone. A credential (see *Secrecy*) |
+| `teams[].order`            | Every checkpoint `sequence` in the session, each exactly once: the order this team visits them. Position 1 is its first checkpoint |
 
 A checkpoint's **visual challenge** tells the referee what to look for in the photo:
 
@@ -611,6 +615,29 @@ Writing a good challenge:
   [`GET …/challenge`](#get-sessionssessioncheckpointssequencechallenge). So it **must not
   describe the place**. "With the fountain behind you" is fine only if the clue already gives
   that away. Otherwise write "with the landmark behind you".
+
+**Teams.** Each team gets its own join code (the "hunt code") and visits the checkpoints in
+its **own order**, so teams don't trail each other from one checkpoint to the next or crowd
+one place at once:
+
+```json
+"teams": [
+  { "name": "Red Foxes",   "join-code": "FOX-7Q2K",   "order": [1, 2, 3] },
+  { "name": "Blue Herons", "join-code": "HERON-4MXP", "order": [2, 3, 1] }
+]
+```
+
+A team plays as **one participant**: joining gives it a `participant` id, which every
+endpoint already uses. In the single-player first iteration, a team is one player with one
+phone. Join codes compare ignoring case and surrounding spaces, so `fox-7q2k ` and `FOX-7Q2K`
+are the same code.
+
+Guidance for moderators:
+
+- **Pick codes nobody can guess**: random letters and digits like `FOX-7Q2K`, not `TEAM-1`.
+  Send each team only its own code.
+- **Don't rename a team or change its order once it has joined.** Its progress is stored
+  under its name.
 
 Unknown fields are rejected everywhere. If the file can't be read, isn't valid JSON, breaks any
 rule above or repeats a session id, the server **refuses to start**. The error lists each
@@ -633,6 +660,15 @@ looks like, which gives away the answer. **No endpoint may return the scene**, a
 errors never echo it. Only `challenge.pose` is player-facing. A test calls every route (success
 and error paths) with a sentinel scene and fails if any response contains it, or if a route
 is added without being covered.
+
+**Teams' orders and join codes** are secret too:
+
+- **No endpoint returns a team's `order`.** A team only ever learns its current clue. With
+  different orders, one team's later clue is another team's current one.
+- **Join codes are credentials.** No endpoint returns one and none is logged; teams aren't
+  even printed with their codes. Validation errors report a bad or duplicate code by its path,
+  e.g. `[1].teams[0].join-code: duplicate join code`, never by its value. The every-route
+  secrecy test also checks that no response echoes a sentinel join code.
 
 FastAPI also serves interactive API docs at `/docs` (Swagger UI) and `/redoc`, and the OpenAPI
 schema at `/openapi.json`.

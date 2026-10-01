@@ -8,7 +8,15 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from game_server import challenge, checkpoints, game_state, health, join, proximity
+from game_server import (
+    arrive,
+    challenge,
+    checkpoints,
+    game_state,
+    health,
+    join,
+    proximity,
+)
 from game_server.config import get_settings
 from game_server.logging_config import configure_logging
 from game_server.sessions import load_session_repository
@@ -57,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(join.router)
     app.include_router(game_state.router)
+    app.include_router(arrive.router)
 
     return app
 

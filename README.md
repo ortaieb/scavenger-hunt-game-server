@@ -10,10 +10,65 @@ and managed with [uv](https://docs.astral.sh/uv/).
 | `GET`  | `/`          | Liveness check: `200 OK`, `text/plain`: `Hello, World!`    |
 | `POST` | `/join`      | A team joins its session with its join code and the player's photo consent |
 | `GET`  | `/sessions/{session}/participants/{participant}/state` | The team's status, progress and only its current clue |
+| `POST` | `/sessions/{session}/participants/{participant}/arrive` | Check in at the current checkpoint: the pose and a one-time code |
 | `GET`  | `/health`    | Readiness: `200 {"status": "ok"}` when the submissions database answers, else `503 {"status": "unavailable"}` |
 | `POST` | `/challenge` | A participant submits a photo for a scavenger-hunt challenge |
 | `POST` | `/checkpoint/proximity` | **Advisory only:** does the player look in range of an open checkpoint? |
 | `GET`  | `/sessions/{session}/checkpoints/{sequence}/challenge` | The pose the player must strike in the photo |
+
+### Game loop
+
+A whole hunt can be played through the API. For each team:
+
+1. **Join**: [`POST /join`](#post-join) with the team's code and the player's consent. It returns
+   the team's `participant` id, used on every later call.
+2. **Read the clue**: [`GET …/state`](#get-sessionssessionparticipantsparticipantstate) shows
+   only the current checkpoint's clue, on the team's own route.
+3. **Arrive**: when the team thinks it's there,
+   [`POST …/arrive`](#post-sessionssessionparticipantsparticipantarrive) checks it in and returns
+   the pose to strike and a one-time code to hold up in the photo.
+4. **Photograph**: [`POST /challenge`](#post-challenge) with the photo and the checkpoint's
+   `sequence`. A `pass` or `pending` verdict completes the checkpoint. After a `failed` one the
+   team stays at the checkpoint, and arriving again gives it a fresh code.
+5. **Repeat** from step 2 until the state says `finished`.
+
+The rules in one place:
+
+- **One clue at a time**, the first uncompleted checkpoint on the team's route. A clue is
+  never shown before it's that team's turn.
+- **Arriving needs the right checkpoint at the right time**: the team's current one, while the
+  session is on and the checkpoint's window is open. It takes no location: the geofence is
+  checked on the photo.
+- **The one-time code** is issued on arrival and expires after
+  `GAME_SERVER_ARRIVAL_CODE_TTL_SECONDS`. It's recorded but not yet checked in the photo.
+- **`pending` completes a checkpoint**, so a hunt can be played through without the referee.
+
+A walkthrough against [`sessions.example.json`](sessions.example.json) with its times moved to
+include now. It uses `jq`; any photo will do (`photo.jpg`), and the referee is off without an
+API key, so a good photo is `pending`:
+
+```bash
+python3 - <<'PY'   # a copy of the example, open from an hour ago to an hour from now
+import json; from datetime import UTC, datetime, timedelta
+s = json.load(open("sessions.example.json")); now = datetime.now(UTC)
+s[0]["start-time"] = (now - timedelta(hours=1)).isoformat()
+s[0]["end-time"] = (now + timedelta(hours=1)).isoformat()
+s[0]["checkpoints"][2].pop("window")
+json.dump(s, open("sessions.json", "w"))
+PY
+GAME_SERVER_SESSIONS_FILE=sessions.json make run &   # then, in another shell:
+
+S=aeffe667-4f9f-4108-b5e2-56ae821fe413
+P=$(curl -s localhost:8000/join -H 'content-type: application/json' \
+      -d '{"code": "FOX-7Q2K", "consent": true}' | jq -r .participant)
+curl -s localhost:8000/sessions/$S/participants/$P/state | jq .current      # clue 1
+curl -s localhost:8000/sessions/$S/participants/$P/arrive \
+     -H 'content-type: application/json' -d '{"checkpoint": 1}' | jq   # pose + code
+curl -s localhost:8000/challenge \
+  -F "metadata={\"session\":\"$S\",\"participant\":\"$P\",\"checkpoint\":1,\"location\":{\"lat\":51.504873,\"long\":-0.169872},\"capture-time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"};type=application/json" \
+  -F 'challenge-image=@photo.jpg;type=image/jpeg' | jq .verdict.checkpoint.verdict   # "pending"
+curl -s localhost:8000/sessions/$S/participants/$P/state | jq .progress,.current.clue   # 1 of 3, clue 2
+```
 
 ### `POST /challenge`
 
@@ -309,6 +364,21 @@ There's one row per (session, team), so every phone a team joins from shares one
 Rows carry their `session`, so a session's participants are deleted with the rest of its data
 when it closes.
 
+#### Arrivals
+
+Each check-in at a checkpoint is recorded in an `arrivals` table, with its one-time code:
+
+| Column                                 | Content |
+|----------------------------------------|---------|
+| `id`                                   | Row id |
+| `session`, `participant`, `checkpoint` | Who arrived where (`checkpoint` is the `sequence`) |
+| `code`                                 | The one-time code |
+| `pose`                                 | The pose issued, or empty |
+| `issued_at`, `expires_at`              | Server times, ISO 8601 UTC |
+
+A team's first arrival at a checkpoint is its check-in time, which scoring by order of arrival
+will read. Rows carry their `session`, so they're deleted with the session's other data.
+
 ### `POST /join`
 
 A team joins its session with the join code the moderator sent it, and the player accepts the
@@ -428,6 +498,60 @@ checkpoint's name, coordinates, proximity, window times, scene, the team's route
 or the join code. `open` says whether the window is open now, never when it opens or closes.
 The every-route secrecy test puts sentinels in a checkpoint's name and in the second clue on a
 team's route, and checks neither appears in any response while the team is on its first.
+
+### `POST /sessions/{session}/participants/{participant}/arrive`
+
+A team that thinks it has found its checkpoint **checks in**. Arriving returns the **pose**
+to strike in the photo and a **one-time code** to hold up in it. The code turns a photo into
+evidence of being there *now*: it can't appear in a photo taken before the team arrived.
+(Checking the code in the photo comes later; until then it's issued and recorded.)
+
+```json
+{ "checkpoint": 2 }
+```
+
+`checkpoint` is the `sequence` the team thinks it's at, a strict integer. It must be the
+team's current checkpoint, so an out-of-date app can't check in at the wrong one.
+
+```json
+{
+  "checkpoint": 2,
+  "pose": "Arms raised as if flying, facing the camera, with the landmark behind you.",
+  "code": "4719",
+  "issued-at": "2026-10-03T09:41:05Z",
+  "expires-at": "2026-10-03T09:51:05Z"
+}
+```
+
+- `pose`: the checkpoint's `challenge.pose`, or `null` if it has no challenge (a code is still
+  issued).
+- `code`: 4 digits as a string, leading zeros kept, from a cryptographic random source. Short
+  enough to write on a hand or a scrap of paper.
+- `expires-at`: `issued-at` plus `GAME_SERVER_ARRIVAL_CODE_TTL_SECONDS` (default 600). It isn't
+  capped at the window's close, which would give the window's times away.
+
+| Status | When |
+|--------|------|
+| `201`  | A new arrival with a fresh code |
+| `200`  | The team already has an **active** arrival at this checkpoint, returned unchanged (a double tap, a second phone, a reload) |
+| `404`  | Unknown session, participant (`"unknown participant"`) or checkpoint (`"unknown checkpoint"`) |
+| `409`  | Checked in this order: `"session hasn't started"`, `"hunt finished"`, `"session has ended"`, `"not your current checkpoint"`, `"checkpoint isn't open"` |
+| `422`  | Invalid body |
+
+An arrival is **active** while it hasn't expired and the team hasn't submitted a photo for
+that checkpoint since it was issued:
+
+- after a `failed` photo, or once the code expires, the next arrive issues a **fresh code**;
+- after a `pass` or `pending`, the team has moved on, so arriving there again is a `409`.
+
+Looking for the active arrival and issuing a new one happen in one write transaction, so two
+taps at once can't create two codes. Each arrive is logged (session, participant, checkpoint,
+new or existing, and the expiry), **never the code**.
+
+**No location, on purpose.** Arrive takes no coordinates and checks no distance. If it turned
+away out-of-range check-ins, it would be an unlimited yes/no oracle for the checkpoint's
+position: the hot/cold game the proximity hint's rate limit is there to stop. The geofence
+stays in `POST /challenge`, and the app can still use the advisory hint.
 
 ### `POST /checkpoint/proximity`
 
@@ -852,6 +976,7 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_REFEREE_MAX_RETRIES` | `2` | SDK retries on connection errors, 429 and 5xx (≥ 0) |
 | `GAME_SERVER_REFEREE_MAX_IMAGE_EDGE` | `1568` | Long edge, in px, of the image sent to the model (> 0) |
 | `GAME_SERVER_REFEREE_MIN_CONFIDENCE` | `0.8` | Model confidence (0–1) at or above which a visual check's `pass`/`fail` counts; below it the check is `uncertain` |
+| `GAME_SERVER_ARRIVAL_CODE_TTL_SECONDS` | `600` | How long an [arrival's](#post-sessionssessionparticipantsparticipantarrive) one-time code stays valid, in seconds (> 0) |
 | `GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS` | `10` | Minimum seconds between [proximity hints](#post-checkpointproximity) per (session, participant) (> 0) |
 | `GAME_SERVER_PHASH_MAX_DISTANCE` | `6` | Hamming distance (0–32 of 64 bits) at or below which a photo is a [duplicate](#submission-checks) of an accepted one |
 | `GAME_SERVER_DB_PATH` | `data/game.sqlite3` | SQLite database of [submissions](#submission-records); created with its directory if missing |
@@ -927,6 +1052,7 @@ src/game_server/
   health.py          # `GET /health` readiness check
   join.py            # `POST /join`, and find_participant for later endpoints
   game_state.py      # team state: team_state() rules and the `…/state` endpoint
+  arrive.py          # `…/arrive`: check in, pose and one-time code
   lookup.py          # find_checkpoint: shared session/checkpoint lookup (404s)
   imaging.py         # safe image decoding: pixel cap, EXIF orientation, decode errors
   referee.py         # visual-challenge referee on the Claude API

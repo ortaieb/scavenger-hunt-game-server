@@ -109,6 +109,7 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
     """Successful and failing calls to every route, keyed by (method, route path)."""
     pose = "/sessions/{session}/checkpoints/{sequence}/challenge"
     state = "/sessions/{session}/participants/{participant}/state"
+    arrive = "/sessions/{session}/participants/{participant}/arrive"
     joined = client.post("/join", json={"code": JOIN_CODE, "consent": True})  # 201
     participant = joined.json()["participant"]
     return {
@@ -146,6 +147,16 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
             client.get(f"/sessions/{SESSION}/participants/{UNKNOWN}/state"),  # 404
             client.get(f"/sessions/{UNKNOWN}/participants/{participant}/state"),  # 404
             client.get(f"/sessions/{SESSION}/participants/not-a-uuid/state"),  # 422
+        ],
+        ("POST", arrive): [
+            client.post(f"/sessions/{SESSION}/participants/{participant}/arrive", json=body)
+            for body in (
+                {"checkpoint": 1},  # 201
+                {"checkpoint": 1},  # 200: the active arrival
+                {"checkpoint": 9},  # 404 unknown checkpoint
+                {"checkpoint": 2},  # 409 not the team's current checkpoint
+                {"checkpoint": "1"},  # 422
+            )
         ],
         ("GET", "/openapi.json"): [client.get("/openapi.json")],
         ("GET", "/docs"): [client.get("/docs")],
@@ -196,6 +207,13 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
     assert statuses[("POST", "/challenge")] == [200, 202, 404, 422]
     assert statuses[("POST", "/checkpoint/proximity")] == [200, 404, 422, 429]
     assert statuses[("POST", "/join")] == [200, 201, 404, 422]
+    assert statuses[("POST", "/sessions/{session}/participants/{participant}/arrive")] == [
+        200,
+        201,
+        404,
+        409,
+        422,
+    ]
     assert statuses[("GET", "/sessions/{session}/participants/{participant}/state")] == [
         200,
         404,
@@ -206,3 +224,13 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
         404,
         422,
     ]
+
+
+def test_arrive_reveals_no_place(client: TestClient) -> None:
+    arrive_responses = every_route_response(client)[
+        ("POST", "/sessions/{session}/participants/{participant}/arrive")
+    ]
+
+    for response in arrive_responses:
+        for leak in ("51.5", "-0.1", "proximity", NAME, SENTINEL, LATER_CLUE):
+            assert leak not in response.text

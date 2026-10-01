@@ -2,10 +2,10 @@
 
 import json
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -72,6 +72,19 @@ _MIGRATIONS: tuple[str, ...] = (
         consented_at TEXT NOT NULL,
         UNIQUE (session, team)
     )""",
+    # 13-14 (#39): a team's check-ins at a checkpoint, each with a one-time code. The first
+    # arrival at a checkpoint is the team's check-in time (for scoring by order of arrival).
+    """CREATE TABLE arrivals (
+        id          INTEGER PRIMARY KEY,
+        session     TEXT    NOT NULL,
+        participant TEXT    NOT NULL,
+        checkpoint  INTEGER NOT NULL,
+        code        TEXT    NOT NULL,
+        pose        TEXT,
+        issued_at   TEXT    NOT NULL,
+        expires_at  TEXT    NOT NULL
+    )""",
+    "CREATE INDEX arrivals_by_team ON arrivals (session, participant, checkpoint)",
 )
 
 _BUSY_TIMEOUT_SECONDS = 5.0
@@ -119,6 +132,25 @@ class ParticipantRecord:
     team: str
     joined_at: datetime
     consented_at: datetime
+
+
+@dataclass(frozen=True)
+class Arrival:
+    """A check-in at a checkpoint, with the one-time code to hold up in the photo."""
+
+    checkpoint: int
+    code: str
+    pose: str | None
+    issued_at: datetime
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class ArrivalOutcome:
+    """The team's active arrival, and whether this call created it."""
+
+    arrival: Arrival
+    new: bool
 
 
 @dataclass(frozen=True)
@@ -177,6 +209,28 @@ class SubmissionStore:
         with self.transaction() as transaction:
             return transaction.join_team(session, team, now)
 
+    def arrive(
+        self,
+        session: UUID,
+        participant: UUID,
+        checkpoint: int,
+        *,
+        pose: str | None,
+        now: datetime,
+        ttl: timedelta,
+        new_code: Callable[[], str],
+    ) -> ArrivalOutcome:
+        """Return the team's active arrival at the checkpoint, or issue a fresh one.
+
+        An arrival is active until it expires or the team submits a photo for that
+        checkpoint after it was issued. One `BEGIN IMMEDIATE` transaction, so two taps at
+        once can't issue two codes.
+        """
+        with self.transaction() as transaction:
+            return transaction.arrive(
+                session, participant, checkpoint, pose=pose, now=now, ttl=ttl, new_code=new_code
+            )
+
     def completed_checkpoints(self, session: UUID, participant: UUID) -> frozenset[int]:
         """Checkpoints the participant has an accepted submission for (`pass` or `pending`).
 
@@ -229,6 +283,57 @@ class SubmissionTransaction:
             (str(session),),
         ).fetchall()
         return tuple(AcceptedPhoto(submission_id=id_, phash=from_hex(hex_)) for id_, hex_ in rows)
+
+    def arrive(
+        self,
+        session: UUID,
+        participant: UUID,
+        checkpoint: int,
+        *,
+        pose: str | None,
+        now: datetime,
+        ttl: timedelta,
+        new_code: Callable[[], str],
+    ) -> ArrivalOutcome:
+        """See `SubmissionStore.arrive`."""
+        key = (str(session), str(participant), checkpoint)
+        active = self._active_arrival(key, now)
+        if active is not None:
+            return ArrivalOutcome(active, new=False)
+        arrival = Arrival(checkpoint, new_code(), pose, issued_at=now, expires_at=now + ttl)
+        self._conn.execute(
+            "INSERT INTO arrivals (session, participant, checkpoint, code, pose, issued_at,"
+            " expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (*key, arrival.code, pose, now.isoformat(), arrival.expires_at.isoformat()),
+        )
+        return ArrivalOutcome(arrival, new=True)
+
+    def _active_arrival(self, key: tuple[str, str, int], now: datetime) -> Arrival | None:
+        """The latest arrival, if unexpired and not yet followed by a submission there.
+
+        Times are compared as datetimes, not as strings: ISO strings with and without
+        microseconds don't sort correctly as text.
+        """
+        row = self._conn.execute(
+            "SELECT checkpoint, code, pose, issued_at, expires_at FROM arrivals"
+            " WHERE session = ? AND participant = ? AND checkpoint = ? ORDER BY id DESC LIMIT 1",
+            key,
+        ).fetchone()
+        if row is None:
+            return None
+        arrival = Arrival(
+            row[0], row[1], row[2], datetime.fromisoformat(row[3]), datetime.fromisoformat(row[4])
+        )
+        if now >= arrival.expires_at:
+            return None
+        submitted = self._conn.execute(
+            "SELECT received_at FROM submissions"
+            " WHERE session = ? AND participant = ? AND checkpoint = ?",
+            key,
+        ).fetchall()
+        if any(datetime.fromisoformat(at) >= arrival.issued_at for (at,) in submitted):
+            return None
+        return arrival
 
     def join_team(self, session: UUID, team: str, now: datetime) -> JoinOutcome:
         """See `SubmissionStore.join_team`."""

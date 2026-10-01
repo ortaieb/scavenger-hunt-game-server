@@ -855,6 +855,7 @@ The file is a JSON list of sessions. Abridged from [`sessions.example.json`](ses
 | `checkpoints[].challenge`  | Optional visual challenge for the referee, see below. Without one, the referee's visual checks for the checkpoint are `skipped` |
 | `challenge.scene`          | 1–1 000 characters. **Server-only**: what should be visible in the photo's background, written for the referee, not the player |
 | `challenge.pose`           | 1–200 characters. **Player-facing**: the pose or action the player must show in the photo |
+| `checkpoints[].reference-photos` | Optional, default empty, at most 5. **Server-only**: the moderator's own photos of the place, see below |
 | `teams`                    | Optional, default empty. Without teams, nobody can join the session |
 | `teams[].name`             | 1–40 characters, unique within the session ignoring case. Shown to the team |
 | `teams[].join-code`        | 6–32 letters, digits or `-`; surrounding spaces are trimmed. Unique **across the whole file**, ignoring case, because joining finds the session by the code alone. A credential (see *Secrecy*) |
@@ -878,6 +879,32 @@ Writing a good challenge:
   [`GET …/challenge`](#get-sessionssessioncheckpointssequencechallenge). So it **must not
   describe the place**. "With the fountain behind you" is fine only if the clue already gives
   that away. Otherwise write "with the landmark behind you".
+
+**Reference photos.** The moderator's own photos of each checkpoint, taken while setting up
+the hunt. Nothing uses them yet; they'll let the referee compare a player's background with
+real photos of the place, and the moderator see them beside a `pending` photo:
+
+```json
+"reference-photos": ["reference/fountain-north.jpg", "reference/fountain-south.jpg"]
+```
+
+- Each entry is a **relative path to a JPEG, resolved against the sessions file's directory**,
+  and must stay inside it: no absolute paths, and no `..` or symlink that leads out.
+- At startup every listed photo must exist, be no bigger than `GAME_SERVER_MAX_IMAGE_BYTES`,
+  and decode with the same safe decoding (and pixel cap) as player photos. **Otherwise the
+  server refuses to start**, so a broken seed fails before the game, not during it.
+- Errors give the entry's **position, never its path**, because a file name can describe the
+  place: `[0].checkpoints[1].reference-photos[0]: file not found`.
+- Only the resolved paths are kept in memory, not the images.
+
+`sessions.example.json` leaves them out: it can't ship real photos, and a listed photo that's
+missing stops the server.
+
+Guidance for moderators:
+
+- **Take them yourself, with nobody in shot.** They're the organisers' photos, not players', so
+  the player-photo purge doesn't apply to them.
+- **Keep them out of version control**, like `sessions.json`: they show the answer to each clue.
 
 **Teams.** Each team gets its own join code (the "hunt code") and visits the checkpoints in
 its **own order**, so teams don't trail each other from one checkpoint to the next or crowd
@@ -934,6 +961,11 @@ is added without being covered.
   returns or logs the code it was given. Validation errors (422) never echo submitted values on
   any endpoint: FastAPI's default would return the whole body, code included. The every-route
   secrecy test checks that no response, on success or error paths, echoes a sentinel join code.
+
+**Reference photos** show what the place looks like, so they're secret like `challenge.scene`.
+No endpoint returns a reference photo, its path, or how many a checkpoint has, and startup
+errors name an entry by its position, never its path. The every-route secrecy test gives a
+reference photo a sentinel file name and checks no response mentions it.
 
 FastAPI also serves interactive API docs at `/docs` (Swagger UI) and `/redoc`, and the OpenAPI
 schema at `/openapi.json`.
@@ -1135,9 +1167,22 @@ Set these up once in the dashboard (they can't be declared in `railway.toml`):
    becomes healthy and traffic stays on the previous one.
 3. **Game data variables:**
    - `GAME_SERVER_SESSIONS_FILE` pointing at a sessions file on the volume, e.g.
-     `/app/data/sessions.json`. Upload it with `railway volume` or the dashboard.
+     `/app/data/hunt/sessions.json`. Upload it with `railway volume` or the dashboard.
    - Optionally `GAME_SERVER_ANTHROPIC_API_KEY` (sealed) to turn on the
      [referee](#referee-visual-challenge).
+
+**Reference photos** go on the volume next to the sessions file, which they're resolved
+against:
+
+```text
+/app/data/hunt/
+  sessions.json                # GAME_SERVER_SESSIONS_FILE=/app/data/hunt/sessions.json
+  reference/fountain-north.jpg
+  reference/fountain-south.jpg
+```
+
+Upload the photos **before** a sessions file that names them. Otherwise the new deploy can't
+start, and Railway keeps traffic on the old one.
 
 ## License
 

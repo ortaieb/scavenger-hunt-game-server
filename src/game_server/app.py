@@ -51,7 +51,7 @@ def create_app() -> FastAPI:
     """
     settings = get_settings()
     configure_logging(settings.log_level)
-    load_session_repository(settings.sessions_file)
+    load_session_repository(settings.sessions_file, settings.max_image_bytes)
     app = FastAPI(title="Scavenger Hunt Game Server", lifespan=lifespan)
     app.add_exception_handler(RequestValidationError, validation_error)  # type: ignore[arg-type]  # Starlette types handlers on the base Exception
 

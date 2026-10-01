@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     max_clock_skew_seconds: int = Field(default=30, gt=0)
     phash_max_distance: int = Field(default=6, ge=0, le=32)
     proximity_hint_interval_seconds: int = Field(default=10, gt=0)
+    # How long an arrival's one-time code stays valid.
+    arrival_code_ttl_seconds: int = Field(default=600, gt=0)
     # Unset: the referee is disabled and never calls the API.
     anthropic_api_key: SecretStr | None = None
     referee_model: str = "claude-haiku-4-5"

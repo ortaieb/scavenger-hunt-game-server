@@ -8,6 +8,7 @@ from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
+DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 class Settings(BaseSettings):
@@ -35,7 +36,7 @@ class Settings(BaseSettings):
     )
     log_level: LogLevel = "info"
     image_base_path: Path = Path("data/images")
-    max_image_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    max_image_bytes: int = Field(default=DEFAULT_MAX_IMAGE_BYTES, gt=0)
     sessions_file: Path | None = None
     db_path: Path = Path("data/game.sqlite3")
     max_capture_age_seconds: int = Field(default=300, gt=0)

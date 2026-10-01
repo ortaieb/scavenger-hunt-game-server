@@ -7,7 +7,9 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from images import jpeg, scene
 
+from game_server import imaging
 from game_server.config import Settings
 from game_server.sessions import (
     Checkpoint,
@@ -593,3 +595,185 @@ def test_surrounding_spaces_in_the_file_are_trimmed() -> None:
 
     assert found is not None
     assert found[1].join_code == CODE_A
+
+
+# --- reference photos (#40) ----------------------------------------------------------
+
+# A file name can describe the place, so no error may mention one.
+PLACE_NAME = "secret-fountain-north"
+
+
+@pytest.fixture
+def photo_dir(tmp_path: Path) -> Path:
+    """A sessions directory with generated reference photos (never real ones)."""
+    (tmp_path / "reference").mkdir()
+    for index in range(6):
+        (tmp_path / "reference" / f"{PLACE_NAME}-{index}.jpg").write_bytes(
+            jpeg(scene(index, (64, 48)))
+        )
+    return tmp_path
+
+
+def with_photos(*entries: str) -> dict[str, Any]:
+    payload = session_payload()
+    payload["checkpoints"][1]["reference-photos"] = list(entries)
+    return payload
+
+
+def load_with_photos(
+    photo_dir: Path, *entries: str, max_bytes: int | None = None
+) -> SessionRepository:
+    sessions_file = photo_dir / "sessions.json"
+    sessions_file.write_text(to_json(with_photos(*entries)))
+    if max_bytes is None:
+        return load_session_repository(sessions_file)
+    return load_session_repository(sessions_file, max_bytes)
+
+
+def refused(photo_dir: Path, *entries: str, max_bytes: int | None = None) -> str:
+    with pytest.raises(SessionsFileError) as excinfo:
+        load_with_photos(photo_dir, *entries, max_bytes=max_bytes)
+    message = str(excinfo.value)
+    assert PLACE_NAME not in message
+    assert "reference/" not in message
+    return message
+
+
+def test_reference_photos_resolve_against_the_sessions_directory(photo_dir: Path) -> None:
+    repository = load_with_photos(
+        photo_dir, f"reference/{PLACE_NAME}-1.jpg", f"./reference/{PLACE_NAME}-0.jpg"
+    )
+
+    assert repository.reference_photos(UUID(SESSION_ID), 2) == (
+        (photo_dir / "reference" / f"{PLACE_NAME}-1.jpg").resolve(),
+        (photo_dir / "reference" / f"{PLACE_NAME}-0.jpg").resolve(),
+    )
+
+
+def test_checkpoints_without_reference_photos_have_none(photo_dir: Path) -> None:
+    repository = load_with_photos(photo_dir, f"reference/{PLACE_NAME}-0.jpg")
+
+    assert repository.reference_photos(UUID(SESSION_ID), 1) == ()
+    assert repository.reference_photos(UUID(OTHER_SESSION_ID), 2) == ()
+
+
+def test_five_reference_photos_are_allowed(photo_dir: Path) -> None:
+    entries = [f"reference/{PLACE_NAME}-{i}.jpg" for i in range(5)]
+
+    assert len(load_with_photos(photo_dir, *entries).reference_photos(UUID(SESSION_ID), 2)) == 5
+
+
+def test_more_than_five_is_refused(photo_dir: Path) -> None:
+    entries = [f"reference/{PLACE_NAME}-{i}.jpg" for i in range(6)]
+
+    assert "[0].checkpoints[1].reference-photos: Tuple should have at most 5 items" in refused(
+        photo_dir, *entries
+    )
+
+
+def test_missing_file_is_refused(photo_dir: Path) -> None:
+    message = refused(photo_dir, f"reference/{PLACE_NAME}-missing.jpg")
+
+    assert "  [0].checkpoints[1].reference-photos[0]: file not found" in message
+
+
+def test_absolute_path_is_refused(photo_dir: Path) -> None:
+    absolute = str((photo_dir / "reference" / f"{PLACE_NAME}-0.jpg").resolve())
+
+    assert "[0].checkpoints[1].reference-photos[0]: must be a relative path" in refused(
+        photo_dir, absolute
+    )
+
+
+def test_path_leading_out_of_the_directory_is_refused(tmp_path: Path) -> None:
+    hunt = tmp_path / "hunt"
+    hunt.mkdir()
+    (tmp_path / f"{PLACE_NAME}.jpg").write_bytes(jpeg(scene(1, (64, 48))))  # exists, outside
+
+    message = refused(hunt, f"../{PLACE_NAME}.jpg")
+
+    assert (
+        "[0].checkpoints[1].reference-photos[0]: must stay inside the sessions file's directory"
+        in message
+    )
+
+
+def test_symlink_leading_out_is_refused(tmp_path: Path) -> None:
+    hunt = tmp_path / "hunt"
+    hunt.mkdir()
+    outside = tmp_path / f"{PLACE_NAME}.jpg"
+    outside.write_bytes(jpeg(scene(1, (64, 48))))
+    (hunt / "link.jpg").symlink_to(outside)
+
+    assert "must stay inside the sessions file's directory" in refused(hunt, "link.jpg")
+
+
+def test_file_over_the_size_limit_is_refused(photo_dir: Path) -> None:
+    entry = f"reference/{PLACE_NAME}-0.jpg"
+    size = (photo_dir / entry).stat().st_size
+
+    message = refused(photo_dir, entry, max_bytes=size - 1)
+
+    assert (
+        f"[0].checkpoints[1].reference-photos[0]: file is larger than {size - 1} bytes" in message
+    )
+    load_with_photos(photo_dir, entry, max_bytes=size)  # exactly at the limit is fine
+
+
+def test_non_jpeg_is_refused(photo_dir: Path) -> None:
+    (photo_dir / "reference" / f"{PLACE_NAME}.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 50)
+
+    assert "reference-photos[0]: not a JPEG" in refused(photo_dir, f"reference/{PLACE_NAME}.png")
+
+
+def test_undecodable_jpeg_is_refused(photo_dir: Path) -> None:
+    whole = jpeg(scene(9))
+    (photo_dir / "reference" / f"{PLACE_NAME}-cut.jpg").write_bytes(whole[: len(whole) // 3])
+
+    assert "reference-photos[0]: doesn't decode" in refused(
+        photo_dir, f"reference/{PLACE_NAME}-cut.jpg"
+    )
+
+
+def test_photo_over_the_pixel_cap_is_refused(
+    photo_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(imaging, "MAX_IMAGE_PIXELS", 100)  # the photos are 64x48
+
+    assert "reference-photos[0]: doesn't decode" in refused(
+        photo_dir, f"reference/{PLACE_NAME}-0.jpg"
+    )
+
+
+def test_every_bad_photo_is_reported(photo_dir: Path) -> None:
+    message = refused(
+        photo_dir,
+        f"reference/{PLACE_NAME}-0.jpg",
+        f"reference/{PLACE_NAME}-missing.jpg",
+        f"/abs/{PLACE_NAME}.jpg",
+    )
+
+    assert "2 validation error(s)" in message
+    assert "[0].checkpoints[1].reference-photos[1]: file not found" in message
+    assert "[0].checkpoints[1].reference-photos[2]: must be a relative path" in message
+
+
+def test_reference_photos_need_a_directory() -> None:
+    with pytest.raises(SessionsFileError, match="need the sessions file's directory"):
+        parse_sessions(to_json(with_photos("reference/a.jpg")))
+
+
+def test_reference_photos_are_hidden_from_repr(photo_dir: Path) -> None:
+    repository = load_with_photos(photo_dir, f"reference/{PLACE_NAME}-0.jpg")
+    session = repository.get_session(UUID(SESSION_ID))
+    assert session is not None
+
+    assert PLACE_NAME not in repr(session)
+
+
+def test_dependency_passes_the_image_size_limit(photo_dir: Path) -> None:
+    sessions_file = photo_dir / "sessions.json"
+    sessions_file.write_text(to_json(with_photos(f"reference/{PLACE_NAME}-0.jpg")))
+
+    with pytest.raises(SessionsFileError, match="file is larger than 10 bytes"):
+        get_session_repository(Settings(sessions_file=sessions_file, max_image_bytes=10))

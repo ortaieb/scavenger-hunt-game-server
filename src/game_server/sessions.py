@@ -7,7 +7,7 @@ by an endpoint in a way that reveals checkpoint coordinates or distances to them
 from collections.abc import Iterable, Sequence
 from datetime import datetime
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Annotated, Self
 from uuid import UUID
 
@@ -23,7 +23,8 @@ from pydantic import (
     model_validator,
 )
 
-from game_server.config import Settings, get_settings
+from game_server.config import DEFAULT_MAX_IMAGE_BYTES, Settings, get_settings
+from game_server.imaging import UndecodableImageError, open_upright
 from game_server.models import Location
 
 
@@ -79,6 +80,11 @@ class Checkpoint(_SessionModel):
     window: Window | None = None
     # Absent: the referee's visual checks for this checkpoint are skipped.
     challenge: VisualChallenge | None = None
+    # The moderator's own photos of the place, relative to the sessions file's directory.
+    # Server-only (they show the answer); repr=False because a file name can describe it.
+    reference_photos: tuple[Annotated[str, Field(min_length=1)], ...] = Field(
+        default=(), max_length=5, repr=False
+    )
 
 
 class LocatedValueError(ValueError):
@@ -194,6 +200,63 @@ def _index_join_codes(sessions: Sequence[GameSession]) -> dict[str, tuple[GameSe
     return index
 
 
+JPEG_MAGIC = b"\xff\xd8\xff"
+
+
+def _resolve_reference_photos(
+    sessions: Sequence[GameSession], base_dir: Path | None, max_bytes: int
+) -> dict[tuple[UUID, int], tuple[Path, ...]]:
+    """Resolve and check every reference photo; report every bad one by position.
+
+    Errors never include the path: a file name can describe the place.
+    """
+    resolved: dict[tuple[UUID, int], tuple[Path, ...]] = {}
+    problems = []
+    for session_index, session in enumerate(sessions):
+        for checkpoint_index, checkpoint in enumerate(session.checkpoints):
+            paths = []
+            for photo_index, entry in enumerate(checkpoint.reference_photos):
+                path, problem = _check_reference_photo(entry, base_dir, max_bytes)
+                if problem:
+                    loc = (session_index, "checkpoints", checkpoint_index, "reference-photos")
+                    problems.append(f"{_path((*loc, photo_index))}: {problem}")
+                elif path:
+                    paths.append(path)
+            if paths:
+                resolved[(session.id, checkpoint.sequence)] = tuple(paths)
+    if problems:
+        lines = [f"{len(problems)} validation error(s)", *(f"  {p}" for p in problems)]
+        raise ValueError("\n".join(lines))
+    return resolved
+
+
+def _check_reference_photo(
+    entry: str, base_dir: Path | None, max_bytes: int
+) -> tuple[Path | None, str | None]:
+    """The resolved path, or why the entry is unusable."""
+    if base_dir is None:
+        return None, "reference photos need the sessions file's directory"
+    if PurePath(entry).is_absolute():
+        return None, "must be a relative path"
+    base = base_dir.resolve()
+    path = (base / entry).resolve()  # follows symlinks, so a link can't lead out either
+    if not path.is_relative_to(base):
+        return None, "must stay inside the sessions file's directory"
+    if not path.is_file():
+        return None, "file not found"
+    if path.stat().st_size > max_bytes:
+        return None, f"file is larger than {max_bytes} bytes"
+    data = path.read_bytes()
+    if not data.startswith(JPEG_MAGIC):
+        return None, "not a JPEG"
+    try:
+        with open_upright(data, "RGB", 64) as image:
+            image.load()
+    except UndecodableImageError:
+        return None, "doesn't decode (corrupt, truncated or too many pixels)"
+    return path, None
+
+
 def _require_unique(values: Iterable[object], what: str) -> None:
     seen: set[object] = set()
     for value in values:
@@ -209,7 +272,13 @@ class SessionsFileError(ValueError):
 class SessionRepository:
     """Read-only lookup of game sessions and their checkpoints."""
 
-    def __init__(self, sessions: Iterable[GameSession] = ()) -> None:
+    def __init__(
+        self,
+        sessions: Iterable[GameSession] = (),
+        *,
+        reference_dir: Path | None = None,
+        max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+    ) -> None:
         sessions = list(sessions)
         _require_unique((session.id for session in sessions), "session id")
         self._sessions = {session.id: session for session in sessions}
@@ -222,6 +291,7 @@ class SessionRepository:
             session.id: {team.name.casefold(): team for team in session.teams}
             for session in sessions
         }
+        self._reference_photos = _resolve_reference_photos(sessions, reference_dir, max_image_bytes)
 
     def __len__(self) -> int:
         return len(self._sessions)
@@ -242,6 +312,10 @@ class SessionRepository:
         """The session's team with this name (ignoring case), if any."""
         return self._teams_by_name.get(session_id, {}).get(name.casefold())
 
+    def reference_photos(self, session_id: UUID, sequence: int) -> tuple[Path, ...]:
+        """The checkpoint's reference photos, resolved and checked at load, in file order."""
+        return self._reference_photos.get((session_id, sequence), ())
+
     @staticmethod
     def effective_window(session: GameSession, checkpoint: Checkpoint) -> tuple[datetime, datetime]:
         """Return the checkpoint's own window if set, otherwise the session's start/end."""
@@ -253,11 +327,16 @@ class SessionRepository:
 _SESSIONS_ADAPTER = TypeAdapter(list[GameSession])
 
 
-def parse_sessions(raw: str | bytes) -> SessionRepository:
+def parse_sessions(
+    raw: str | bytes,
+    reference_dir: Path | None = None,
+    max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+) -> SessionRepository:
     """Build a repository from the JSON text of a sessions file.
 
-    Raises `SessionsFileError` if the JSON is malformed, a session fails validation
-    or two sessions share an id.
+    `reference_dir` is the directory reference photos are resolved against (the sessions
+    file's own). Raises `SessionsFileError` if the JSON is malformed, a session fails
+    validation, two sessions share an id, or a reference photo is missing or bad.
     """
     try:
         sessions = _SESSIONS_ADAPTER.validate_json(raw)
@@ -265,8 +344,10 @@ def parse_sessions(raw: str | bytes) -> SessionRepository:
         # `from None`: a chained ValidationError would print its input values in the traceback.
         raise SessionsFileError(_describe_errors(exc)) from None
     try:
-        return SessionRepository(sessions)
-    except ValueError as exc:  # duplicate session ids or join codes; never echoes a code
+        return SessionRepository(
+            sessions, reference_dir=reference_dir, max_image_bytes=max_image_bytes
+        )
+    except ValueError as exc:  # never echoes a join code or a reference photo's path
         raise SessionsFileError(str(exc)) from exc
 
 
@@ -292,10 +373,13 @@ def _path(loc: Sequence[str | int]) -> str:
 
 
 @lru_cache
-def load_session_repository(path: Path | None) -> SessionRepository:
+def load_session_repository(
+    path: Path | None, max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES
+) -> SessionRepository:
     """Load sessions from `path`, or return an empty repository when no file is configured.
 
-    Cached per path: the file is read once, at startup.
+    Reference photos are resolved against the file's directory and checked now, so a
+    broken seed stops the server before the game. Cached: read once, at startup.
     """
     if path is None:
         return SessionRepository()
@@ -304,7 +388,7 @@ def load_session_repository(path: Path | None) -> SessionRepository:
     except OSError as exc:
         raise SessionsFileError(f"cannot read sessions file {path}: {exc}") from exc
     try:
-        return parse_sessions(raw)
+        return parse_sessions(raw, path.parent, max_image_bytes)
     except SessionsFileError as exc:
         raise SessionsFileError(f"invalid sessions file {path}: {exc}") from None
 
@@ -313,4 +397,4 @@ def get_session_repository(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> SessionRepository:
     """Dependency providing the sessions loaded from the configured file."""
-    return load_session_repository(settings.sessions_file)
+    return load_session_repository(settings.sessions_file, settings.max_image_bytes)

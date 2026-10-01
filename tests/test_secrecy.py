@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
@@ -22,41 +23,41 @@ SENTINEL = "SENTINEL-SCENE-4b1d"
 JOIN_CODE = "SENTINEL-CODE-9X"  # a credential: no response may echo it
 NAME = "SENTINEL-NAME-c3"  # checkpoint names are never shown
 LATER_CLUE = "SENTINEL-LATER-CLUE-7e"  # the second clue on the route: not while on the first
+PHOTO_NAME = "SENTINEL-PHOTO-fountain-north"  # a reference photo's file name shows the place
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 UNKNOWN = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 NOW = datetime(2026, 10, 3, 10, 30, tzinfo=UTC)
 PHOTO = jpeg(scene(3))
 
-REPOSITORY = parse_sessions(
-    json.dumps(
-        [
-            {
-                "id": SESSION,
-                "name": "Hunt",
-                "location": "Here",
-                "start-time": "2026-10-03T10:00:00Z",
-                "end-time": "2026-10-03T12:00:00Z",
-                "checkpoints": [
-                    {
-                        "sequence": 1,
-                        "name": NAME,
-                        "clue": "Find it",
-                        "location": {"lat": 51.5, "long": -0.1},
-                        "proximity": 40,
-                        "challenge": {"scene": f"{SENTINEL} a fountain", "pose": "Wave."},
-                    },
-                    {
-                        "sequence": 2,
-                        "name": "Second spot",
-                        "clue": LATER_CLUE,
-                        "location": {"lat": 51.6, "long": -0.2},
-                        "proximity": 40,
-                    },
-                ],
-                "teams": [{"name": "Testers", "join-code": JOIN_CODE, "order": [1, 2]}],
-            }
-        ]
-    )
+SESSIONS_JSON = json.dumps(
+    [
+        {
+            "id": SESSION,
+            "name": "Hunt",
+            "location": "Here",
+            "start-time": "2026-10-03T10:00:00Z",
+            "end-time": "2026-10-03T12:00:00Z",
+            "checkpoints": [
+                {
+                    "sequence": 1,
+                    "name": NAME,
+                    "clue": "Find it",
+                    "location": {"lat": 51.5, "long": -0.1},
+                    "proximity": 40,
+                    "challenge": {"scene": f"{SENTINEL} a fountain", "pose": "Wave."},
+                    "reference-photos": [f"reference/{PHOTO_NAME}.jpg"],
+                },
+                {
+                    "sequence": 2,
+                    "name": "Second spot",
+                    "clue": LATER_CLUE,
+                    "location": {"lat": 51.6, "long": -0.2},
+                    "proximity": 40,
+                },
+            ],
+            "teams": [{"name": "Testers", "join-code": JOIN_CODE, "order": [1, 2]}],
+        }
+    ]
 )
 
 
@@ -65,7 +66,11 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     app = create_app()
     settings = Settings(image_base_path=tmp_path / "images", db_path=tmp_path / "game.sqlite3")
     app.dependency_overrides[get_settings] = lambda: settings
-    app.dependency_overrides[get_session_repository] = lambda: REPOSITORY
+    (tmp_path / "reference").mkdir()
+    (tmp_path / "reference" / f"{PHOTO_NAME}.jpg").write_bytes(jpeg(scene(4, (64, 48))))
+    repository = parse_sessions(SESSIONS_JSON, reference_dir=tmp_path)
+    assert repository.reference_photos(UUID(SESSION), 1)  # really loaded
+    app.dependency_overrides[get_session_repository] = lambda: repository
     app.dependency_overrides[get_clock] = lambda: lambda: NOW
     with TestClient(app) as test_client:
         yield test_client
@@ -196,6 +201,8 @@ def test_no_route_ever_returns_the_scene(client: TestClient) -> None:
             assert JOIN_CODE not in response.text, f"{route} leaked a join code"
             assert NAME not in response.text, f"{route} leaked a checkpoint name"
             assert LATER_CLUE not in response.text, f"{route} leaked a later clue"
+            assert PHOTO_NAME not in response.text, f"{route} leaked a reference photo"
+            assert "reference" not in response.text.lower(), f"{route} mentions reference photos"
 
 
 def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:

@@ -2,18 +2,19 @@
 
 import json
 import logging
-import sqlite3
 from collections.abc import Iterator
-from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
 from images import jpeg, scene
+from psycopg.rows import DictRow
 from pytest_mock import MockerFixture
 
 from game_server.app import create_app
@@ -69,42 +70,37 @@ def report(
     )
 
 
-def write_lock_is_free(db_path: Path) -> bool:
-    """True if nobody holds the database's write lock (no busy wait)."""
-    with closing(sqlite3.connect(db_path, timeout=0)) as conn:
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-        except sqlite3.OperationalError:
-            return False
-        conn.execute("ROLLBACK")
-        return True
+Db = psycopg.Connection[DictRow]
+
+
+def write_lock_is_free(db: Db) -> bool:
+    """True if no write transaction holds a session's advisory lock."""
+    row = db.execute(
+        "SELECT NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory') AS free"
+    ).fetchone()
+    return row is not None and row["free"] is True
 
 
 @dataclass
 class FakeReferee:
     report: RefereeReport
-    db_path: Path
+    db: Db
     calls: list[VisualChallenge] = field(default_factory=list)
     lock_free_during_call: list[bool] = field(default_factory=list)
 
     def judge(self, image: bytes, challenge: VisualChallenge) -> RefereeReport:
         self.calls.append(challenge)
-        self.lock_free_during_call.append(write_lock_is_free(self.db_path))
+        self.lock_free_during_call.append(write_lock_is_free(self.db))
         return self.report
 
 
 @pytest.fixture
-def db_path(tmp_path: Path) -> Path:
-    return tmp_path / "game.sqlite3"
+def referee(db: Db) -> FakeReferee:
+    return FakeReferee(report(), db)
 
 
 @pytest.fixture
-def referee(db_path: Path) -> FakeReferee:
-    return FakeReferee(report(), db_path)
-
-
-@pytest.fixture
-def client(tmp_path: Path, db_path: Path, referee: FakeReferee) -> Iterator[TestClient]:
+def client(tmp_path: Path, referee: FakeReferee) -> Iterator[TestClient]:
     checkpoint = {"name": "Spot", "clue": "Find it", "location": {"lat": 51.5, "long": -0.1}}
     repository = parse_sessions(
         json.dumps(
@@ -123,13 +119,12 @@ def client(tmp_path: Path, db_path: Path, referee: FakeReferee) -> Iterator[Test
             ]
         )
     )
-    settings = Settings(image_base_path=tmp_path / "images", db_path=db_path)
+    settings = Settings(image_base_path=tmp_path / "images")
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: repository
     app.dependency_overrides[get_clock] = lambda: lambda: NOW
     app.dependency_overrides[get_referee] = lambda: referee
-    SubmissionStore(db_path)  # create the database so the lock probe has a file to open
     with TestClient(app) as test_client:
         yield test_client
 
@@ -153,10 +148,8 @@ def outcomes(response: Response) -> dict[str, str]:
     return {c["check"]: c["outcome"] for c in checkpoint_verdict(response)["checks"]}
 
 
-def rows(db_path: Path) -> list[sqlite3.Row]:
-    with closing(sqlite3.connect(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        return conn.execute("SELECT * FROM submissions ORDER BY id").fetchall()
+def rows(db: Db) -> list[DictRow]:
+    return db.execute("SELECT * FROM submissions ORDER BY id").fetchall()
 
 
 # --- verdicts --------------------------------------------------------------------
@@ -222,7 +215,7 @@ def test_unsure_or_low_confidence_is_pending(
 
 
 def test_referee_error_is_pending_and_recorded(
-    client: TestClient, referee: FakeReferee, db_path: Path
+    client: TestClient, referee: FakeReferee, db: Db
 ) -> None:
     referee.report = RefereeReport(
         status="error", error_code="timeout", model="claude-haiku-4-5", latency_ms=20000
@@ -234,7 +227,7 @@ def test_referee_error_is_pending_and_recorded(
     assert checkpoint_verdict(response)["verdict"] == "pending"
     assert outcomes(response)["scene_matches"] == "uncertain"
     assert outcomes(response)["pose_correct"] == "uncertain"
-    [row] = rows(db_path)
+    [row] = rows(db)
     assert (row["referee_status"], row["referee_error"]) == ("error", "timeout")
     assert row["referee_latency_ms"] == 20000
     assert row["referee_judgement"] is None
@@ -251,7 +244,7 @@ def test_referee_error_is_pending_and_recorded(
     ],
 )
 def test_earlier_failure_skips_the_referee(
-    client: TestClient, referee: FakeReferee, changes: dict[str, Any], db_path: Path
+    client: TestClient, referee: FakeReferee, changes: dict[str, Any], db: Db
 ) -> None:
     response = submit(client, **changes)
 
@@ -259,7 +252,7 @@ def test_earlier_failure_skips_the_referee(
     assert referee.calls == []
     assert outcomes(response)["scene_matches"] == "skipped"
     assert outcomes(response)["pose_correct"] == "skipped"
-    [row] = rows(db_path)
+    [row] = rows(db)
     assert row["referee_status"] is None
 
 
@@ -271,12 +264,10 @@ def test_referee_runs_outside_the_write_transaction(
     assert referee.lock_free_during_call == [True]
 
 
-def test_lock_probe_detects_a_held_transaction(db_path: Path) -> None:
-    store = SubmissionStore(db_path)
-
-    with store.transaction():
-        assert write_lock_is_free(db_path) is False
-    assert write_lock_is_free(db_path) is True
+def test_lock_probe_detects_a_held_transaction(store: SubmissionStore, db: Db) -> None:
+    with store.transaction(UUID(SESSION)):
+        assert write_lock_is_free(db) is False
+    assert write_lock_is_free(db) is True
 
 
 def test_no_challenge_skips_the_referee(client: TestClient, referee: FakeReferee) -> None:
@@ -289,7 +280,7 @@ def test_no_challenge_skips_the_referee(client: TestClient, referee: FakeReferee
 
 
 def test_no_api_key_is_pending_without_any_api_call(
-    client: TestClient, mocker: MockerFixture, db_path: Path, caplog: pytest.LogCaptureFixture
+    client: TestClient, mocker: MockerFixture, db: Db, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO, logger="game_server")
     wrapper = mocker.patch("game_server.referee._create_structured_message")
@@ -302,7 +293,7 @@ def test_no_api_key_is_pending_without_any_api_call(
     assert outcomes(response)["scene_matches"] == "skipped"
     assert outcomes(response)["pose_correct"] == "skipped"
     wrapper.assert_not_called()
-    [row] = rows(db_path)
+    [row] = rows(db)
     assert row["referee_status"] == "disabled"
     assert "referee disabled verdict pending" in caplog.text
 
@@ -318,7 +309,7 @@ def test_model_reasons_never_reach_response_or_log(
     client: TestClient,
     referee: FakeReferee,
     caplog: pytest.LogCaptureFixture,
-    db_path: Path,
+    db: Db,
     scene_verdict: Verdict,
     confidence: float,
 ) -> None:
@@ -330,20 +321,19 @@ def test_model_reasons_never_reach_response_or_log(
     for sentinel in ("SENTINEL-SCENE-REASON", "SENTINEL-POSE-REASON"):
         assert sentinel not in response.text
         assert sentinel not in caplog.text
-    [row] = rows(db_path)
-    stored = json.loads(row["checks"])
-    assert {c["check"]: c["detail"] for c in stored}["scene_matches"] == SCENE_REASON
-    assert SCENE_REASON in row["referee_judgement"]
+    [row] = rows(db)
+    assert {c["check"]: c["detail"] for c in row["checks"]}["scene_matches"] == SCENE_REASON
+    assert row["referee_judgement"]["scene_matches"]["reason"] == SCENE_REASON
 
 
 def test_row_records_the_referee_audit(
-    client: TestClient, db_path: Path, caplog: pytest.LogCaptureFixture
+    client: TestClient, db: Db, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO, logger="game_server")
 
     submit(client)
 
-    [row] = rows(db_path)
+    [row] = rows(db)
     assert row["verdict"] == "pass"
     assert (row["referee_status"], row["referee_model"], row["referee_error"]) == (
         "ok",
@@ -352,7 +342,7 @@ def test_row_records_the_referee_audit(
     )
     assert (row["referee_input_tokens"], row["referee_output_tokens"]) == (1600, 140)
     assert row["referee_latency_ms"] == 1234
-    judgement = RefereeJudgement.model_validate_json(row["referee_judgement"])
+    judgement = RefereeJudgement.model_validate(row["referee_judgement"])
     assert judgement.scene_matches.confidence == 0.95
     assert (
         "referee ok model=claude-haiku-4-5 latency_ms=1234 tokens=1600/140 verdict pass"

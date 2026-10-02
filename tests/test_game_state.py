@@ -1,7 +1,6 @@
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -185,14 +184,9 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def db_path(tmp_path: Path) -> Path:
-    return tmp_path / "game.sqlite3"
-
-
-@pytest.fixture
-def client(db_path: Path, now: list[datetime]) -> Iterator[TestClient]:
+def client(now: list[datetime]) -> Iterator[TestClient]:
     app = create_app()
-    settings = Settings(db_path=db_path)
+    settings = Settings()
     sessions = repository()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: sessions
@@ -213,13 +207,13 @@ def state(client: TestClient, participant: str, session: str = SESSION) -> Respo
 
 
 def submit(
-    db_path: Path,
+    store: SubmissionStore,
     participant: str,
     checkpoint: int,
     verdict: VerdictStatus,
     session: str = SESSION,
 ) -> None:
-    SubmissionStore(db_path).record(
+    store.record(
         NewSubmission(
             session=UUID(session),
             participant=UUID(participant),
@@ -275,9 +269,9 @@ def test_two_teams_get_their_own_first_clue(client: TestClient, now: list[dateti
     assert state(client, heron).json()["current"]["clue"] == "Clue 3"
 
 
-def test_failed_submission_does_not_complete(client: TestClient, db_path: Path) -> None:
+def test_failed_submission_does_not_complete(client: TestClient, store: SubmissionStore) -> None:
     participant = join(client)
-    submit(db_path, participant, 1, "failed")
+    submit(store, participant, 1, "failed")
 
     body = state(client, participant).json()
 
@@ -287,11 +281,11 @@ def test_failed_submission_does_not_complete(client: TestClient, db_path: Path) 
 
 @pytest.mark.parametrize("verdict", ["pass", "pending"])
 def test_accepted_submission_completes_and_shows_the_next_clue(
-    client: TestClient, db_path: Path, verdict: VerdictStatus
+    client: TestClient, store: SubmissionStore, verdict: VerdictStatus
 ) -> None:
     participant = join(client)
-    submit(db_path, participant, 1, "failed")
-    submit(db_path, participant, 1, verdict)
+    submit(store, participant, 1, "failed")
+    submit(store, participant, 1, verdict)
 
     body = state(client, participant).json()
 
@@ -300,11 +294,11 @@ def test_accepted_submission_completes_and_shows_the_next_clue(
 
 
 def test_everything_completed_is_finished_even_after_end(
-    client: TestClient, db_path: Path, now: list[datetime]
+    client: TestClient, store: SubmissionStore, now: list[datetime]
 ) -> None:
     participant = join(client)
     for checkpoint in (1, 2, 3):
-        submit(db_path, participant, checkpoint, "pending")
+        submit(store, participant, checkpoint, "pending")
     now[0] = END + timedelta(hours=2)
 
     body = state(client, participant).json()
@@ -317,12 +311,14 @@ def test_everything_completed_is_finished_even_after_end(
     }
 
 
-def test_other_participants_and_sessions_do_not_count(client: TestClient, db_path: Path) -> None:
+def test_other_participants_and_sessions_do_not_count(
+    client: TestClient, store: SubmissionStore
+) -> None:
     participant = join(client)
     heron = join(client, HERON)
-    submit(db_path, str(uuid4()), 1, "pass")  # never joined
-    submit(db_path, participant, 1, "pass", session=OTHER_SESSION)  # another session
-    submit(db_path, heron, 1, "pass")  # another team
+    submit(store, str(uuid4()), 1, "pass")  # never joined
+    submit(store, participant, 1, "pass", session=OTHER_SESSION)  # another session
+    submit(store, heron, 1, "pass")  # another team
 
     body = state(client, participant).json()
 

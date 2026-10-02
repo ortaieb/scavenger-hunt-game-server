@@ -8,6 +8,6 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 # Traffic switches to a new deploy only once this answers 200. It checks that the
-# submissions database (on the volume) answers, so a broken volume never goes live.
+# PostgreSQL database answers and has its schema, so a deploy that can't reach it never goes live.
 healthcheckPath = "/health"
 healthcheckTimeout = 60

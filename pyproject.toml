@@ -11,6 +11,8 @@ dependencies = [
     "fastapi>=0.141.1",
     "numpy>=2.5.3",
     "pillow>=12.3.0",
+    "psycopg-pool>=3.3.3",
+    "psycopg[binary]>=3.3.6",
     "pydantic-settings>=2.15.0",
     "python-multipart>=0.0.32",
     "uvicorn[standard]>=0.53.0",
@@ -60,5 +62,5 @@ testpaths = ["tests"]
 # Live tests call the real Claude API: opt in with `uv run pytest -m live`.
 addopts = "-ra -m 'not live'"
 markers = ["live: calls the real Claude API; needs GAME_SERVER_ANTHROPIC_API_KEY"]
-# Fail on warnings, e.g. an unclosed sqlite3 connection (ResourceWarning).
+# Fail on warnings, e.g. an unclosed connection (ResourceWarning).
 filterwarnings = ["error"]

@@ -18,18 +18,25 @@ from game_server import (
     proximity,
 )
 from game_server.config import get_settings
+from game_server.database import close_databases, database_config, open_database
 from game_server.logging_config import configure_logging
 from game_server.sessions import load_session_repository
-from game_server.submissions import open_submission_store
 
 GREETING = "Hello, World!"
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Create the submissions database schema before serving the first request."""
-    open_submission_store(get_settings().db_path)
-    yield
+    """Open the database's connection pool before serving, and close it on shutdown.
+
+    The pool connects in the background, so an unreachable database doesn't stop startup:
+    `/health` reports it unavailable until it answers.
+    """
+    open_database(database_config(get_settings()))
+    try:
+        yield
+    finally:
+        close_databases()
 
 
 async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:

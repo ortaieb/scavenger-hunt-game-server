@@ -18,7 +18,20 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_IMAGE_BASE_PATH",
         "GAME_SERVER_MAX_IMAGE_BYTES",
         "GAME_SERVER_SESSIONS_FILE",
-        "GAME_SERVER_DB_PATH",
+        "GAME_SERVER_DB_URL",
+        "GAME_SERVER_DB_HOST",
+        "GAME_SERVER_DB_PORT",
+        "GAME_SERVER_DB_NAME",
+        "GAME_SERVER_DB_USER",
+        "GAME_SERVER_DB_PASSWORD",
+        "GAME_SERVER_DB_SSLMODE",
+        "GAME_SERVER_DB_SSLROOTCERT",
+        "GAME_SERVER_DB_SSLCERT",
+        "GAME_SERVER_DB_SSLKEY",
+        "GAME_SERVER_DB_CONNECT_TIMEOUT_SECONDS",
+        "GAME_SERVER_DB_POOL_MIN_SIZE",
+        "GAME_SERVER_DB_POOL_MAX_SIZE",
+        "GAME_SERVER_DB_POOL_TIMEOUT_SECONDS",
         "GAME_SERVER_MAX_CAPTURE_AGE_SECONDS",
         "GAME_SERVER_MAX_CLOCK_SKEW_SECONDS",
         "GAME_SERVER_PHASH_MAX_DISTANCE",
@@ -120,14 +133,96 @@ def test_sessions_file_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert Settings().sessions_file == Path("/etc/game/sessions.json")
 
 
-def test_db_path_default() -> None:
-    assert Settings().db_path == Path("data/game.sqlite3")
+def test_db_defaults_require_tls() -> None:
+    settings = Settings()
+
+    assert settings.db_url is None
+    assert (settings.db_host, settings.db_port, settings.db_name, settings.db_user) == (
+        None,
+        None,
+        None,
+        None,
+    )
+    assert settings.db_password is None
+    assert settings.db_sslmode == "require"
+    assert (settings.db_sslrootcert, settings.db_sslcert, settings.db_sslkey) == (None, None, None)
+    assert settings.db_connect_timeout_seconds == 10
+    assert (settings.db_pool_min_size, settings.db_pool_max_size) == (1, 10)
+    assert settings.db_pool_timeout_seconds == 10
 
 
-def test_db_path_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GAME_SERVER_DB_PATH", "/srv/game.db")
+def test_db_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_DB_URL", "postgresql://game:s3cret@db.example:6543/hunt")
+    monkeypatch.setenv("GAME_SERVER_DB_HOST", "db.internal")
+    monkeypatch.setenv("GAME_SERVER_DB_PORT", "5433")
+    monkeypatch.setenv("GAME_SERVER_DB_NAME", "game")
+    monkeypatch.setenv("GAME_SERVER_DB_USER", "server")
+    monkeypatch.setenv("GAME_SERVER_DB_PASSWORD", "pa55")
+    monkeypatch.setenv("GAME_SERVER_DB_SSLMODE", "verify-full")
+    monkeypatch.setenv("GAME_SERVER_DB_SSLROOTCERT", "system")
+    monkeypatch.setenv("GAME_SERVER_DB_SSLCERT", "/certs/client.crt")
+    monkeypatch.setenv("GAME_SERVER_DB_SSLKEY", "/certs/client.key")
+    monkeypatch.setenv("GAME_SERVER_DB_POOL_MIN_SIZE", "2")
+    monkeypatch.setenv("GAME_SERVER_DB_POOL_MAX_SIZE", "4")
 
-    assert Settings().db_path == Path("/srv/game.db")
+    settings = Settings()
+
+    assert settings.db_url is not None
+    assert settings.db_url.get_secret_value() == "postgresql://game:s3cret@db.example:6543/hunt"
+    assert (settings.db_host, settings.db_port, settings.db_name, settings.db_user) == (
+        "db.internal",
+        5433,
+        "game",
+        "server",
+    )
+    assert settings.db_password is not None
+    assert settings.db_password.get_secret_value() == "pa55"
+    assert settings.db_sslmode == "verify-full"
+    assert settings.db_sslrootcert == "system"
+    assert (settings.db_sslcert, settings.db_sslkey) == (
+        Path("/certs/client.crt"),
+        Path("/certs/client.key"),
+    )
+    assert (settings.db_pool_min_size, settings.db_pool_max_size) == (2, 4)
+
+
+def test_db_credentials_are_not_in_the_repr(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_DB_URL", "postgresql://game:url-secret@db.example/hunt")
+    monkeypatch.setenv("GAME_SERVER_DB_PASSWORD", "field-secret")
+
+    text = repr(Settings())
+
+    assert "url-secret" not in text
+    assert "field-secret" not in text
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("GAME_SERVER_DB_SSLMODE", "on"),
+        ("GAME_SERVER_DB_PORT", "0"),
+        ("GAME_SERVER_DB_PORT", "65536"),
+        ("GAME_SERVER_DB_CONNECT_TIMEOUT_SECONDS", "0"),
+        ("GAME_SERVER_DB_POOL_MIN_SIZE", "-1"),
+        ("GAME_SERVER_DB_POOL_MAX_SIZE", "0"),
+        ("GAME_SERVER_DB_POOL_TIMEOUT_SECONDS", "0"),
+    ],
+)
+def test_invalid_db_settings_are_rejected(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_pool_max_size_below_min_size_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_DB_POOL_MIN_SIZE", "5")
+    monkeypatch.setenv("GAME_SERVER_DB_POOL_MAX_SIZE", "4")
+
+    with pytest.raises(ValidationError, match="db_pool_max_size must be at least"):
+        Settings()
 
 
 def test_capture_limits_defaults() -> None:

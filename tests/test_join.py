@@ -1,18 +1,17 @@
 import json
 import logging
-import sqlite3
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from threading import Barrier
 from typing import Any
 from uuid import UUID
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
+from psycopg.rows import DictRow
 
 from game_server.app import create_app
 from game_server.clock import get_clock
@@ -57,14 +56,9 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def db_path(tmp_path: Path) -> Path:
-    return tmp_path / "game.sqlite3"
-
-
-@pytest.fixture
-def client(db_path: Path, now: list[datetime]) -> Iterator[TestClient]:
+def client(now: list[datetime]) -> Iterator[TestClient]:
     app = create_app()
-    settings = Settings(db_path=db_path)
+    settings = Settings()
     sessions = repository()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: sessions
@@ -77,15 +71,8 @@ def join(client: TestClient, code: str = FOX, **body: Any) -> Response:
     return client.post("/join", json={"code": code, "consent": True, **body})
 
 
-def participants(db_path: Path) -> list[sqlite3.Row]:
-    if not db_path.exists():
-        return []
-    with closing(sqlite3.connect(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        try:
-            return conn.execute("SELECT * FROM participants ORDER BY joined_at").fetchall()
-        except sqlite3.OperationalError:
-            return []
+def participants(db: psycopg.Connection[DictRow]) -> list[DictRow]:
+    return db.execute("SELECT * FROM participants ORDER BY joined_at").fetchall()
 
 
 # --- joining ------------------------------------------------------------------------
@@ -113,7 +100,7 @@ def test_first_join_creates_the_participant(client: TestClient) -> None:
 
 @pytest.mark.parametrize("again", ["FOX-7Q2K", "fox-7q2k", "  Fox-7Q2k \n"])
 def test_joining_again_returns_the_same_participant(
-    client: TestClient, db_path: Path, now: list[datetime], again: str
+    client: TestClient, db: psycopg.Connection[DictRow], now: list[datetime], again: str
 ) -> None:
     first = join(client).json()["participant"]
     now[0] += timedelta(minutes=5)
@@ -122,19 +109,21 @@ def test_joining_again_returns_the_same_participant(
 
     assert response.status_code == 200
     assert response.json()["participant"] == first
-    [row] = participants(db_path)
-    assert row["joined_at"] == "2026-10-03T09:30:00+00:00"
-    assert row["consented_at"] == "2026-10-03T09:35:00+00:00"  # consent recorded again
+    [row] = participants(db)
+    assert row["joined_at"] == datetime(2026, 10, 3, 9, 30, tzinfo=UTC)
+    assert row["consented_at"] == datetime(2026, 10, 3, 9, 35, tzinfo=UTC)  # consent again
 
 
-def test_another_team_gets_another_participant(client: TestClient, db_path: Path) -> None:
+def test_another_team_gets_another_participant(
+    client: TestClient, db: psycopg.Connection[DictRow]
+) -> None:
     fox = join(client).json()["participant"]
     heron = join(client, HERON).json()["participant"]
 
     assert fox != heron
-    assert {(row["team"], row["session"]) for row in participants(db_path)} == {
-        ("Red Foxes", SESSION),
-        ("Blue Herons", SESSION),
+    assert {(row["team"], row["session"]) for row in participants(db)} == {
+        ("Red Foxes", UUID(SESSION)),
+        ("Blue Herons", UUID(SESSION)),
     }
 
 
@@ -165,22 +154,22 @@ def test_response_reveals_no_code_order_or_checkpoints(client: TestClient) -> No
     ],
 )
 def test_invalid_body_is_422_and_stores_nothing(
-    client: TestClient, db_path: Path, body: dict[str, Any]
+    client: TestClient, db: psycopg.Connection[DictRow], body: dict[str, Any]
 ) -> None:
     response = client.post("/join", json=body)
 
     assert response.status_code == 422
-    assert participants(db_path) == []
+    assert participants(db) == []
     assert all("input" not in error for error in response.json()["detail"])
     assert FOX not in response.text
 
 
-def test_unknown_code_is_404(client: TestClient, db_path: Path) -> None:
+def test_unknown_code_is_404(client: TestClient, db: psycopg.Connection[DictRow]) -> None:
     response = join(client, "NOPE-1234")
 
     assert response.status_code == 404
     assert response.json() == {"detail": "unknown code"}
-    assert participants(db_path) == []
+    assert participants(db) == []
 
 
 @pytest.mark.parametrize(
@@ -193,7 +182,11 @@ def test_unknown_code_is_404(client: TestClient, db_path: Path) -> None:
     ],
 )
 def test_joining_is_open_until_the_session_ends(
-    client: TestClient, now: list[datetime], db_path: Path, at: datetime, status: int
+    client: TestClient,
+    now: list[datetime],
+    db: psycopg.Connection[DictRow],
+    at: datetime,
+    status: int,
 ) -> None:
     now[0] = at
 
@@ -202,14 +195,15 @@ def test_joining_is_open_until_the_session_ends(
     assert response.status_code == status
     if status == 409:
         assert response.json() == {"detail": "session has ended"}
-        assert participants(db_path) == []
+        assert participants(db) == []
 
 
 # --- concurrency and logging ---------------------------------------------------------
 
 
-def test_concurrent_first_joins_create_one_participant(db_path: Path) -> None:
-    store = SubmissionStore(db_path)
+def test_concurrent_first_joins_create_one_participant(
+    store: SubmissionStore, db: psycopg.Connection[DictRow]
+) -> None:
     barrier = Barrier(8)
     at = datetime(2026, 10, 3, 9, 30, tzinfo=UTC)
 
@@ -223,7 +217,7 @@ def test_concurrent_first_joins_create_one_participant(db_path: Path) -> None:
 
     assert len({participant for participant, _ in results}) == 1
     assert [first for _, first in results].count(True) == 1
-    assert len(participants(db_path)) == 1
+    assert len(participants(db)) == 1
 
 
 def test_join_is_logged_without_the_code(
@@ -245,8 +239,7 @@ def test_join_is_logged_without_the_code(
 # --- participant lookup (for #38 and #39) --------------------------------------------
 
 
-def test_find_participant(db_path: Path) -> None:
-    store = SubmissionStore(db_path)
+def test_find_participant(store: SubmissionStore) -> None:
     sessions = repository()
     joined = store.join_team(UUID(SESSION), "Red Foxes", START).participant
 
@@ -261,8 +254,7 @@ def test_find_participant(db_path: Path) -> None:
     assert found.team.order == (1, 2, 3)
 
 
-def test_find_participant_none_cases(db_path: Path) -> None:
-    store = SubmissionStore(db_path)
+def test_find_participant_none_cases(store: SubmissionStore) -> None:
     joined = store.join_team(UUID(SESSION), "Blue Herons", START).participant
 
     assert find_participant(store, repository(), UUID(SESSION), UUID(int=7)) is None  # never joined

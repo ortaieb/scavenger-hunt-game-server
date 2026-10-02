@@ -54,7 +54,7 @@ def hamming_distance(a: int, b: int) -> int:
 
 
 def to_hex(phash: int) -> str:
-    """16-digit hex form, used for storage (SQLite integers are signed 64-bit)."""
+    """16-digit hex form, used for storage (database integers are signed 64-bit)."""
     return f"{phash:016x}"
 
 

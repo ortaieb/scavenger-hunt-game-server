@@ -41,7 +41,7 @@ class _VisualCheck(InTransaction):
     rejection: ClassVar[Rejection]
 
     def __call__(self, ctx: SubmissionContext, /) -> CheckResult:
-        """Map the referee's report to this check's result (see the README's table)."""
+        """Map the referee's report to this check's result (see the table in docs/api.md)."""
         report = ctx.referee_report
         if ctx.checkpoint.challenge is None:
             return self._skipped("no visual challenge configured")

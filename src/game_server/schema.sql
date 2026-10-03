@@ -10,7 +10,7 @@
 
 BEGIN;
 
-DROP TABLE IF EXISTS session_runs, arrivals, participants, submissions CASCADE;
+DROP TABLE IF EXISTS blocked_attempts, session_runs, arrivals, participants, submissions CASCADE;
 
 -- One row per photo submitted. Every row carries its session, so all of a session's data can
 -- be deleted together when the session closes.
@@ -80,5 +80,18 @@ CREATE TABLE session_runs (
     started_at TIMESTAMPTZ NULL,
     stopped_at TIMESTAMPTZ NULL
 );
+
+-- Teams that tried to play outside the session: a join or arrive refused, or a photo recorded
+-- as failed, because the session hadn't started or had stopped. For the moderator overview.
+-- Only the newest 500 per session are kept. Never the join code: the team it belongs to.
+CREATE TABLE blocked_attempts (
+    id      BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    session UUID        NOT NULL,
+    team    TEXT        NOT NULL,
+    action  TEXT        NOT NULL CHECK (action IN ('join', 'arrive', 'photo')),
+    code    TEXT        NOT NULL CHECK (code IN ('session_not_started', 'session_stopped')),
+    at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX blocked_attempts_newest ON blocked_attempts (session, at DESC, id DESC);
 
 COMMIT;

@@ -9,7 +9,7 @@ from psycopg.rows import DictRow
 from game_server.db_reset import main, reset_schema, schema_script
 from game_server.submissions import SubmissionStore
 
-TABLES = ["arrivals", "participants", "session_runs", "submissions"]
+TABLES = ["arrivals", "blocked_attempts", "participants", "session_runs", "submissions"]
 
 
 def tables(db: psycopg.Connection[DictRow]) -> list[str]:

@@ -205,6 +205,9 @@ def moderator_post(
 MODERATOR = {"Authorization": f"Bearer {MODERATOR_CODE}"}
 START = ("POST", "/sessions/{session}/start")
 STOP = ("POST", "/sessions/{session}/stop")
+OVERVIEW = ("GET", "/sessions/{session}/overview")
+# Routes only the moderator can call, which name checkpoints on purpose.
+NAMES_CHECKPOINTS = {OVERVIEW}
 
 
 def session_opening_responses(client: TestClient) -> dict[tuple[str, str], list[Response]]:
@@ -225,7 +228,18 @@ def session_closing_responses(client: TestClient) -> dict[tuple[str, str], list[
     stop = moderator_post(client, "stop", headers=MODERATOR)  # 201
     stop_again = moderator_post(client, "stop", headers=MODERATOR)  # 200
     start_late = moderator_post(client, "start", headers=MODERATOR)  # 409 stopped
-    return {START: [start_late], STOP: [stop, stop_again]}
+    client.post("/join", json={"code": JOIN_CODE, "consent": True})  # a blocked attempt
+
+    def overview(session: str = SESSION, **kwargs: Any) -> Response:
+        return client.get(f"/sessions/{session}/overview", **kwargs)
+
+    overviews = [
+        overview(headers=MODERATOR),  # 200, with a standing, progress and a blocked attempt
+        overview(),  # 401
+        overview(headers={"Authorization": f"Bearer {JOIN_CODE}"}),  # 401: not a moderator
+        overview(UNKNOWN, headers=MODERATOR),  # 404
+    ]
+    return {START: [start_late], STOP: [stop, stop_again], OVERVIEW: overviews}
 
 
 def app_routes(client: TestClient) -> set[tuple[str, str]]:
@@ -260,7 +274,8 @@ def test_no_route_ever_returns_the_scene(
         for response in route_responses:
             assert SENTINEL not in response.text, f"{route} leaked the scene"
             assert JOIN_CODE not in response.text, f"{route} leaked a join code"
-            assert NAME not in response.text, f"{route} leaked a checkpoint name"
+            if route not in NAMES_CHECKPOINTS:
+                assert NAME not in response.text, f"{route} leaked a checkpoint name"
             assert LATER_CLUE not in response.text, f"{route} leaked a later clue"
             assert PHOTO_NAME not in response.text, f"{route} leaked a reference photo"
             assert "reference" not in response.text.lower(), f"{route} mentions reference photos"
@@ -280,6 +295,7 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
     assert statuses[("POST", "/join")] == [200, 201, 404, 409, 422]
     assert statuses[("POST", "/sessions/{session}/start")] == [200, 201, 401, 404, 409]
     assert statuses[("POST", "/sessions/{session}/stop")] == [200, 201, 409]
+    assert statuses[OVERVIEW] == [200, 401, 404]
     assert statuses[("POST", "/sessions/{session}/participants/{participant}/arrive")] == [
         200,
         201,
@@ -365,3 +381,19 @@ def test_state_reveals_only_the_teams_own_score(client: TestClient, store: Submi
         {"points": 5, "in-review": 1, "final": False, "place": None},
         {"points": 5, "in-review": 1, "final": True, "place": 2},
     ]
+
+
+def test_the_overview_reveals_no_coordinates_clues_or_scenes(client: TestClient) -> None:
+    client.post(f"/sessions/{SESSION}/start", headers=MODERATOR)
+    testers = client.post("/join", json={"code": JOIN_CODE, "consent": True}).json()
+    submit(client, metadata(participant=testers["participant"]))  # pending at checkpoint 1
+
+    shown = client.get(f"/sessions/{SESSION}/overview", headers=MODERATOR)
+
+    [team, _] = shown.json()["teams"]
+    assert team["last-completed"]["name"] == NAME  # names are for the moderator
+    assert team["current"]["name"] == "Second spot"
+    for leak in ("51.5", "51.6", "-0.1", "-0.2", "proximity", "Find it", LATER_CLUE, SENTINEL):
+        assert leak not in shown.text
+    for secret in (JOIN_CODE, MODERATOR_CODE, testers["participant"]):
+        assert secret not in shown.text

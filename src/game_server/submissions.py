@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import Depends
@@ -90,6 +90,32 @@ class ArrivalOutcome:
 
     arrival: Arrival
     new: bool
+
+
+BlockedAction = Literal["join", "arrive", "photo"]
+PhaseCode = Literal["session_not_started", "session_stopped"]
+# Blocked attempts kept per session; older ones are deleted as new ones are recorded.
+BLOCKED_KEPT = 500
+
+
+@dataclass(frozen=True)
+class BlockedAttempt:
+    """A team trying to play outside the session: refused, or its photo didn't count."""
+
+    at: datetime
+    team: str
+    action: BlockedAction
+    code: PhaseCode
+
+
+@dataclass(frozen=True)
+class AcceptedSubmission:
+    """A joined team's accepted photo (`pass` or `pending`): which checkpoint, and when."""
+
+    team: str
+    checkpoint: int
+    verdict: VerdictStatus
+    received_at: datetime
 
 
 @dataclass(frozen=True)
@@ -212,6 +238,36 @@ class SubmissionStore:
             ),
         )
 
+    def accepted_submissions(self, session: UUID) -> list[AcceptedSubmission]:
+        """Every accepted photo (`pass` or `pending`) of the teams that joined the session."""
+        with self._database.connection() as conn:
+            rows = conn.execute(
+                "SELECT p.team, s.checkpoint, s.verdict, s.received_at"
+                " FROM submissions s JOIN participants p"
+                " ON s.session = p.session AND s.participant = p.id"
+                " WHERE s.session = %s AND s.verdict IN ('pass', 'pending')"
+                " ORDER BY s.received_at, s.id",
+                (session,),
+            ).fetchall()
+        return [AcceptedSubmission(*row) for row in rows]
+
+    def record_blocked(
+        self, session: UUID, team: str, action: BlockedAction, code: PhaseCode, at: datetime
+    ) -> None:
+        """Record a team's join or arrive refused for a phase reason."""
+        with self.transaction(session) as transaction:
+            transaction.record_blocked(session, team, action, code, at)
+
+    def blocked_attempts(self, session: UUID, limit: int) -> list[BlockedAttempt]:
+        """The session's newest blocked attempts, newest first."""
+        with self._database.connection() as conn:
+            rows = conn.execute(
+                "SELECT at, team, action, code FROM blocked_attempts WHERE session = %s"
+                " ORDER BY at DESC, id DESC LIMIT %s",
+                (session, limit),
+            ).fetchall()
+        return [BlockedAttempt(*row) for row in rows]
+
     def find_participant(self, session: UUID, participant: UUID) -> ParticipantRecord | None:
         """The participant's row, if it joined this session."""
         with self._database.connection() as conn:
@@ -326,6 +382,42 @@ class SubmissionTransaction:
             (participant, session, team, now, now),
         )
         return JoinOutcome(participant=participant, first=True)
+
+    def record_blocked(
+        self, session: UUID, team: str, action: BlockedAction, code: PhaseCode, at: datetime
+    ) -> None:
+        """See `SubmissionStore.record_blocked`."""
+        self._conn.execute(
+            "INSERT INTO blocked_attempts (session, team, action, code, at)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (session, team, action, code, at),
+        )
+        self._trim_blocked(session)
+
+    def record_blocked_photo(
+        self, session: UUID, participant: UUID, code: PhaseCode, at: datetime
+    ) -> None:
+        """Record a photo that didn't count for a phase reason, under the participant's team.
+
+        Nothing is recorded for a participant that never joined: there's no team to show.
+        """
+        inserted = self._conn.execute(
+            "INSERT INTO blocked_attempts (session, team, action, code, at)"
+            " SELECT session, team, 'photo', %s, %s FROM participants"
+            " WHERE id = %s AND session = %s",
+            (code, at, participant, session),
+        )
+        if inserted.rowcount:
+            self._trim_blocked(session)
+
+    def _trim_blocked(self, session: UUID) -> None:
+        """Keep only the session's newest `BLOCKED_KEPT` blocked attempts."""
+        self._conn.execute(
+            "DELETE FROM blocked_attempts WHERE session = %s AND id NOT IN ("
+            " SELECT id FROM blocked_attempts WHERE session = %s"
+            " ORDER BY at DESC, id DESC LIMIT %s)",
+            (session, session, BLOCKED_KEPT),
+        )
 
     def record(self, submission: NewSubmission) -> RecordedSubmission:
         """Insert `submission` as the next attempt for its (session, participant, checkpoint)."""

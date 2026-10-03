@@ -10,14 +10,14 @@ unlimited yes/no oracle for the checkpoint's position. The geofence stays in POS
 
 import logging
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, timedelta
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from game_server.clock import Clock, get_clock
+from game_server.clock import Clock, get_clock, utc_iso
 from game_server.config import Settings, get_settings
 from game_server.game_state import team_state
 from game_server.join import find_participant
@@ -64,14 +64,9 @@ class ArrivalOut(BaseModel):
             checkpoint=arrival.checkpoint,
             pose=arrival.pose,
             code=arrival.code,
-            issued_at=_utc(arrival.issued_at),
-            expires_at=_utc(arrival.expires_at),
+            issued_at=utc_iso(arrival.issued_at),
+            expires_at=utc_iso(arrival.expires_at),
         )
-
-
-def _utc(moment: datetime) -> str:
-    """`2026-10-03T09:41:05Z`: UTC, to the second."""
-    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _conflict(detail: str) -> HTTPException:

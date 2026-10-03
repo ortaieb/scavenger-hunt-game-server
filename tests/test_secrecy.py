@@ -3,10 +3,10 @@
 import json
 import logging
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -18,7 +18,9 @@ from starlette.routing import Route
 from game_server.app import create_app
 from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
+from game_server.models import VerdictStatus
 from game_server.sessions import get_session_repository, parse_sessions
+from game_server.submissions import NewSubmission, SubmissionStore
 
 SENTINEL = "SENTINEL-SCENE-4b1d"
 JOIN_CODE = "SENTINEL-CODE-9X"  # a credential: no response may echo it
@@ -26,6 +28,8 @@ NAME = "SENTINEL-NAME-c3"  # checkpoint names are never shown
 LATER_CLUE = "SENTINEL-LATER-CLUE-7e"  # the second clue on the route: not while on the first
 PHOTO_NAME = "SENTINEL-PHOTO-fountain-north"  # a reference photo's file name shows the place
 MODERATOR_CODE = "SENTINEL-MOD-4Q"  # a credential: never in a response or a log line
+RIVALS = "SENTINEL-RIVALS-5d"  # another team: never in this team's state
+RIVAL_CODE = "SENTINEL-RIVAL-CODE-2W"
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 UNKNOWN = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 NOW = datetime(2026, 10, 3, 10, 30, tzinfo=UTC)
@@ -57,7 +61,10 @@ SESSIONS_JSON = json.dumps(
                     "proximity": 40,
                 },
             ],
-            "teams": [{"name": "Testers", "join-code": JOIN_CODE, "order": [1, 2]}],
+            "teams": [
+                {"name": "Testers", "join-code": JOIN_CODE, "order": [1, 2]},
+                {"name": RIVALS, "join-code": RIVAL_CODE, "order": [2, 1]},
+            ],
             "moderator-code": MODERATOR_CODE,
         }
     ]
@@ -300,3 +307,61 @@ def test_arrive_reveals_no_place(client: TestClient) -> None:
     for response in arrive_responses:
         for leak in ("51.5", "-0.1", "proximity", NAME, SENTINEL, LATER_CLUE):
             assert leak not in response.text
+
+
+def record(
+    store: SubmissionStore, participant: str, checkpoint: int, verdict: VerdictStatus, at: datetime
+) -> None:
+    store.record(
+        NewSubmission(
+            session=UUID(SESSION),
+            participant=UUID(participant),
+            checkpoint=checkpoint,
+            received_at=at,
+            capture_time=at,
+            lat=51.5,
+            long=-0.1,
+            image_id=uuid4(),
+            verdict=verdict,
+            checks=(),
+            distance_m=1.0,
+            phash=checkpoint,
+        )
+    )
+
+
+def test_state_reveals_only_the_teams_own_score(client: TestClient, store: SubmissionStore) -> None:
+    """Never another team's points, a per-checkpoint breakdown or a place at one checkpoint."""
+    moderator = {"Authorization": f"Bearer {MODERATOR_CODE}"}
+    client.post(f"/sessions/{SESSION}/start", headers=moderator)
+    testers, rivals = (
+        client.post("/join", json={"code": code, "consent": True}).json()["participant"]
+        for code in (JOIN_CODE, RIVAL_CODE)
+    )
+    record(store, rivals, 1, "pass", NOW)  # rivals first at 1: Testers are 2nd there
+    record(store, testers, 1, "pass", NOW + timedelta(minutes=1))
+    record(store, testers, 2, "pending", NOW + timedelta(minutes=2))
+    url = f"/sessions/{SESSION}/participants/{testers}/state"
+    states = [client.get(url)]
+    client.post(f"/sessions/{SESSION}/stop", headers=moderator)
+    states.append(client.get(url))
+
+    for response in states:
+        body = response.json()
+        assert set(body) == {"status", "team", "progress", "current", "session", "score"}
+        assert set(body["score"]) == {"points", "in-review", "final", "place"}
+        assert set(body["session"]) == {
+            "phase",
+            "planned-start",
+            "planned-end",
+            "started-at",
+            "stopped-at",
+            "server-time",
+        }
+        for leak in (RIVALS, RIVAL_CODE, rivals, MODERATOR_CODE, JOIN_CODE):
+            assert leak not in response.text
+    # Testers: 2nd at checkpoint 1, pending at 2 (3 = two teams joined + 1). Rivals: 1 + 3.
+    assert [r.json()["score"] for r in states] == [
+        {"points": 5, "in-review": 1, "final": False, "place": None},
+        {"points": 5, "in-review": 1, "final": True, "place": 2},
+    ]

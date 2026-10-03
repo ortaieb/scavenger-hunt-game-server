@@ -12,11 +12,13 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from game_server.checks.time_window import window_is_open
-from game_server.clock import Clock, get_clock
+from game_server.clock import Clock, get_clock, utc_iso
 from game_server.join import find_participant
+from game_server.scoring import SessionResults, places, team_points
+from game_server.session_control import SessionClock, session_clock
 from game_server.session_runs import SessionRun, session_phase
 from game_server.sessions import GameSession, SessionRepository, Team, get_session_repository
 from game_server.submissions import SubmissionStore, get_submission_store
@@ -100,6 +102,21 @@ class CurrentOut(BaseModel):
     open: bool
 
 
+class ScoreOut(BaseModel):
+    """The team's own total only: never another team's, nor a per-checkpoint breakdown.
+
+    `points` is what the team would score if the session finished now; lower is better.
+    `place` is its final position among the teams that joined, set once the session stops.
+    """
+
+    model_config = ConfigDict(validate_by_name=True)
+
+    points: int
+    in_review: int = Field(alias="in-review")
+    final: bool
+    place: int | None
+
+
 class TeamStateOut(BaseModel):
     """Only the current clue: never other clues, names, places, times or the route."""
 
@@ -107,6 +124,22 @@ class TeamStateOut(BaseModel):
     team: str
     progress: ProgressOut
     current: CurrentOut | None
+    session: SessionClock
+    score: ScoreOut
+
+
+def team_score(session: GameSession, team: Team, results: SessionResults, final: bool) -> ScoreOut:
+    """The team's score; its place among the joined teams once the session is `final`."""
+    own = team_points(team, results)
+    place = None
+    if final:
+        totals = {
+            other.name: team_points(other, results).points
+            for other in session.teams
+            if other.name in results.joined
+        }
+        place = places(totals)[team.name]
+    return ScoreOut(points=own.points, in_review=own.in_review, final=final, place=place)
 
 
 @router.get(
@@ -128,7 +161,10 @@ def participant_state(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown participant")
     completed = store.completed_checkpoints(session, participant)
     run = store.session_run(session)
-    state = team_state(joined.session, joined.team, completed, clock().astimezone(UTC), run)
+    results = store.session_results(session)
+    now = clock().astimezone(UTC)
+    state = team_state(joined.session, joined.team, completed, now, run)
+    final = session_phase(run) == "stopped"
     current = state.current
     return TeamStateOut(
         status=state.status,
@@ -142,4 +178,6 @@ def participant_state(
         )
         if current
         else None,
+        session=session_clock(joined.session, run, utc_iso(now)),
+        score=team_score(joined.session, joined.team, results, final),
     )

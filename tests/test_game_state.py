@@ -32,7 +32,7 @@ END = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
 DURING = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
 WINDOW_OPENS = datetime(2026, 10, 3, 10, 30, tzinfo=UTC)  # checkpoint 3's own window
 WINDOW_CLOSES = datetime(2026, 10, 3, 11, 0, tzinfo=UTC)
-FOX, HERON = "FOX-7Q2K", "HERON-4MXP"
+FOX, HERON, OWL = "FOX-7Q2K", "HERON-4MXP", "OWL-9KD3"
 RUNNING = SessionRun(started_at=START, stopped_at=None)
 STOPPED = SessionRun(started_at=START, stopped_at=END)
 
@@ -75,6 +75,11 @@ def session_json(session_id: str) -> dict[str, Any]:
                 "name": "Blue Herons",
                 "join-code": HERON if session_id == SESSION else "OTHER-HRN1",
                 "order": [3, 1, 2],
+            },
+            {
+                "name": "Green Owls",
+                "join-code": OWL if session_id == SESSION else "OTHER-OWL1",
+                "order": [2, 3, 1],
             },
         ],
     }
@@ -241,14 +246,15 @@ def submit(
     checkpoint: int,
     verdict: VerdictStatus,
     session: str = SESSION,
+    at: datetime = DURING,
 ) -> None:
     store.record(
         NewSubmission(
             session=UUID(session),
             participant=UUID(participant),
             checkpoint=checkpoint,
-            received_at=DURING,
-            capture_time=DURING,
+            received_at=at,
+            capture_time=at,
             lat=51.5,
             long=-0.1,
             image_id=uuid4(),
@@ -269,6 +275,15 @@ def test_playing_response(client: TestClient) -> None:
         "team": "Red Foxes",
         "progress": {"completed": 0, "total": 3},
         "current": {"sequence": 1, "position": 1, "clue": "Clue 1", "open": True},
+        "session": {
+            "phase": "running",
+            "planned-start": "2026-10-03T09:00:00Z",
+            "planned-end": "2026-10-03T12:00:00Z",
+            "started-at": "2026-10-03T09:00:00Z",
+            "stopped-at": None,
+            "server-time": "2026-10-03T10:00:00Z",
+        },
+        "score": {"points": 6, "in-review": 0, "final": False, "place": None},
     }
 
 
@@ -347,7 +362,7 @@ def test_everything_completed_is_finished_even_after_a_stop(
 
     body = state(client, participant).json()
 
-    assert body == {
+    assert {key: body[key] for key in ("status", "team", "progress", "current")} == {
         "status": "finished",
         "team": "Red Foxes",
         "progress": {"completed": 3, "total": 3},
@@ -375,7 +390,7 @@ def test_response_reveals_only_the_current_clue(client: TestClient) -> None:
 
     for leak in ("Clue 2", "Clue 3", "Name", "51.5", "proximity", "order", FOX, "Blue Herons"):
         assert leak not in text
-    for times in ("10:30", "11:00", "09:00", "12:00"):
+    for times in ("10:30", "11:00"):  # the checkpoint's window; the planned times are shown
         assert times not in text
 
 
@@ -414,3 +429,161 @@ def test_participant_of_another_session_is_404(client: TestClient) -> None:
 )
 def test_malformed_ids_are_422(client: TestClient, path: str) -> None:
     assert client.get(path).status_code == 422
+
+
+# --- the score (#52) --------------------------------------------------------------------
+
+LATER = DURING + timedelta(minutes=5)
+
+
+def score(client: TestClient, participant: str) -> dict[str, Any]:
+    body: dict[str, Any] = state(client, participant).json()["score"]
+    return body
+
+
+def test_places_follow_the_order_photos_were_received(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    fox, heron = join(client), join(client, HERON)
+    submit(store, heron, 1, "pass", at=DURING)
+    submit(store, fox, 1, "pass", at=LATER)
+
+    # Two teams joined, so each unplaced checkpoint counts 3.
+    assert score(client, heron)["points"] == 1 + 3 + 3
+    assert score(client, fox)["points"] == 2 + 3 + 3
+
+
+def test_three_teams_completing_in_different_orders(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    fox, heron, owl = join(client), join(client, HERON), join(client, OWL)
+    for minutes, team, checkpoint in [
+        (0, owl, 1),
+        (1, fox, 1),
+        (2, heron, 1),
+        (3, heron, 2),
+        (4, owl, 2),
+        (5, fox, 2),
+    ]:
+        submit(store, team, checkpoint, "pass", at=DURING + timedelta(minutes=minutes))
+
+    # Four teams' worth: N=3 joined, so checkpoint 3 counts 4 for everyone.
+    assert score(client, fox)["points"] == 2 + 3 + 4
+    assert score(client, heron)["points"] == 3 + 1 + 4
+    assert score(client, owl)["points"] == 1 + 2 + 4
+
+
+def test_the_order_is_set_by_the_photo_not_the_arrival(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    fox, heron = join(client), join(client, HERON)
+    client.post(f"/sessions/{SESSION}/participants/{fox}/arrive", json={"checkpoint": 1})
+    submit(store, heron, 1, "pass", at=DURING)
+    submit(store, fox, 1, "pass", at=LATER)
+
+    assert score(client, fox)["points"] == 2 + 3 + 3
+
+
+def test_a_team_scores_by_its_first_accepted_photo(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    fox, heron = join(client), join(client, HERON)
+    submit(store, fox, 1, "pass", at=DURING)
+    submit(store, heron, 1, "pass", at=DURING + timedelta(minutes=1))
+    submit(store, fox, 1, "pass", at=DURING + timedelta(minutes=2))  # a later copy
+
+    assert score(client, fox)["points"] == 1 + 3 + 3
+
+
+def test_a_pending_photo_scores_nothing_and_is_in_review(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    fox, heron = join(client), join(client, HERON)
+    submit(store, fox, 1, "pending", at=DURING)
+    submit(store, heron, 1, "pass", at=LATER)
+
+    assert score(client, fox) == {
+        "points": 3 + 3 + 3,
+        "in-review": 1,
+        "final": False,
+        "place": None,
+    }
+    assert score(client, heron)["points"] == 1 + 3 + 3  # first, ahead of the pending photo
+
+
+def test_a_failed_photo_scores_nothing(client: TestClient, store: SubmissionStore) -> None:
+    fox, _ = join(client), join(client, HERON)
+    submit(store, fox, 1, "failed")
+
+    assert score(client, fox) == {"points": 9, "in-review": 0, "final": False, "place": None}
+
+
+def test_unfinished_checkpoints_count_teams_joined_plus_one(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    fox = join(client)  # three teams in the file, one joined
+    assert score(client, fox)["points"] == 2 + 2 + 2
+
+    join(client, HERON)
+    assert score(client, fox)["points"] == 3 + 3 + 3
+
+
+def test_other_sessions_do_not_count(client: TestClient, store: SubmissionStore) -> None:
+    fox, heron = join(client), join(client, HERON)
+    submit(store, heron, 1, "pass", session=OTHER_SESSION, at=DURING)
+    submit(store, fox, 1, "pass", at=LATER)
+
+    assert score(client, fox)["points"] == 1 + 3 + 3
+
+
+def test_equal_times_share_a_place_at_a_checkpoint(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    fox, heron, owl = join(client), join(client, HERON), join(client, OWL)
+    submit(store, fox, 1, "pass", at=DURING)
+    submit(store, heron, 1, "pass", at=DURING)
+    submit(store, owl, 1, "pass", at=LATER)
+
+    assert score(client, fox)["points"] == score(client, heron)["points"] == 1 + 4 + 4
+    assert score(client, owl)["points"] == 3 + 4 + 4
+
+
+def test_a_stop_makes_the_score_final_with_a_place(
+    client: TestClient, store: SubmissionStore, now: list[datetime]
+) -> None:
+    fox, heron = join(client), join(client, HERON)
+    submit(store, heron, 1, "pass", at=DURING)
+    submit(store, fox, 1, "pass", at=LATER)
+    store.stop_run(UUID(SESSION), datetime(2026, 10, 3, 11, 30, tzinfo=UTC))
+    now[0] = datetime(2026, 10, 3, 11, 45, tzinfo=UTC)
+
+    body = state(client, fox).json()
+
+    assert body["session"]["phase"] == "stopped"
+    assert body["session"]["stopped-at"] == "2026-10-03T11:30:00Z"
+    assert body["score"] == {"points": 8, "in-review": 0, "final": True, "place": 2}
+    assert score(client, heron) == {"points": 7, "in-review": 0, "final": True, "place": 1}
+
+
+def test_tied_totals_share_the_final_place(client: TestClient, store: SubmissionStore) -> None:
+    fox, heron, owl = join(client), join(client, HERON), join(client, OWL)
+    submit(store, fox, 1, "pass", at=DURING)
+    submit(store, heron, 3, "pass", at=DURING)
+    store.stop_run(UUID(SESSION), LATER)
+
+    assert [score(client, team)["place"] for team in (fox, heron, owl)] == [1, 1, 3]
+
+
+def test_the_score_shows_only_the_teams_own_total(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    fox, heron = join(client), join(client, HERON)
+    submit(store, heron, 1, "pass", at=DURING)
+    submit(store, fox, 1, "pass", at=LATER)
+    store.stop_run(UUID(SESSION), LATER)
+
+    body = state(client, fox).json()
+
+    assert body["score"] == {"points": 8, "in-review": 0, "final": True, "place": 2}
+    assert set(body) == {"status", "team", "progress", "current", "session", "score"}
+    assert "Blue Herons" not in state(client, fox).text

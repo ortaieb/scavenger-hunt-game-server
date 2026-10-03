@@ -59,8 +59,8 @@ CREATE TABLE participants (
     UNIQUE (session, team)
 );
 
--- A team's check-ins at a checkpoint, each with a one-time code. The first arrival at a
--- checkpoint is the team's check-in time (for scoring by order of arrival).
+-- A team's check-ins at a checkpoint, each with a one-time code. Not used for scoring: the
+-- order of arrival is set by the accepted photo's received_at.
 CREATE TABLE arrivals (
     id          BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     session     UUID        NOT NULL,

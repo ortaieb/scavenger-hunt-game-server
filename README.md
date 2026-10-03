@@ -415,8 +415,8 @@ Each check-in at a checkpoint is recorded in an `arrivals` table, with its one-t
 | `pose`                                 | The pose issued, or empty |
 | `issued_at`, `expires_at`              | Server times (`TIMESTAMPTZ`) |
 
-A team's first arrival at a checkpoint is its check-in time, which scoring by order of arrival
-will read. Rows carry their `session`, so they're deleted with the session's other data.
+Arrivals don't set the order of arrival: [scoring](#scoring) ranks teams by when their
+accepted photo was received, since arriving takes no location. Rows carry their `session`, so they're deleted with the session's other data.
 
 ### `POST /join`
 
@@ -496,7 +496,16 @@ that team's turn.
     "position": 2,
     "clue": "He promised never to grow old; find him by the long water.",
     "open": true
-  }
+  },
+  "session": {
+    "phase": "running",
+    "planned-start": "2026-10-03T09:00:00Z",
+    "planned-end": "2026-10-03T12:00:00Z",
+    "started-at": "2026-10-03T09:03:12Z",
+    "stopped-at": null,
+    "server-time": "2026-10-03T10:41:05Z"
+  },
+  "score": { "points": 7, "in-review": 0, "final": false, "place": null }
 }
 ```
 
@@ -505,6 +514,8 @@ that team's turn.
 | `status`   | `not_started` until the moderator starts the session. `playing` while it runs and the team has a checkpoint left. `finished` once the team has completed every checkpoint on its route, in any phase. `ended` after the moderator stops the session, if the team hadn't finished. The planned `start-time` and `end-time` don't change the status |
 | `progress` | How many checkpoints on the team's route it has completed, and how many there are |
 | `current`  | Only while `playing`, otherwise `null`. `sequence` is what the app sends as `checkpoint` to `POST /challenge`. `position` is its place on the team's route, counting from 1. `clue` is the checkpoint's clue. `open` is whether its effective window is open now |
+| `session`  | The [session clock](#post-sessionssessionstart), as the moderator's start and stop return it: the phase, the planned times (for display, e.g. time to the planned end), when it started and stopped, and `server-time` to correct a phone's clock |
+| `score`    | The team's own [score](#scoring). `points`: its total so far, lower is better. `in-review`: checkpoints whose `pending` photo awaits the moderator. `final`: `true` once the session is stopped. `place`: `null` until final, then the team's position among the teams that joined, lowest points first; ties share a place (1, 1, 3) |
 
 | Status | When |
 |--------|------|
@@ -528,13 +539,36 @@ every submission that doesn't fail is `pending`, so this is also what lets a hun
 through without the referee. When moderator overrides arrive, they'll be recorded beside the
 original verdict rather than rewriting it, so an override can't move a team backwards.
 
+#### Scoring
+
+Points by order of arrival (day-1 game guidelines, decided 2 Oct 2026); **the lowest total
+wins**. For each team that joined, over the checkpoints on its route:
+
+- A checkpoint where the referee accepted the team's photo (`pass`) scores the team's
+  **place** there: 1 if its accepted photo was received first among all teams, 2 if second,
+  and so on. Teams are ordered by the server's `received-at` of their first `pass` there.
+  Equal times share a place.
+- Every other checkpoint counts **N+1**, where N is the number of teams that have joined the
+  session (not the number in the sessions file).
+- A `pending` photo scores nothing yet: its checkpoint still counts N+1, and it's counted in
+  `in-review`. Once the moderator accepts it, it will take its place by its own receive time,
+  which can move other teams down a place.
+- A `failed` photo scores nothing.
+- `points` is the sum. It always equals the result if the session finished now, so lower is
+  better at every moment.
+
+The order is set by the **photo**, not the arrive tap: arriving takes no location, so ranking
+by it would let a team tap early and buy a better place. `scoring.team_points` computes a
+team's total; the moderator's overview will use the same function.
+
 `POST /challenge` doesn't change: it still accepts a photo for a checkpoint that isn't the
 team's current one, and that photo counts when the checkpoint's turn comes. Holding
 submissions to the team's current checkpoint comes with the one-time code check.
 
 **Secrecy.** The response holds only the current clue: never other checkpoints' clues, any
 checkpoint's name, coordinates, proximity, window times, scene, the team's route, other teams
-or the join code. `open` says whether the window is open now, never when it opens or closes.
+or the join code. The score is the team's own total only: never another team's points, a
+per-checkpoint breakdown or its place at a single checkpoint. `open` says whether the window is open now, never when it opens or closes.
 The every-route secrecy test puts sentinels in a checkpoint's name and in the second clue on a
 team's route, and checks neither appears in any response while the team is on its first.
 
@@ -1277,6 +1311,7 @@ src/game_server/
   session_runs.py    # SessionRun and session_phase (scheduled / running / stopped)
   session_control.py # moderator start and stop, and the session clock
   game_state.py      # team state: team_state() rules and the `…/state` endpoint
+  scoring.py         # points by order of arrival: team_points(), places()
   arrive.py          # `…/arrive`: check in, pose and one-time code
   lookup.py          # find_checkpoint: shared session/checkpoint lookup (404s)
   imaging.py         # safe image decoding: pixel cap, EXIF orientation, decode errors

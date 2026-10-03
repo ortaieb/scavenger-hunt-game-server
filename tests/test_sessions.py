@@ -777,3 +777,104 @@ def test_dependency_passes_the_image_size_limit(photo_dir: Path) -> None:
 
     with pytest.raises(SessionsFileError, match="file is larger than 10 bytes"):
         get_session_repository(Settings(sessions_file=sessions_file, max_image_bytes=10))
+
+
+# --- moderator code (#49) -----------------------------------------------------------
+
+MOD_A = "MOD-8H3T-QX"
+MOD_B = "MOD-2KV9-ZP"
+
+
+def with_moderator(
+    code: str | None, *teams: dict[str, Any], session_id: str = SESSION_ID
+) -> dict[str, Any]:
+    payload = with_teams(*teams, session_id=session_id)
+    if code is not None:
+        payload["moderator-code"] = code
+    return payload
+
+
+def refused_codes(*sessions: dict[str, Any]) -> str:
+    with pytest.raises(SessionsFileError) as excinfo:
+        parse_sessions(to_json(*sessions))
+    message = str(excinfo.value)
+    for code in (MOD_A, MOD_B, CODE_A, CODE_B):
+        assert code not in message.upper()
+    return message
+
+
+def test_moderator_code_is_optional() -> None:
+    repository = parse_sessions(to_json(with_moderator(None)))
+
+    assert repository.moderator_code(UUID(SESSION_ID)) is None
+
+
+def test_moderator_code_is_normalised() -> None:
+    repository = parse_sessions(to_json(with_moderator(f"  {MOD_A.lower()} ")))
+
+    assert repository.moderator_code(UUID(SESSION_ID)) == MOD_A
+    assert repository.moderator_code(UUID(OTHER_SESSION_ID)) is None
+
+
+def test_moderator_code_is_hidden_from_repr() -> None:
+    session = parse_sessions(to_json(with_moderator(MOD_A))).get_session(UUID(SESSION_ID))
+
+    assert session is not None
+    assert MOD_A not in repr(session)
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        pytest.param("MOD12", "String should have at least 6 characters", id="too-short"),
+        pytest.param("M" * 33, "String should have at most 32 characters", id="too-long"),
+        pytest.param("MOD 8H3T", "String should match pattern", id="space"),
+        pytest.param("MOD_8H3T", "String should match pattern", id="underscore"),
+    ],
+)
+def test_bad_moderator_code_format(code: str, message: str) -> None:
+    with pytest.raises(SessionsFileError) as excinfo:
+        parse_sessions(to_json(with_moderator(code)))
+
+    assert f"  [0].moderator-code: {message}" in str(excinfo.value)
+    assert code not in str(excinfo.value)
+
+
+def test_duplicate_moderator_code_across_sessions() -> None:
+    message = refused_codes(
+        with_moderator(MOD_A), with_moderator(MOD_A.lower(), session_id=OTHER_SESSION_ID)
+    )
+
+    assert "  [1].moderator-code: duplicate moderator code" in message
+
+
+def test_moderator_code_equal_to_an_earlier_join_code() -> None:
+    message = refused_codes(
+        with_moderator(None, team()),  # team code CODE_A
+        with_moderator(CODE_A.lower(), session_id=OTHER_SESSION_ID),
+    )
+
+    assert "  [1].moderator-code: same as a join code" in message
+
+
+def test_join_code_equal_to_the_moderator_code() -> None:
+    message = refused_codes(with_moderator(f" {CODE_A.lower()}", team()))
+
+    assert "  [0].teams[0].join-code: same as a moderator code" in message
+
+
+def test_join_codes_still_report_join_duplicates() -> None:
+    message = refused_codes(with_moderator(MOD_A, team(), team("Blue Herons", CODE_A)))
+
+    assert "  [0].teams[1].join-code: duplicate join code" in message
+
+
+def test_every_code_clash_is_reported() -> None:
+    message = refused_codes(
+        with_moderator(MOD_A, team()),
+        with_moderator(MOD_A, team(code=MOD_A), session_id=OTHER_SESSION_ID),
+    )
+
+    assert "2 validation error(s)" in message
+    assert "[1].moderator-code: duplicate moderator code" in message
+    assert "[1].teams[0].join-code: same as a moderator code" in message

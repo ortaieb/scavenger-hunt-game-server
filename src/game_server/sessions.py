@@ -15,11 +15,11 @@ from fastapi import Depends
 from pydantic import (
     AwareDatetime,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     TypeAdapter,
     ValidationError,
-    field_validator,
     model_validator,
 )
 
@@ -105,19 +105,27 @@ def normalise_join_code(code: str) -> str:
     return code.strip().upper()
 
 
+def _strip(value: object) -> object:
+    """Surrounding spaces don't count: `FOX-7Q2K ` is the code `FOX-7Q2K`."""
+    return value.strip() if isinstance(value, str) else value
+
+
+# A credential in the sessions file (a join code or a moderator code): 6-32 letters, digits
+# or `-`, surrounding spaces stripped, compared ignoring case (see `normalise_join_code`).
+Credential = Annotated[
+    str,
+    Field(min_length=6, max_length=32, pattern=r"^[A-Za-z0-9-]+$"),
+    BeforeValidator(_strip),  # after the constraints, so it wraps them and errors read as strings
+]
+
+
 class Team(_SessionModel):
     """A team: plays as one participant, visiting the checkpoints in its own order."""
 
     name: str = Field(min_length=1, max_length=40)
     # A credential: never returned, never logged (hence repr=False).
-    join_code: str = Field(min_length=6, max_length=32, pattern=r"^[A-Za-z0-9-]+$", repr=False)
+    join_code: Credential = Field(repr=False)
     order: tuple[int, ...] = Field(description="Every checkpoint sequence, each once")
-
-    @field_validator("join_code", mode="before")
-    @classmethod
-    def _strip_code(cls, value: object) -> object:
-        """Surrounding spaces don't count: `FOX-7Q2K ` is the code `FOX-7Q2K`."""
-        return value.strip() if isinstance(value, str) else value
 
 
 class GameSession(_SessionModel):
@@ -131,6 +139,9 @@ class GameSession(_SessionModel):
     checkpoints: tuple[Checkpoint, ...] = Field(min_length=1)
     # Optional: without teams, nobody can join the session.
     teams: tuple[Team, ...] = ()
+    # Optional: authorises the moderator's endpoints for this session. Without one, the
+    # session can't be moderated. A credential like a join code (hence repr=False).
+    moderator_code: Credential | None = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:
@@ -178,26 +189,42 @@ def _order_problem(order: tuple[int, ...], sequences: set[int]) -> str | None:
     return None
 
 
-def _index_join_codes(sessions: Sequence[GameSession]) -> dict[str, tuple[GameSession, Team]]:
-    """Map each normalised join code to its team; codes must be unique across the file.
+def _index_codes(
+    sessions: Sequence[GameSession],
+) -> tuple[dict[str, tuple[GameSession, Team]], dict[UUID, str]]:
+    """Index join codes (to their team) and moderator codes (by session), normalised.
 
-    A duplicate is reported by the later team's path, never by the code itself.
+    Every code, of either kind, must be unique across the file: a moderator code can't
+    repeat another, nor equal any join code. A clash is reported at the later entry's path,
+    saying what it clashes with, never the code itself.
     """
-    index: dict[str, tuple[GameSession, Team]] = {}
+    owners: dict[str, str] = {}  # normalised code -> "join code" or "moderator code"
+    join_codes: dict[str, tuple[GameSession, Team]] = {}
+    moderator_codes: dict[UUID, str] = {}
     problems = []
+
+    def claim(code: str, kind: str, loc: tuple[str | int, ...]) -> bool:
+        earlier = owners.get(code)
+        if earlier is None:
+            owners[code] = kind
+            return True
+        problem = f"duplicate {kind}" if earlier == kind else f"same as a {earlier}"
+        problems.append(f"{_path(loc)}: {problem}")
+        return False
+
     for session_index, session in enumerate(sessions):
+        if session.moderator_code is not None:
+            code = normalise_join_code(session.moderator_code)
+            if claim(code, "moderator code", (session_index, "moderator-code")):
+                moderator_codes[session.id] = code
         for team_index, team in enumerate(session.teams):
             code = normalise_join_code(team.join_code)
-            if code in index:
-                path = _path((session_index, "teams", team_index, "join-code"))
-                problems.append(f"{path}: duplicate join code")
-            else:
-                index[code] = (session, team)
+            if claim(code, "join code", (session_index, "teams", team_index, "join-code")):
+                join_codes[code] = (session, team)
     if problems:
-        raise ValueError(
-            "\n".join([f"{len(problems)} validation error(s)", *(f"  {p}" for p in problems)])
-        )
-    return index
+        lines = [f"{len(problems)} validation error(s)", *(f"  {p}" for p in problems)]
+        raise ValueError("\n".join(lines))
+    return join_codes, moderator_codes
 
 
 JPEG_MAGIC = b"\xff\xd8\xff"
@@ -286,7 +313,7 @@ class SessionRepository:
             session.id: {checkpoint.sequence: checkpoint for checkpoint in session.checkpoints}
             for session in sessions
         }
-        self._teams_by_code = _index_join_codes(sessions)
+        self._teams_by_code, self._moderator_codes = _index_codes(sessions)
         self._teams_by_name = {
             session.id: {team.name.casefold(): team for team in session.teams}
             for session in sessions
@@ -311,6 +338,10 @@ class SessionRepository:
     def get_team(self, session_id: UUID, name: str) -> Team | None:
         """The session's team with this name (ignoring case), if any."""
         return self._teams_by_name.get(session_id, {}).get(name.casefold())
+
+    def moderator_code(self, session_id: UUID) -> str | None:
+        """The session's moderator code, normalised; None if it can't be moderated."""
+        return self._moderator_codes.get(session_id)
 
     def reference_photos(self, session_id: UUID, sequence: int) -> tuple[Path, ...]:
         """The checkpoint's reference photos, resolved and checked at load, in file order."""

@@ -1,6 +1,7 @@
 """No endpoint may reveal a checkpoint's scene description (the answer to its clue)."""
 
 import json
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ JOIN_CODE = "SENTINEL-CODE-9X"  # a credential: no response may echo it
 NAME = "SENTINEL-NAME-c3"  # checkpoint names are never shown
 LATER_CLUE = "SENTINEL-LATER-CLUE-7e"  # the second clue on the route: not while on the first
 PHOTO_NAME = "SENTINEL-PHOTO-fountain-north"  # a reference photo's file name shows the place
+MODERATOR_CODE = "SENTINEL-MOD-4Q"  # a credential: never in a response or a log line
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 UNKNOWN = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 NOW = datetime(2026, 10, 3, 10, 30, tzinfo=UTC)
@@ -56,6 +58,7 @@ SESSIONS_JSON = json.dumps(
                 },
             ],
             "teams": [{"name": "Testers", "join-code": JOIN_CODE, "order": [1, 2]}],
+            "moderator-code": MODERATOR_CODE,
         }
     ]
 )
@@ -191,7 +194,10 @@ def app_routes(client: TestClient) -> set[tuple[str, str]]:
     return api | top_level
 
 
-def test_no_route_ever_returns_the_scene(client: TestClient) -> None:
+def test_no_route_ever_returns_the_scene(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
     responses = every_route_response(client)
 
     assert set(responses) == app_routes(client), "a route is missing from this test"
@@ -203,6 +209,9 @@ def test_no_route_ever_returns_the_scene(client: TestClient) -> None:
             assert LATER_CLUE not in response.text, f"{route} leaked a later clue"
             assert PHOTO_NAME not in response.text, f"{route} leaked a reference photo"
             assert "reference" not in response.text.lower(), f"{route} mentions reference photos"
+            assert MODERATOR_CODE not in response.text, f"{route} leaked the moderator code"
+    for secret in (MODERATOR_CODE, JOIN_CODE):
+        assert secret not in caplog.text.upper(), "a credential reached the logs"
 
 
 def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:

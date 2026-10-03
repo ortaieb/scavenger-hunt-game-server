@@ -15,6 +15,7 @@ from game_server import (
     game_state,
     health,
     join,
+    moderation,
     proximity,
 )
 from game_server.config import get_settings
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     load_session_repository(settings.sessions_file, settings.max_image_bytes)
     app = FastAPI(title="Scavenger Hunt Game Server", lifespan=lifespan)
     app.add_exception_handler(RequestValidationError, validation_error)  # type: ignore[arg-type]  # Starlette types handlers on the base Exception
+    moderation.install(app)
 
     @app.get("/", response_class=PlainTextResponse)
     def root() -> str:

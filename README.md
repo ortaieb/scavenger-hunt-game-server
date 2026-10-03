@@ -13,6 +13,7 @@ and managed with [uv](https://docs.astral.sh/uv/).
 | `POST` | `/sessions/{session}/participants/{participant}/arrive` | Check in at the current checkpoint: the pose and a one-time code |
 | `POST` | `/sessions/{session}/start` | **Moderator:** start the session |
 | `POST` | `/sessions/{session}/stop`  | **Moderator:** finish the session, for good |
+| `GET`  | `/sessions/{session}/overview` | **Moderator:** the clock, standings, each team's progress and blocked attempts |
 | `GET`  | `/health`    | Readiness: `200 {"status": "ok"}` when the submissions database answers, else `503 {"status": "unavailable"}` |
 | `POST` | `/challenge` | A participant submits a photo for a scavenger-hunt challenge |
 | `POST` | `/checkpoint/proximity` | **Advisory only:** does the player look in range of an open checkpoint? |
@@ -403,6 +404,25 @@ When the moderator [started and finished](#post-sessionssessionstart) each sessi
 No row means the session hasn't started. The row carries its `session`, so it goes with the
 session's other data when that's purged.
 
+#### Blocked attempts
+
+Teams that tried to play outside the session, for the [moderator overview](#get-sessionssessionoverview),
+in a `blocked_attempts` table:
+
+| Column    | Content |
+|-----------|---------|
+| `id`      | Row id (`BIGINT GENERATED ALWAYS AS IDENTITY`) |
+| `session` | The session UUID |
+| `team`    | The team's name: for a join, the team the code belongs to, never the code |
+| `action`  | `join`, `arrive` or `photo` |
+| `code`    | `session_not_started` or `session_stopped` |
+| `at`      | Server time (`TIMESTAMPTZ`) |
+
+A row is written whenever join or arrive is refused, or a photo is recorded as `failed`, for a
+session-phase reason, in the same transaction as that photo. Unknown codes, other `409`s,
+`422`s and photos from a participant that never joined aren't recorded. Only the newest 500 per
+session are kept: older rows are deleted in the same transaction.
+
 #### Arrivals
 
 Each check-in at a checkpoint is recorded in an `arrivals` table, with its one-time code:
@@ -626,8 +646,52 @@ would be a separate change. Same authorisation and response as start.
 Start and stop each run in one transaction under the session's lock, so two moderators tapping
 at once stamp one time. Each change is logged (session, phase and time), never the code.
 
-For now the participant endpoints (join, state, arrive, challenge) still use the file's times;
-they follow the session's run in a later change.
+### `GET /sessions/{session}/overview`
+
+**Moderator only** (same authorisation as start). One call for the moderator screen: the
+session clock, the standings with each team's progress (to spot a team that's stuck and step
+in with a hint), and the teams that tried to play outside the session.
+
+```json
+{
+  "session": { "phase": "running", "planned-start": "…", "planned-end": "…", "started-at": "…", "stopped-at": null, "server-time": "…" },
+  "teams": [
+    {
+      "team": "Red Foxes",
+      "joined": true,
+      "completed": 1,
+      "total": 3,
+      "points": 7,
+      "in-review": 0,
+      "place": null,
+      "last-completed": { "sequence": 1, "name": "Stone fountain", "verdict": "pass", "at": "2026-10-03T09:58:10Z" },
+      "current": { "sequence": 2, "name": "Boy who never grew up" }
+    }
+  ],
+  "blocked": [
+    { "at": "2026-10-03T13:05:02Z", "team": "Blue Herons", "action": "photo", "code": "session_stopped" }
+  ]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `session` | The [session clock](#post-sessionssessionstart) |
+| `teams` | Every team in the sessions file. Joined teams first, by `points` then name; teams that haven't joined last, by name, with `joined: false` and `points`, `in-review`, `place`, `last-completed` and `current` all `null` |
+| `completed`, `total` | Checkpoints completed on the team's route, out of how many (as in the team's own state) |
+| `points`, `in-review`, `place` | From the same [scoring](#scoring) as the team's own state, so they always match what the team sees. `place` is `null` until the session is stopped |
+| `last-completed` | The team's most recent accepted photo (`pass` or `pending`) on its route: the checkpoint, its verdict and when it was received; `null` if none. The app shows "approved 14 min ago" from `at` |
+| `current` | The checkpoint the team is on; `null` unless it's playing |
+| `blocked` | The newest 50 [blocked attempts](#blocked-attempts), newest first |
+
+| Status | When |
+|--------|------|
+| `200`  | As above |
+| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `404`  | Unknown session |
+
+Only the moderator can call it, so checkpoints are named. It never shows coordinates, clues,
+scenes, photos, join codes, participant ids or the moderator code.
 
 ### `POST /sessions/{session}/participants/{participant}/arrive`
 
@@ -1310,6 +1374,7 @@ src/game_server/
   errors.py          # ApiError: {detail, code} error responses
   session_runs.py    # SessionRun and session_phase (scheduled / running / stopped)
   session_control.py # moderator start and stop, and the session clock
+  overview.py        # `…/overview`: the moderator's standings, progress and blocked attempts
   game_state.py      # team state: team_state() rules and the `…/state` endpoint
   scoring.py         # points by order of arrival: team_points(), places()
   arrive.py          # `…/arrive`: check in, pose and one-time code

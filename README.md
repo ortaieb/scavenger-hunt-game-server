@@ -859,6 +859,7 @@ The file is a JSON list of sessions. Abridged from [`sessions.example.json`](ses
 | `teams[].name`             | 1–40 characters, unique within the session ignoring case. Shown to the team |
 | `teams[].join-code`        | 6–32 letters, digits or `-`; surrounding spaces are trimmed. Unique **across the whole file**, ignoring case, because joining finds the session by the code alone. A credential (see *Secrecy*) |
 | `teams[].order`            | Every checkpoint `sequence` in the session, each exactly once: the order this team visits them. Position 1 is its first checkpoint |
+| `moderator-code`           | Optional. Authorises the moderator's endpoints for this session: same format as `join-code`, unique across the file **and different from every join code**. A credential (see *Secrecy*). Without one, the session can't be moderated |
 
 A checkpoint's **visual challenge** tells the referee what to look for in the photo:
 
@@ -928,6 +929,24 @@ Guidance for moderators:
 - **Don't rename a team or change its order once it has joined.** Its progress is stored
   under its name.
 
+**Moderator code.** Each session can have a `moderator-code`, which the moderator presents
+to the moderator-only endpoints (start and stop the session, the overview) as
+`Authorization: Bearer <code>`. It's a stopgap until real accounts exist.
+
+- **Same format as a join code**: 6–32 letters, digits or `-`, surrounding spaces stripped,
+  compared ignoring case.
+- **Unique across the whole file, and different from every join code**, so no code can open
+  two doors. A clash is reported at the later entry's path, saying what it clashes with:
+  `[1].moderator-code: same as a join code`. The code itself is never shown.
+- **A session without one can't be moderated**: every moderator call for it gets a `401`.
+- On a moderator route, an unknown session is `404 {"detail": "unknown session"}`. A missing
+  header, another scheme, a wrong code or a session without a code all get the same `401`
+  with `WWW-Authenticate: Bearer`, so a caller can't tell why:
+  `{"detail": "moderator code required", "code": "moderator_unauthorised"}`. A session's code
+  works for that session only, and is compared in constant time.
+- **Pick one nobody can guess and keep it to the moderators.** Like join codes, it's never
+  returned by an endpoint or logged.
+
 Unknown fields are rejected everywhere. If the file can't be read, isn't valid JSON, breaks any
 rule above or repeats a session id, the server **refuses to start**. The error lists each
 problem as `path: message`, e.g. `[0].checkpoints[1].proximity: Input should be greater than 0`.
@@ -960,6 +979,11 @@ is added without being covered.
   returns or logs the code it was given. Validation errors (422) never echo submitted values on
   any endpoint: FastAPI's default would return the whole body, code included. The every-route
   secrecy test checks that no response, on success or error paths, echoes a sentinel join code.
+
+**Moderator codes** are credentials like join codes: excluded from `repr`, never returned
+by an endpoint, never logged, and never echoed by a validation error (the `Authorization`
+header's value included). The every-route secrecy test checks that a sentinel moderator code
+appears in no response and no log line.
 
 **Reference photos** show what the place looks like, so they're secret like `challenge.scene`.
 No endpoint returns a reference photo, its path, or how many a checkpoint has, and startup
@@ -1147,6 +1171,7 @@ src/game_server/
   checkpoints.py     # `GET /sessions/{session}/checkpoints/{sequence}/challenge` pose
   health.py          # `GET /health` readiness check
   join.py            # `POST /join`, and find_participant for later endpoints
+  moderation.py      # require_moderator: the session moderator code (Bearer)
   game_state.py      # team state: team_state() rules and the `…/state` endpoint
   arrive.py          # `…/arrive`: check in, pose and one-time code
   lookup.py          # find_checkpoint: shared session/checkpoint lookup (404s)

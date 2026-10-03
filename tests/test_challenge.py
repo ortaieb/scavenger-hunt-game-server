@@ -38,6 +38,7 @@ SECOND_SESSION = "9d2f4c1a-6b3e-4f8a-9c7d-1e2f3a4b5c6d"
 PARTICIPANT = "7c860ccc-9adf-4e22-b54f-3ff158f5d600"
 OTHER_PARTICIPANT = "5d0a8b8e-7f6c-4d4b-8f0e-2b1a9c3d4e5f"
 NOW = datetime(2026, 10, 3, 9, 30, tzinfo=UTC)
+START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)  # the planned start, 10:00+01:00
 
 METADATA: dict[str, Any] = {
     "session": SESSION,
@@ -59,6 +60,15 @@ def sessions_repository() -> SessionRepository:
         "checkpoints": [
             {**checkpoint, "sequence": 1, "proximity": 40},
             {**checkpoint, "sequence": 2, "proximity": 25},
+            {
+                **checkpoint,
+                "sequence": 3,
+                "proximity": 40,
+                "window": {  # closed by NOW
+                    "opens-at": "2026-10-03T09:00:00Z",
+                    "closes-at": "2026-10-03T09:15:00Z",
+                },
+            },
         ],
     }
     return parse_sessions(
@@ -353,7 +363,7 @@ def assert_nothing_stored(image_dir: Path, db: psycopg.Connection[DictRow]) -> N
     ("metadata", "detail"),
     [
         ({**METADATA, "session": OTHER_SESSION}, "unknown session"),
-        ({**METADATA, "checkpoint": 3}, "unknown checkpoint"),
+        ({**METADATA, "checkpoint": 9}, "unknown checkpoint"),
     ],
 )
 def test_unknown_target_is_404(
@@ -461,9 +471,12 @@ def clock_now() -> list[datetime]:
 
 @pytest.fixture
 def real_checks_client(
-    image_dir: Path, db: psycopg.Connection[DictRow], clock_now: list[datetime]
+    image_dir: Path, store: SubmissionStore, clock_now: list[datetime]
 ) -> Iterator[TestClient]:
-    """Like `client`, but with the registered checks rather than fakes."""
+    """Like `client`, but with the registered checks rather than fakes, and both sessions
+    started by their moderators at the planned start."""
+    for session in (SESSION, SECOND_SESSION):
+        store.start_run(UUID(session), START)
     app = create_app()
     settings = Settings(image_base_path=image_dir)
     repository = sessions_repository()
@@ -481,18 +494,29 @@ def test_time_rules_pass_inside_window(real_checks_client: TestClient) -> None:
     assert checkpoint_verdict(response)["verdict"] == "pending"
 
 
-def test_received_after_session_end_fails(
-    real_checks_client: TestClient, clock_now: list[datetime], db: psycopg.Connection[DictRow]
+def test_the_planned_end_does_not_close_a_running_session(
+    real_checks_client: TestClient, clock_now: list[datetime]
 ) -> None:
-    clock_now[0] = datetime(2026, 10, 3, 12, 0, 1, tzinfo=UTC)  # session ends 12:00Z
-    # Capture time inside the session and fresh: the claim can't rescue the submission.
-    metadata = {**METADATA, "capture-time": "2026-10-03T13:00:00+01:00"}
+    clock_now[0] = datetime(2026, 10, 3, 14, 0, tzinfo=UTC)  # planned end 12:00Z
+    metadata = {**METADATA, "capture-time": "2026-10-03T14:00:00Z"}
+
+    response = post_challenge(real_checks_client, metadata)
+
+    assert response.status_code == 202
+    assert checkpoint_verdict(response)["verdict"] == "pending"
+
+
+def test_received_outside_the_checkpoint_window_fails(
+    real_checks_client: TestClient, db: psycopg.Connection[DictRow]
+) -> None:
+    # Capture time inside the window: the claim can't rescue the submission.
+    metadata = {**METADATA, "checkpoint": 3, "capture-time": "2026-10-03T09:15:00Z"}
 
     response = post_challenge(real_checks_client, metadata)
 
     assert response.status_code == 200
     assert checkpoint_verdict(response)["verdict"] == "failed"
-    assert [r["code"] for r in checkpoint_verdict(response)["rejections"]] == ["outside_window"]
+    assert codes(response) == ["outside_window", "stale_capture"]
     [row] = stored_rows(db)
     assert row["verdict"] == "failed"
 
@@ -712,6 +736,7 @@ def test_concurrent_uploads_of_one_photo_accept_exactly_one(
 # --- every check in the verdict (#19) ----------------------------------------
 
 REGISTRY_ORDER = [
+    "session_running",
     "window_open",
     "capture_fresh",
     "capture_time_plausible",
@@ -749,8 +774,8 @@ def test_without_a_challenge_visual_checks_skip_and_verdict_is_pending(
     ("changes", "now", "check", "code", "message"),
     [
         pytest.param(
-            {"capture-time": "2026-10-03T12:00:00Z"},
-            datetime(2026, 10, 3, 12, 0, 1, tzinfo=UTC),
+            {"checkpoint": 3},
+            NOW,
             "window_open",
             "outside_window",
             "This checkpoint isn't open right now.",
@@ -820,9 +845,10 @@ def test_duplicate_failure_shows_in_checks(real_checks_client: TestClient) -> No
 
 
 def test_checks_complete_and_ordered_when_several_fail(
-    real_checks_client: TestClient, clock_now: list[datetime]
+    real_checks_client: TestClient, clock_now: list[datetime], store: SubmissionStore
 ) -> None:
-    clock_now[0] = datetime(2026, 10, 3, 12, 30, tzinfo=UTC)  # after the session
+    store.stop_run(UUID(SESSION), datetime(2026, 10, 3, 12, 0, tzinfo=UTC))
+    clock_now[0] = datetime(2026, 10, 3, 12, 30, tzinfo=UTC)  # after the stop
     metadata = {**METADATA, "location": FAR_AWAY}  # capture-time 09:29Z: stale as well
 
     response = post_challenge(real_checks_client, metadata)
@@ -832,6 +858,7 @@ def test_checks_complete_and_ordered_when_several_fail(
     assert [c["outcome"] for c in verdict["checks"]] == [
         "failed",
         "failed",
+        "failed",
         "passed",
         "failed",
         "passed",
@@ -839,6 +866,7 @@ def test_checks_complete_and_ordered_when_several_fail(
         "skipped",
     ]
     assert [r["code"] for r in verdict["rejections"]] == [
+        "session_stopped",
         "outside_window",
         "stale_capture",
         "out_of_range",

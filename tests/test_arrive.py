@@ -83,7 +83,8 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def client(now: list[datetime]) -> Iterator[TestClient]:
+def client(now: list[datetime], store: SubmissionStore) -> Iterator[TestClient]:
+    store.start_run(UUID(SESSION), START)
     app = create_app()
     settings = Settings(arrival_code_ttl_seconds=TTL)
     sessions = repository()
@@ -219,7 +220,10 @@ def test_after_an_accepted_photo_the_team_has_moved_on(
     response = arrive(client, participant)
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "not your current checkpoint"}
+    assert response.json() == {
+        "detail": "not your current checkpoint",
+        "code": "not_current_checkpoint",
+    }
     assert arrive(client, participant, 2).status_code == 201  # its next checkpoint
 
 
@@ -263,46 +267,73 @@ def test_unknown_session_participant_and_checkpoint(client: TestClient) -> None:
     assert arrive(client, participant, 9).status_code == 404
 
 
-def conflict(response: Response) -> str:
+def conflict(response: Response) -> tuple[str, str]:
     assert response.status_code == 409
-    detail: str = response.json()["detail"]
-    return detail
+    body = response.json()
+    assert set(body) == {"detail", "code"}
+    return body["detail"], body["code"]
 
 
 def test_before_start_comes_first(
-    client: TestClient, store: SubmissionStore, now: list[datetime]
+    client: TestClient, store: SubmissionStore, db: psycopg.Connection[DictRow]
 ) -> None:
     participant = join(client)
     for checkpoint in (1, 2, 3):  # even a team with everything done
         submit(store, participant, checkpoint, "pass", DURING)
-    now[0] = START - timedelta(seconds=1)
+    db.execute("TRUNCATE session_runs")  # the moderator hasn't started the session
 
-    assert conflict(arrive(client, participant, 2)) == "session hasn't started"
+    assert conflict(arrive(client, participant, 2)) == (
+        "session hasn't started",
+        "session_not_started",
+    )
 
 
-def test_finished_comes_before_ended(
-    client: TestClient, store: SubmissionStore, now: list[datetime]
+def test_the_planned_start_does_not_start_a_session(
+    client: TestClient, db: psycopg.Connection[DictRow], now: list[datetime]
 ) -> None:
+    participant = join(client)
+    db.execute("TRUNCATE session_runs")
+    now[0] = START + timedelta(hours=1)
+
+    assert conflict(arrive(client, participant)) == (
+        "session hasn't started",
+        "session_not_started",
+    )
+
+
+def test_finished_comes_before_ended(client: TestClient, store: SubmissionStore) -> None:
     participant = join(client)
     for checkpoint in (1, 2, 3):
         submit(store, participant, checkpoint, "pass", DURING)
-    now[0] = END + timedelta(minutes=1)
+    store.stop_run(UUID(SESSION), END)
 
-    assert conflict(arrive(client, participant)) == "hunt finished"
+    assert conflict(arrive(client, participant)) == ("hunt finished", "hunt_finished")
 
 
-def test_ended_comes_before_not_current(client: TestClient, now: list[datetime]) -> None:
+def test_ended_comes_before_not_current(client: TestClient, store: SubmissionStore) -> None:
     participant = join(client)
-    now[0] = END + timedelta(seconds=1)
+    store.stop_run(UUID(SESSION), DURING)
 
-    assert conflict(arrive(client, participant, 2)) == "session has ended"
+    assert conflict(arrive(client, participant, 2)) == ("session has ended", "session_stopped")
+
+
+def test_the_planned_end_does_not_end_a_running_session(
+    client: TestClient, now: list[datetime]
+) -> None:
+    participant = join(client)
+    now[0] = END + timedelta(hours=1)
+
+    assert arrive(client, participant).status_code == 201
 
 
 def test_not_current_comes_before_not_open(client: TestClient) -> None:
     herons = join(client, "HERON-4MXP")  # starts at 3, whose window opens at 10:30
 
-    assert conflict(arrive(client, herons, 1)) == "not your current checkpoint"
-    assert conflict(arrive(client, herons, 3)) == "checkpoint isn't open"
+    assert conflict(arrive(client, herons, 1)) == (
+        "not your current checkpoint",
+        "not_current_checkpoint",
+    )
+    assert conflict(arrive(client, herons, 3)) == ("checkpoint isn't open", "checkpoint_closed")
 
 
 def test_current_and_open_succeeds(client: TestClient, now: list[datetime]) -> None:

@@ -20,8 +20,12 @@ and managed with [uv](https://docs.astral.sh/uv/).
 
 ### Game loop
 
-A whole hunt can be played through the API. For each team:
+A whole hunt can be played through the API. The moderator opens it, then each team plays:
 
+0. **Start** (moderator): [`POST /sessions/{session}/start`](#post-sessionssessionstart) with
+   the session's moderator code. Nothing counts until then: the planned `start-time` doesn't
+   start a session, and the planned `end-time` doesn't end one. Only
+   [`POST …/stop`](#post-sessionssessionstop) does.
 1. **Join**: [`POST /join`](#post-join) with the team's code and the player's consent. It returns
    the team's `participant` id, used on every later call.
 2. **Read the clue**: [`GET …/state`](#get-sessionssessionparticipantsparticipantstate) shows
@@ -36,31 +40,36 @@ A whole hunt can be played through the API. For each team:
 
 The rules in one place:
 
+- **The moderator's start and stop decide when the game runs.** Teams can join before the
+  start, but the state says `not_started`, arriving is a `409`, and a photo is recorded as
+  `failed` (`session_not_started`). After the stop, joining and arriving are `409`
+  (`session_stopped`), the state says `ended` (or `finished`), and a photo is recorded as
+  `failed` (`session_stopped`) without consulting the referee.
 - **One clue at a time**, the first uncompleted checkpoint on the team's route. A clue is
   never shown before it's that team's turn.
 - **Arriving needs the right checkpoint at the right time**: the team's current one, while the
-  session is on and the checkpoint's window is open. It takes no location: the geofence is
+  session is running and the checkpoint's window is open. It takes no location: the geofence is
   checked on the photo.
 - **The one-time code** is issued on arrival and expires after
   `GAME_SERVER_ARRIVAL_CODE_TTL_SECONDS`. It's recorded but not yet checked in the photo.
 - **`pending` completes a checkpoint**, so a hunt can be played through without the referee.
 
-A walkthrough against [`sessions.example.json`](sessions.example.json) with its times moved to
-include now. It uses `jq`; any photo will do (`photo.jpg`), and the referee is off without an
+A walkthrough against [`sessions.example.json`](sessions.example.json), with checkpoint 3's own
+window removed so the whole route can be played now. It uses `jq`; any photo will do (`photo.jpg`), and the referee is off without an
 API key, so a good photo is `pending`:
 
 ```bash
-python3 - <<'PY'   # a copy of the example, open from an hour ago to an hour from now
-import json; from datetime import UTC, datetime, timedelta
-s = json.load(open("sessions.example.json")); now = datetime.now(UTC)
-s[0]["start-time"] = (now - timedelta(hours=1)).isoformat()
-s[0]["end-time"] = (now + timedelta(hours=1)).isoformat()
+python3 - <<'PY'   # a copy of the example, without checkpoint 3's own window
+import json
+s = json.load(open("sessions.example.json"))
 s[0]["checkpoints"][2].pop("window")
 json.dump(s, open("sessions.json", "w"))
 PY
 GAME_SERVER_SESSIONS_FILE=sessions.json make run &   # then, in another shell:
 
 S=aeffe667-4f9f-4108-b5e2-56ae821fe413
+MOD=$(jq -r '.[0]["moderator-code"]' sessions.json)
+curl -s -X POST localhost:8000/sessions/$S/start -H "Authorization: Bearer $MOD" | jq .phase  # "running"
 P=$(curl -s localhost:8000/join -H 'content-type: application/json' \
       -d '{"code": "FOX-7Q2K", "consent": true}' | jq -r .participant)
 curl -s localhost:8000/sessions/$S/participants/$P/state | jq .current      # clue 1
@@ -70,6 +79,8 @@ curl -s localhost:8000/challenge \
   -F "metadata={\"session\":\"$S\",\"participant\":\"$P\",\"checkpoint\":1,\"location\":{\"lat\":51.504873,\"long\":-0.169872},\"capture-time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"};type=application/json" \
   -F 'challenge-image=@photo.jpg;type=image/jpeg' | jq .verdict.checkpoint.verdict   # "pending"
 curl -s localhost:8000/sessions/$S/participants/$P/state | jq .progress,.current.clue   # 1 of 3, clue 2
+curl -s -X POST localhost:8000/sessions/$S/stop -H "Authorization: Bearer $MOD" | jq .phase   # "stopped"
+curl -s localhost:8000/sessions/$S/participants/$P/state | jq .status   # "ended"
 ```
 
 ### `POST /challenge`
@@ -219,15 +230,28 @@ the player.
 
 | # | Check                    | Fails with          | Reason when passed |
 |---|--------------------------|---------------------|--------------------|
-| 1 | `window_open`            | `outside_window`    | "Submitted while the checkpoint was open." |
-| 2 | `capture_fresh`          | `stale_capture`     | "Photo was taken recently." |
-| 3 | `capture_time_plausible` | `capture_in_future` | "Photo's capture time is plausible." |
-| 4 | `in_range`               | `out_of_range`      | "Your location is inside the checkpoint area." |
-| 5 | `photo_unique`           | `duplicate_photo`   | "This photo hasn't been used before." |
-| 6 | `scene_matches`          | `scene_mismatch`    | "Your photo matches this checkpoint." |
-| 7 | `pose_correct`           | `pose_incorrect`    | "Your pose matches the challenge." |
+| 1 | `session_running`        | `session_not_started`, `session_stopped` | "The session is running." |
+| 2 | `window_open`            | `outside_window`    | "Submitted while the checkpoint was open." |
+| 3 | `capture_fresh`          | `stale_capture`     | "Photo was taken recently." |
+| 4 | `capture_time_plausible` | `capture_in_future` | "Photo's capture time is plausible." |
+| 5 | `in_range`               | `out_of_range`      | "Your location is inside the checkpoint area." |
+| 6 | `photo_unique`           | `duplicate_photo`   | "This photo hasn't been used before." |
+| 7 | `scene_matches`          | `scene_mismatch`    | "Your photo matches this checkpoint." |
+| 8 | `pose_correct`           | `pose_incorrect`    | "Your pose matches the challenge." |
 
 Clients should branch on the body's `verdict`, not the HTTP status.
+
+**Session** (`checks/session_running.py`). Decided by the moderator's
+[start](#post-sessionssessionstart) and [stop](#post-sessionssessionstop), never by the file's
+planned times. A photo outside the run is still stored, so a team can dispute it later, but as
+`failed`, and the referee isn't consulted.
+
+| Check → code        | Fails when | Message |
+|---------------------|------------|---------|
+| `session_running` → `session_not_started` | The moderator hasn't started the session | "The session hasn't started yet." |
+| `session_running` → `session_stopped` | The moderator has stopped the session | "The session is over. This photo was recorded but doesn't count." |
+
+After a stop, `outside_window` usually fails too, since the effective window ends at the stop.
 
 **Time** (`checks/time_window.py`). The deciding clock is the server's `received-at`. The
 client's `capture-time` is a claim: it can get a submission rejected, but it can never rescue
@@ -438,7 +462,7 @@ progress. Never the code, the team's order, other teams, or anything about a che
 | `201`  | First join: the team's participant is created |
 | `200`  | The team had joined before (a second phone, or the same one after losing its state): same participant, consent recorded again |
 | `404`  | No team has this code: `{"detail": "unknown code"}` |
-| `409`  | The session has ended: `{"detail": "session has ended"}`. Joining before `start-time` is fine: teams join first, then the game starts |
+| `409`  | The moderator has stopped the session: `{"detail": "session has ended", "code": "session_stopped"}`. Joining before the start is fine: teams join first, then the moderator starts the game. The planned `end-time` passing doesn't close joining |
 | `422`  | Invalid body, including `consent` that isn't `true` |
 
 Two phones joining the same team at once get the same participant: the lookup and the insert
@@ -478,7 +502,7 @@ that team's turn.
 
 | Field      | Meaning |
 |------------|---------|
-| `status`   | `not_started` before `start-time`. `playing` while the team has a checkpoint left. `finished` once it has completed every checkpoint on its route, even after `end-time`. `ended` after `end-time` if it hadn't finished. The session's bounds are inclusive |
+| `status`   | `not_started` until the moderator starts the session. `playing` while it runs and the team has a checkpoint left. `finished` once the team has completed every checkpoint on its route, in any phase. `ended` after the moderator stops the session, if the team hadn't finished. The planned `start-time` and `end-time` don't change the status |
 | `progress` | How many checkpoints on the team's route it has completed, and how many there are |
 | `current`  | Only while `playing`, otherwise `null`. `sequence` is what the app sends as `checkpoint` to `POST /challenge`. `position` is its place on the team's route, counting from 1. `clue` is the checkpoint's clue. `open` is whether its effective window is open now |
 
@@ -607,7 +631,7 @@ team's current checkpoint, so an out-of-date app can't check in at the wrong one
 | `201`  | A new arrival with a fresh code |
 | `200`  | The team already has an **active** arrival at this checkpoint, returned unchanged (a double tap, a second phone, a reload) |
 | `404`  | Unknown session, participant (`"unknown participant"`) or checkpoint (`"unknown checkpoint"`) |
-| `409`  | Checked in this order: `"session hasn't started"`, `"hunt finished"`, `"session has ended"`, `"not your current checkpoint"`, `"checkpoint isn't open"` |
+| `409`  | `{"detail", "code"}`, checked in this order: `"session hasn't started"` (`session_not_started`), `"hunt finished"` (`hunt_finished`), `"session has ended"` (`session_stopped`), `"not your current checkpoint"` (`not_current_checkpoint`), `"checkpoint isn't open"` (`checkpoint_closed`) |
 | `422`  | Invalid body |
 
 An arrival is **active** while it hasn't expired and the team hasn't submitted a photo for
@@ -651,7 +675,8 @@ Response `200`: `{"in_range": true}` or `{"in_range": false}`. That is the only 
 body never contains coordinates, distance, bearing or proximity.
 
 - `true` means the location is within the checkpoint's `proximity` (the boundary counts as in)
-  **and** the checkpoint's effective window is open now. These are the same rules the
+  **and** the checkpoint's effective window is open now. Before the moderator's start and
+  after the stop, it's always `false`. These are the same rules the
   `out_of_range` and `outside_window` checks use.
 - `false` means either rule failed. The answer doesn't say which, so the app doesn't
   encourage a submission that's doomed either way.
@@ -1024,8 +1049,10 @@ Unknown fields are rejected everywhere. If the file can't be read, isn't valid J
 rule above or repeats a session id, the server **refuses to start**. The error lists each
 problem as `path: message`, e.g. `[0].checkpoints[1].proximity: Input should be greater than 0`.
 
-**Effective window:** a checkpoint accepts submissions during its `window` if it has one,
-otherwise for the whole session (`start-time` to `end-time`).
+**Effective window:** the session's run, from the moderator's start to their stop (open-ended
+while it runs), narrowed by the checkpoint's `window` if it has one. Before the start there is
+none. A `window` that closes before a late start is never open; one that opens after an early
+stop never opens. The planned `start-time` and `end-time` play no part.
 
 #### Secrecy
 
@@ -1229,6 +1256,7 @@ src/game_server/
   checks/
     base.py          # Check protocol, SubmissionContext, Rejection, verdict decision
     registry.py      # get_checks: the checks every submission goes through
+    session_running.py  # session_not_started, session_stopped
     time_window.py   # outside_window, stale_capture, capture_in_future
     geofence.py      # out_of_range
     duplicate_photo.py  # duplicate_photo

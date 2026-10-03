@@ -5,7 +5,7 @@ by an endpoint in a way that reveals checkpoint coordinates or distances to them
 """
 
 from collections.abc import Iterable, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path, PurePath
 from typing import Annotated, Self
@@ -26,6 +26,7 @@ from pydantic import (
 from game_server.config import DEFAULT_MAX_IMAGE_BYTES, Settings, get_settings
 from game_server.imaging import UndecodableImageError, open_upright
 from game_server.models import Location
+from game_server.session_runs import SessionRun
 
 
 def _kebab(name: str) -> str:
@@ -227,6 +228,9 @@ def _index_codes(
     return join_codes, moderator_codes
 
 
+# The end of an open-ended window: a running session that hasn't been stopped.
+FOREVER = datetime.max.replace(tzinfo=UTC)
+
 JPEG_MAGIC = b"\xff\xd8\xff"
 
 
@@ -348,11 +352,22 @@ class SessionRepository:
         return self._reference_photos.get((session_id, sequence), ())
 
     @staticmethod
-    def effective_window(session: GameSession, checkpoint: Checkpoint) -> tuple[datetime, datetime]:
-        """Return the checkpoint's own window if set, otherwise the session's start/end."""
+    def effective_window(
+        run: SessionRun | None, checkpoint: Checkpoint
+    ) -> tuple[datetime, datetime] | None:
+        """When the checkpoint accepts submissions, or None if never (not started, or empty).
+
+        The session's run, `[started_at, stopped_at]` (open-ended while running), intersected
+        with the checkpoint's own `window`, which stays wall-clock: a late start leaves less
+        time at a timed checkpoint. The file's start-time/end-time play no part.
+        """
+        if run is None or run.started_at is None:
+            return None
+        opens_at, closes_at = run.started_at, run.stopped_at or FOREVER
         if checkpoint.window:
-            return checkpoint.window.opens_at, checkpoint.window.closes_at
-        return session.start_time, session.end_time
+            opens_at = max(opens_at, checkpoint.window.opens_at)
+            closes_at = min(closes_at, checkpoint.window.closes_at)
+        return (opens_at, closes_at) if opens_at <= closes_at else None
 
 
 _SESSIONS_ADAPTER = TypeAdapter(list[GameSession])

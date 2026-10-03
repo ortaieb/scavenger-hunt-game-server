@@ -11,7 +11,8 @@ from typing import Self
 
 from game_server.checks.base import Check, CheckResult, Rejection, SubmissionContext
 from game_server.config import Settings
-from game_server.sessions import Checkpoint, GameSession, SessionRepository
+from game_server.session_runs import SessionRun
+from game_server.sessions import Checkpoint, SessionRepository
 
 OUTSIDE_WINDOW = Rejection("outside_window", "This checkpoint isn't open right now.")
 STALE_CAPTURE = Rejection("stale_capture", "Photo was taken too long ago, please take a new one.")
@@ -27,9 +28,12 @@ CAPTURE_FRESH = "capture_fresh"
 CAPTURE_TIME_PLAUSIBLE = "capture_time_plausible"
 
 
-def window_is_open(session: GameSession, checkpoint: Checkpoint, at: datetime) -> bool:
+def window_is_open(run: SessionRun | None, checkpoint: Checkpoint, at: datetime) -> bool:
     """Whether `at` falls in the checkpoint's effective window, bounds inclusive."""
-    opens_at, closes_at = SessionRepository.effective_window(session, checkpoint)
+    window = SessionRepository.effective_window(run, checkpoint)
+    if window is None:
+        return False
+    opens_at, closes_at = window
     return opens_at <= at <= closes_at
 
 
@@ -54,7 +58,7 @@ class TimeWindowCheck:
 
     def window_open(self, ctx: SubmissionContext) -> CheckResult:
         """`received_at` must fall in the checkpoint's effective window, bounds inclusive."""
-        if window_is_open(ctx.session, ctx.checkpoint, ctx.received_at):
+        if window_is_open(ctx.run, ctx.checkpoint, ctx.received_at):
             return CheckResult.passed(WINDOW_OPEN, "Submitted while the checkpoint was open.")
         return CheckResult.failed(WINDOW_OPEN, OUTSIDE_WINDOW)
 

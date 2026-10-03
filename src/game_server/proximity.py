@@ -22,6 +22,7 @@ from game_server.lookup import find_checkpoint
 from game_server.models import ProximityHint, ProximityHintRequest
 from game_server.rate_limit import RateLimiter
 from game_server.sessions import SessionRepository, get_session_repository
+from game_server.submissions import SubmissionStore, get_submission_store
 
 router = APIRouter()
 
@@ -49,6 +50,7 @@ def proximity_hint(
     clock: Annotated[Clock, Depends(get_clock)],
     sessions: Annotated[SessionRepository, Depends(get_session_repository)],
     limiter: Annotated[RateLimiter, Depends(get_hint_rate_limiter)],
+    store: Annotated[SubmissionStore, Depends(get_submission_store)],
 ) -> ProximityHint:
     """Whether the player looks in range of an open checkpoint. Advisory only.
 
@@ -65,7 +67,8 @@ def proximity_hint(
             "too many proximity checks, try again shortly",
             headers={"Retry-After": str(ceil(wait.total_seconds()))},
         )
-    in_range = window_is_open(session, checkpoint, now) and within_proximity(
+    run = store.session_run(session.id)
+    in_range = window_is_open(run, checkpoint, now) and within_proximity(
         distance_m(body.location, checkpoint.location), checkpoint
     )
     return ProximityHint(in_range=in_range)

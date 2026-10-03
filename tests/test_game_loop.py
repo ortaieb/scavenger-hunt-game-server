@@ -27,6 +27,7 @@ START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 END = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
 PLACES = {1: (51.50, -0.10), 2: (51.51, -0.11), 3: (51.52, -0.12)}
 ROUTES = {"FOX-7Q2K": [1, 2, 3], "HERON-4MXP": [2, 3, 1]}
+MODERATOR = {"Authorization": "Bearer MOD-8H3T-QX"}
 
 
 def sessions_file() -> str:
@@ -38,6 +39,7 @@ def sessions_file() -> str:
                 "location": "Here",
                 "start-time": START.isoformat(),
                 "end-time": END.isoformat(),
+                "moderator-code": "MOD-8H3T-QX",
                 "checkpoints": [
                     {
                         "sequence": n,
@@ -153,6 +155,8 @@ class Team:
 
 def test_two_teams_play_a_whole_hunt(client: TestClient, clock: list[datetime]) -> None:
     foxes, herons = Team(client, clock, "FOX-7Q2K"), Team(client, clock, "HERON-4MXP")
+    assert foxes.state()["status"] == "not_started"  # joined, waiting for the moderator
+    assert client.post(f"/sessions/{SESSION}/start", headers=MODERATOR).status_code == 201
 
     for step in range(3):
         for team in (foxes, herons):
@@ -186,3 +190,19 @@ def test_two_teams_play_a_whole_hunt(client: TestClient, clock: list[datetime]) 
         # Every clue the team was ever shown was its current one, in its own route's order.
         shown_in_order = list(dict.fromkeys(team.clues_seen))
         assert shown_in_order == [f"Clue {n}" for n in ROUTES[team.code]]
+
+
+def test_the_moderator_stopping_the_session_ends_play(
+    client: TestClient, clock: list[datetime]
+) -> None:
+    foxes = Team(client, clock, "FOX-7Q2K")
+    client.post(f"/sessions/{SESSION}/start", headers=MODERATOR)
+    foxes.tick()
+    first = foxes.state()["current"]["sequence"]
+    foxes.arrive(first)
+    assert client.post(f"/sessions/{SESSION}/stop", headers=MODERATOR).status_code == 201
+    foxes.tick()
+
+    assert foxes.photograph(first) == "failed"  # recorded, but doesn't count
+    assert foxes.state()["status"] == "ended"
+    assert client.post("/join", json={"code": "HERON-4MXP", "consent": True}).status_code == 409

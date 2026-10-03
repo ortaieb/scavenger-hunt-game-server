@@ -19,8 +19,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.config import Settings, get_settings
+from game_server.errors import ApiError
 from game_server.game_state import team_state
 from game_server.join import find_participant
+from game_server.session_runs import session_phase
 from game_server.sessions import SessionRepository, get_session_repository
 from game_server.submissions import Arrival, SubmissionStore, get_submission_store
 
@@ -69,8 +71,8 @@ class ArrivalOut(BaseModel):
         )
 
 
-def _conflict(detail: str) -> HTTPException:
-    return HTTPException(status.HTTP_409_CONFLICT, detail)
+def _conflict(detail: str, code: str) -> ApiError:
+    return ApiError(status.HTTP_409_CONFLICT, detail, code)
 
 
 @router.post(
@@ -79,7 +81,11 @@ def _conflict(detail: str) -> HTTPException:
         201: {"model": ArrivalOut, "description": "A new arrival with a fresh code"},
         200: {"description": "The team's active arrival at this checkpoint, unchanged"},
         404: {"description": "Unknown session, participant or checkpoint"},
-        409: {"description": "Not started, finished, ended, not current, or not open"},
+        409: {
+            "description": "Not started, finished, ended, not current, or not open (codes: "
+            "session_not_started, hunt_finished, session_stopped, not_current_checkpoint, "
+            "checkpoint_closed)"
+        },
     },
 )
 def arrive(
@@ -102,19 +108,19 @@ def arrive(
     checkpoint = sessions.get_checkpoint(session, body.checkpoint)
     if checkpoint is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown checkpoint")
-    if now < joined.session.start_time:
-        raise _conflict("session hasn't started")
-    state = team_state(
-        joined.session, joined.team, store.completed_checkpoints(session, participant), now
-    )
+    run = store.session_run(session)
+    if session_phase(run) == "scheduled":
+        raise _conflict("session hasn't started", "session_not_started")
+    completed = store.completed_checkpoints(session, participant)
+    state = team_state(joined.session, joined.team, completed, now, run)
     if state.status == "finished":
-        raise _conflict("hunt finished")
+        raise _conflict("hunt finished", "hunt_finished")
     if state.status == "ended":
-        raise _conflict("session has ended")
+        raise _conflict("session has ended", "session_stopped")
     if state.current is None or state.current.sequence != checkpoint.sequence:
-        raise _conflict("not your current checkpoint")
+        raise _conflict("not your current checkpoint", "not_current_checkpoint")
     if not state.current.open:
-        raise _conflict("checkpoint isn't open")
+        raise _conflict("checkpoint isn't open", "checkpoint_closed")
     outcome = store.arrive(
         session,
         participant,

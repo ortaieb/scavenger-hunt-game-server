@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from game_server.checks.time_window import window_is_open
 from game_server.clock import Clock, get_clock
 from game_server.join import find_participant
+from game_server.session_runs import SessionRun, session_phase
 from game_server.sessions import GameSession, SessionRepository, Team, get_session_repository
 from game_server.submissions import SubmissionStore, get_submission_store
 
@@ -45,20 +46,28 @@ class TeamState:
     current: CurrentCheckpoint | None
 
 
-def team_state(session: GameSession, team: Team, completed: Set[int], now: datetime) -> TeamState:
-    """Work out the team's state from the checkpoints it has completed.
+def team_state(
+    session: GameSession,
+    team: Team,
+    completed: Set[int],
+    now: datetime,
+    run: SessionRun | None,
+) -> TeamState:
+    """Work out the team's state from the checkpoints it has completed and the session's run.
 
-    `finished` once every checkpoint on its route is completed (even after the end);
-    otherwise `not_started` before the start, `ended` after the end, else `playing`
-    with the first checkpoint on its route it hasn't completed. Bounds are inclusive.
+    `finished` once every checkpoint on its route is completed (even after a stop);
+    otherwise `not_started` until the moderator starts the session, `ended` once they stop
+    it, else `playing` with the first checkpoint on its route it hasn't completed. The
+    file's planned times play no part.
     """
     route = team.order
     done = sum(1 for sequence in route if sequence in completed)
     if done == len(route):
         return TeamState("finished", done, len(route), None)
-    if now < session.start_time:
+    phase = session_phase(run)
+    if phase == "scheduled":
         return TeamState("not_started", done, len(route), None)
-    if now > session.end_time:
+    if phase == "stopped":
         return TeamState("ended", done, len(route), None)
     position, sequence = next(
         (index, sequence)
@@ -70,7 +79,7 @@ def team_state(session: GameSession, team: Team, completed: Set[int], now: datet
         sequence=sequence,
         position=position,
         clue=checkpoint.clue,
-        open=window_is_open(session, checkpoint, now),
+        open=window_is_open(run, checkpoint, now),
     )
     return TeamState("playing", done, len(route), current)
 
@@ -118,7 +127,8 @@ def participant_state(
     if joined is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown participant")
     completed = store.completed_checkpoints(session, participant)
-    state = team_state(joined.session, joined.team, completed, clock().astimezone(UTC))
+    run = store.session_run(session)
+    state = team_state(joined.session, joined.team, completed, clock().astimezone(UTC), run)
     current = state.current
     return TeamStateOut(
         status=state.status,

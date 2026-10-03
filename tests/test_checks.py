@@ -21,10 +21,12 @@ from game_server.checks import (
 from game_server.checks.base import AcceptedPhoto
 from game_server.checks.duplicate_photo import DuplicatePhotoCheck
 from game_server.checks.geofence import GeofenceCheck
+from game_server.checks.session_running import SessionRunningCheck
 from game_server.checks.time_window import TimeWindowCheck
 from game_server.checks.visual import PoseCorrectCheck, SceneMatchesCheck
 from game_server.config import Settings
 from game_server.models import ChallengeMetadata, CheckOutcome, Location
+from game_server.session_runs import SessionRun
 from game_server.sessions import Checkpoint, GameSession
 
 WINDOW = Rejection("outside_window", "This checkpoint isn't open right now.")
@@ -54,7 +56,13 @@ def ctx() -> SubmissionContext:
         }
     )
     return SubmissionContext(
-        metadata, datetime(2026, 1, 1, 12, tzinfo=UTC), session, checkpoint, b"img", 0
+        metadata,
+        datetime(2026, 1, 1, 12, tzinfo=UTC),
+        session,
+        checkpoint,
+        b"img",
+        0,
+        run=SessionRun(started_at=session.start_time, stopped_at=None),
     )
 
 
@@ -145,7 +153,9 @@ def test_verdict_is_never_pass_without_rejections() -> None:
 def test_registered_checks() -> None:
     settings = Settings(max_capture_age_seconds=60, max_clock_skew_seconds=5, phash_max_distance=4)
 
-    *time_rules, geofence, duplicate, scene_check, pose_check = get_checks(settings)
+    session_running, *time_rules, geofence, duplicate, scene_check, pose_check = get_checks(
+        settings
+    )
 
     methods = [cast(MethodType, rule) for rule in time_rules]
     assert [method.__name__ for method in methods] == [
@@ -156,6 +166,7 @@ def test_registered_checks() -> None:
     assert {method.__self__ for method in methods} == {
         TimeWindowCheck(timedelta(seconds=60), timedelta(seconds=5))
     }
+    assert session_running == SessionRunningCheck()
     assert geofence == GeofenceCheck()
     assert duplicate == DuplicatePhotoCheck(max_distance=4)
     assert scene_check == SceneMatchesCheck(min_confidence=0.8)
@@ -208,14 +219,16 @@ def contexts_covering_every_outcome(ctx: SubmissionContext) -> list[SubmissionCo
             }
         ),
         accepted_photos=(AcceptedPhoto(submission_id=1, phash=ctx.phash),),
+        run=SessionRun(started_at=ctx.session.start_time, stopped_at=ctx.session.end_time),
     )
+    not_started = replace(ctx, run=None)
     in_future = replace(
         ctx,
         metadata=ctx.metadata.model_copy(
             update={"capture_time": ctx.received_at + timedelta(hours=1)}
         ),
     )
-    return [ctx, everything_fails, in_future]
+    return [ctx, everything_fails, not_started, in_future]
 
 
 def every_result(ctx: SubmissionContext) -> list[CheckResult]:
@@ -223,7 +236,14 @@ def every_result(ctx: SubmissionContext) -> list[CheckResult]:
     return [r for c in contexts_covering_every_outcome(ctx) for r in run_checks(checks, c)]
 
 
-CHECK_NAMES = ["window_open", "capture_fresh", "capture_time_plausible", "in_range", "photo_unique"]
+CHECK_NAMES = [
+    "session_running",
+    "window_open",
+    "capture_fresh",
+    "capture_time_plausible",
+    "in_range",
+    "photo_unique",
+]
 
 
 @pytest.mark.parametrize("outcome", ["passed", "failed"])

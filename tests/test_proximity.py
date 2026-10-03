@@ -3,6 +3,7 @@ import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 import psycopg
 import pytest
@@ -16,6 +17,7 @@ from game_server.app import create_app
 from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
 from game_server.sessions import SessionRepository, get_session_repository, parse_sessions
+from game_server.submissions import SubmissionStore
 
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 UNKNOWN_SESSION = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
@@ -76,7 +78,8 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def client(now: list[datetime]) -> Iterator[TestClient]:
+def client(now: list[datetime], store: SubmissionStore) -> Iterator[TestClient]:
+    store.start_run(UUID(SESSION), SESSION_START)
     app = create_app()
     settings = Settings(proximity_hint_interval_seconds=INTERVAL)
     repository = sessions_repository()
@@ -126,10 +129,8 @@ def test_boundary_counts_as_in_range(
 @pytest.mark.parametrize(
     ("at", "checkpoint", "in_range"),
     [
-        pytest.param(SESSION_START - timedelta(seconds=1), 1, False, id="before-session"),
-        pytest.param(SESSION_START, 1, True, id="session-start"),
-        pytest.param(SESSION_END, 1, True, id="session-end"),
-        pytest.param(SESSION_END + timedelta(seconds=1), 1, False, id="after-session"),
+        pytest.param(SESSION_START, 1, True, id="at-start"),
+        pytest.param(SESSION_END + timedelta(hours=1), 1, True, id="after-planned-end"),
         pytest.param(WINDOW_OPENS - timedelta(seconds=1), 2, False, id="before-window"),
         pytest.param(INSIDE_WINDOW, 2, True, id="inside-window"),
         pytest.param(WINDOW_CLOSES + timedelta(seconds=1), 2, False, id="after-window"),
@@ -143,10 +144,24 @@ def test_closed_window_is_not_in_range(
     assert ask(client, checkpoint=checkpoint).json() == {"in_range": in_range}
 
 
+def test_a_session_not_yet_started_is_not_in_range(
+    client: TestClient, db: psycopg.Connection[DictRow]
+) -> None:
+    db.execute("TRUNCATE session_runs")
+
+    assert ask(client).json() == {"in_range": False}
+
+
+def test_a_stopped_session_is_not_in_range(client: TestClient, store: SubmissionStore) -> None:
+    store.stop_run(UUID(SESSION), WINDOW_OPENS)
+
+    assert ask(client, checkpoint=1).json() == {"in_range": False}
+
+
 def test_closed_and_out_of_range_look_the_same(client: TestClient, now: list[datetime]) -> None:
     out_of_range = ask(client, location=OUT_OF_RANGE)
-    now[0] = SESSION_END + timedelta(minutes=1)
-    closed = ask(client)
+    now[0] = WINDOW_CLOSES + timedelta(minutes=1)
+    closed = ask(client, checkpoint=2)
 
     assert out_of_range.status_code == closed.status_code == 200
     assert out_of_range.content == closed.content

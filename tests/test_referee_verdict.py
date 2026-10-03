@@ -100,7 +100,8 @@ def referee(db: Db) -> FakeReferee:
 
 
 @pytest.fixture
-def client(tmp_path: Path, referee: FakeReferee) -> Iterator[TestClient]:
+def client(tmp_path: Path, referee: FakeReferee, store: SubmissionStore) -> Iterator[TestClient]:
+    store.start_run(UUID(SESSION), datetime(2026, 10, 3, 10, 0, tzinfo=UTC))
     checkpoint = {"name": "Spot", "clue": "Find it", "location": {"lat": 51.5, "long": -0.1}}
     repository = parse_sessions(
         json.dumps(
@@ -162,7 +163,7 @@ def test_everything_passing_awards_pass(client: TestClient, referee: FakeReferee
     assert response.status_code == 200
     assert verdict["verdict"] == "pass"
     assert verdict["rejections"] == []
-    assert len(verdict["checks"]) == 7
+    assert len(verdict["checks"]) == 8
     assert set(outcomes(response).values()) == {"passed"}
     by_name = {c["check"]: c for c in verdict["checks"]}
     assert by_name["scene_matches"]["confidence"] == 0.95
@@ -254,6 +255,47 @@ def test_earlier_failure_skips_the_referee(
     assert outcomes(response)["pose_correct"] == "skipped"
     [row] = rows(db)
     assert row["referee_status"] is None
+
+
+def test_a_photo_after_the_stop_is_stored_failed_without_the_referee(
+    client: TestClient, referee: FakeReferee, store: SubmissionStore, db: Db
+) -> None:
+    store.stop_run(UUID(SESSION), datetime(2026, 10, 3, 10, 15, tzinfo=UTC))
+
+    response = submit(client)
+
+    verdict = checkpoint_verdict(response)
+    assert response.status_code == 200
+    assert verdict["verdict"] == "failed"
+    assert verdict["rejections"][0] == {
+        "code": "session_stopped",
+        "message": "The session is over. This photo was recorded but doesn't count.",
+    }
+    assert outcomes(response)["session_running"] == "failed"
+    assert referee.calls == []
+    [row] = rows(db)
+    assert row["verdict"] == "failed"
+    assert row["rejections"][0]["code"] == "session_stopped"
+    assert row["referee_status"] is None
+
+
+def test_a_photo_before_the_start_is_stored_failed_without_the_referee(
+    client: TestClient, referee: FakeReferee, db: Db
+) -> None:
+    db.execute("TRUNCATE session_runs")  # the moderator hasn't started the session
+
+    response = submit(client)
+
+    verdict = checkpoint_verdict(response)
+    assert response.status_code == 200
+    assert verdict["verdict"] == "failed"
+    assert verdict["rejections"][0] == {
+        "code": "session_not_started",
+        "message": "The session hasn't started yet.",
+    }
+    assert referee.calls == []
+    [row] = rows(db)
+    assert (row["verdict"], row["rejections"][0]["code"]) == ("failed", "session_not_started")
 
 
 def test_referee_runs_outside_the_write_transaction(

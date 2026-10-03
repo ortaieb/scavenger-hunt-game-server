@@ -22,6 +22,7 @@ from game_server.database import Database, get_database
 from game_server.models import VerdictStatus
 from game_server.phash import from_hex, to_hex
 from game_server.referee import RefereeReport
+from game_server.scoring import SessionResults
 from game_server.session_runs import RunChange, SessionRun, session_phase
 
 # How long the health check waits for a connection before reporting the database unavailable.
@@ -185,6 +186,31 @@ class SubmissionStore:
                 (session, participant),
             ).fetchall()
         return frozenset(checkpoint for (checkpoint,) in rows)
+
+    def session_results(self, session: UUID) -> SessionResults:
+        """The teams that joined the session, with their first `pass` and any `pending` photo
+        per checkpoint. One statement, so a consistent snapshot."""
+        with self._database.connection() as conn:
+            rows = conn.execute(
+                "SELECT p.team, s.checkpoint, s.verdict, MIN(s.received_at)"
+                " FROM participants p LEFT JOIN submissions s"
+                " ON s.session = p.session AND s.participant = p.id"
+                " AND s.verdict IN ('pass', 'pending')"
+                " WHERE p.session = %s"
+                " GROUP BY p.team, s.checkpoint, s.verdict",
+                (session,),
+            ).fetchall()
+        return SessionResults(
+            joined=frozenset(team for team, *_ in rows),
+            passes={
+                (team, checkpoint): at
+                for team, checkpoint, verdict, at in rows
+                if verdict == "pass"
+            },
+            pending=frozenset(
+                (team, checkpoint) for team, checkpoint, verdict, _ in rows if verdict == "pending"
+            ),
+        )
 
     def find_participant(self, session: UUID, participant: UUID) -> ParticipantRecord | None:
         """The participant's row, if it joined this session."""

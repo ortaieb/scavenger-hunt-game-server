@@ -87,6 +87,7 @@ def join(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown code")
     session, team = found
     if session_phase(store.session_run(session.id)) == "stopped":
+        store.record_blocked(session.id, team.name, "join", "session_stopped", now)
         raise ApiError(status.HTTP_409_CONFLICT, "session has ended", "session_stopped")
     outcome = store.join_team(session.id, team.name, now)
     logger.info(

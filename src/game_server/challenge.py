@@ -38,7 +38,12 @@ from game_server.phash import UndecodableImageError, perceptual_hash
 from game_server.referee import Referee, RefereeReport, get_referee
 from game_server.sessions import SessionRepository, get_session_repository
 from game_server.storage import ImageStore
-from game_server.submissions import NewSubmission, SubmissionStore, get_submission_store
+from game_server.submissions import (
+    NewSubmission,
+    PhaseCode,
+    SubmissionStore,
+    get_submission_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +156,16 @@ def consult_referee(
     return referee.judge(ctx.image, challenge)
 
 
+def blocked_by_phase(submission: NewSubmission) -> PhaseCode | None:
+    """The session-phase rejection that kept the photo from counting, if any."""
+    codes = {rejection.code for rejection in submission.rejections}
+    if "session_not_started" in codes:
+        return "session_not_started"
+    if "session_stopped" in codes:
+        return "session_stopped"
+    return None
+
+
 def judge_and_record(
     ctx: SubmissionContext,
     checks: Sequence[Check],
@@ -175,6 +190,11 @@ def judge_and_record(
             saved = image_path
             submission = new_submission(ctx, image_id, results)
             recorded = transaction.record(submission)
+            phase_code = blocked_by_phase(submission)
+            if phase_code is not None:
+                transaction.record_blocked_photo(
+                    submission.session, submission.participant, phase_code, submission.received_at
+                )
     except BaseException:
         if saved is not None:
             saved.unlink(missing_ok=True)

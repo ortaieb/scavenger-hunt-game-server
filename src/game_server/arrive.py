@@ -110,12 +110,14 @@ def arrive(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown checkpoint")
     run = store.session_run(session)
     if session_phase(run) == "scheduled":
+        store.record_blocked(session, joined.team.name, "arrive", "session_not_started", now)
         raise _conflict("session hasn't started", "session_not_started")
     completed = store.completed_checkpoints(session, participant)
     state = team_state(joined.session, joined.team, completed, now, run)
     if state.status == "finished":
         raise _conflict("hunt finished", "hunt_finished")
     if state.status == "ended":
+        store.record_blocked(session, joined.team.name, "arrive", "session_stopped", now)
         raise _conflict("session has ended", "session_stopped")
     if state.current is None or state.current.sequence != checkpoint.sequence:
         raise _conflict("not your current checkpoint", "not_current_checkpoint")

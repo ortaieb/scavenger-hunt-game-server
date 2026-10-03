@@ -11,6 +11,8 @@ and managed with [uv](https://docs.astral.sh/uv/).
 | `POST` | `/join`      | A team joins its session with its join code and the player's photo consent |
 | `GET`  | `/sessions/{session}/participants/{participant}/state` | The team's status, progress and only its current clue |
 | `POST` | `/sessions/{session}/participants/{participant}/arrive` | Check in at the current checkpoint: the pose and a one-time code |
+| `POST` | `/sessions/{session}/start` | **Moderator:** start the session |
+| `POST` | `/sessions/{session}/stop`  | **Moderator:** finish the session, for good |
 | `GET`  | `/health`    | Readiness: `200 {"status": "ok"}` when the submissions database answers, else `503 {"status": "unavailable"}` |
 | `POST` | `/challenge` | A participant submits a photo for a scavenger-hunt challenge |
 | `POST` | `/checkpoint/proximity` | **Advisory only:** does the player look in range of an open checkpoint? |
@@ -363,6 +365,20 @@ There's one row per (session, team), so every phone a team joins from shares one
 Rows carry their `session`, so a session's participants are deleted with the rest of its data
 when it closes.
 
+#### Session runs
+
+When the moderator [started and finished](#post-sessionssessionstart) each session, in a
+`session_runs` table:
+
+| Column       | Content |
+|--------------|---------|
+| `session`    | The session UUID (primary key) |
+| `started_at` | When the moderator started it, UTC |
+| `stopped_at` | When the moderator finished it, UTC; empty while it runs |
+
+No row means the session hasn't started. The row carries its `session`, so it goes with the
+session's other data when that's purged.
+
 #### Arrivals
 
 Each check-in at a checkpoint is recorded in an `arrivals` table, with its one-time code:
@@ -497,6 +513,63 @@ checkpoint's name, coordinates, proximity, window times, scene, the team's route
 or the join code. `open` says whether the window is open now, never when it opens or closes.
 The every-route secrecy test puts sentinels in a checkpoint's name and in the second clue on a
 team's route, and checks neither appears in any response while the team is on its first.
+
+### `POST /sessions/{session}/start`
+
+**Moderator only.** The moderator starts the session, whenever they choose. The sessions file's
+`start-time` and `end-time` are the **planned window**: used for invitations and reminders and
+shown to players, but never enforced. A session can start early or late and run past its
+planned end.
+
+No body; authorised with the session's [moderator code](#game-sessions-and-checkpoints) as
+`Authorization: Bearer <code>`. It returns the **session clock**:
+
+```json
+{
+  "phase": "running",
+  "planned-start": "2026-10-03T09:00:00Z",
+  "planned-end": "2026-10-03T12:00:00Z",
+  "started-at": "2026-10-03T09:03:12Z",
+  "stopped-at": null,
+  "server-time": "2026-10-03T10:12:47Z"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `phase` | `scheduled` until started, `running` until stopped, then `stopped`. The planned times play no part |
+| `planned-start`, `planned-end` | The file's times, for display only |
+| `started-at`, `stopped-at` | When the moderator started and stopped it, or `null` |
+| `server-time` | The server's clock, so the app can correct for a phone whose clock is off |
+
+Times are UTC to the second, as everywhere in the API.
+
+| Status | When |
+|--------|------|
+| `201`  | Started now: `scheduled` → `running` |
+| `200`  | Already running: the same clock |
+| `401`  | Moderator code required (see *Moderator code*) |
+| `404`  | Unknown session |
+| `409`  | `{"detail": "session has ended", "code": "session_stopped"}`: it was stopped, and stopping is final |
+
+### `POST /sessions/{session}/stop`
+
+**Moderator only.** Finishes the session: `running` → `stopped`. **Stopping is final**; reopening
+would be a separate change. Same authorisation and response as start.
+
+| Status | When |
+|--------|------|
+| `201`  | Stopped now |
+| `200`  | Already stopped: the same clock |
+| `401`  | Moderator code required |
+| `404`  | Unknown session |
+| `409`  | `{"detail": "session hasn't started", "code": "session_not_started"}` |
+
+Start and stop each run in one transaction under the session's lock, so two moderators tapping
+at once stamp one time. Each change is logged (session, phase and time), never the code.
+
+For now the participant endpoints (join, state, arrive, challenge) still use the file's times;
+they follow the session's run in a later change.
 
 ### `POST /sessions/{session}/participants/{participant}/arrive`
 
@@ -1172,6 +1245,9 @@ src/game_server/
   health.py          # `GET /health` readiness check
   join.py            # `POST /join`, and find_participant for later endpoints
   moderation.py      # require_moderator: the session moderator code (Bearer)
+  errors.py          # ApiError: {detail, code} error responses
+  session_runs.py    # SessionRun and session_phase (scheduled / running / stopped)
+  session_control.py # moderator start and stop, and the session clock
   game_state.py      # team state: team_state() rules and the `…/state` endpoint
   arrive.py          # `…/arrive`: check in, pose and one-time code
   lookup.py          # find_checkpoint: shared session/checkpoint lookup (404s)

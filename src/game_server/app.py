@@ -16,6 +16,7 @@ from game_server import (
     health,
     join,
     moderation,
+    overview,
     proximity,
     session_control,
 )
@@ -77,6 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(game_state.router)
     app.include_router(arrive.router)
     app.include_router(session_control.router)
+    app.include_router(overview.router)
 
     return app
 

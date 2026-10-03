@@ -14,7 +14,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from game_server.clock import Clock, get_clock
+from game_server.errors import ApiError
 from game_server.models import JoinedSession, JoinRequest, JoinResponse
+from game_server.session_runs import session_phase
 from game_server.sessions import GameSession, SessionRepository, Team, get_session_repository
 from game_server.submissions import (
     ParticipantRecord,
@@ -63,7 +65,7 @@ def find_participant(
             "description": "The team had joined before: same participant, consent recorded again"
         },
         404: {"description": "No team has this code"},
-        409: {"description": "The session has ended"},
+        409: {"description": "The session has ended (code: session_stopped)"},
         422: {"description": "Invalid body, including consent that isn't true"},
     },
 )
@@ -76,15 +78,16 @@ def join(
 ) -> JoinResponse:
     """Join the team the code belongs to, recording the player's consent.
 
-    Joining before the session starts is fine: teams join first, then the game starts.
+    Joining before the moderator starts the session is fine: teams join first, then the
+    game starts. Only a stopped session refuses; the file's end-time doesn't.
     """
     now = clock().astimezone(UTC)
     found = sessions.find_team(body.code)
     if found is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown code")
     session, team = found
-    if now > session.end_time:
-        raise HTTPException(status.HTTP_409_CONFLICT, "session has ended")
+    if session_phase(store.session_run(session.id)) == "stopped":
+        raise ApiError(status.HTTP_409_CONFLICT, "session has ended", "session_stopped")
     outcome = store.join_team(session.id, team.name, now)
     logger.info(
         "Team joined session %s team %s participant %s first=%s",

@@ -4,15 +4,18 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
+from psycopg.rows import DictRow
 
 from game_server.app import create_app
 from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
 from game_server.game_state import team_state
 from game_server.models import VerdictStatus
+from game_server.session_runs import SessionRun
 from game_server.sessions import (
     GameSession,
     SessionRepository,
@@ -30,6 +33,8 @@ DURING = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
 WINDOW_OPENS = datetime(2026, 10, 3, 10, 30, tzinfo=UTC)  # checkpoint 3's own window
 WINDOW_CLOSES = datetime(2026, 10, 3, 11, 0, tzinfo=UTC)
 FOX, HERON = "FOX-7Q2K", "HERON-4MXP"
+RUNNING = SessionRun(started_at=START, stopped_at=None)
+STOPPED = SessionRun(started_at=START, stopped_at=END)
 
 
 def session_json(session_id: str) -> dict[str, Any]:
@@ -92,8 +97,17 @@ def foxes() -> Team:
     return game_session().teams[0]
 
 
-def test_before_start_is_not_started() -> None:
-    state = team_state(game_session(), foxes(), frozenset(), START - timedelta(seconds=1))
+@pytest.mark.parametrize(
+    ("run", "now"),
+    [
+        (None, DURING),
+        (SessionRun(started_at=None, stopped_at=None), DURING),
+        (None, END + timedelta(hours=1)),  # the planned end passes, but it never started
+    ],
+    ids=["no-run", "row-without-start", "after-planned-end"],
+)
+def test_before_the_start_is_not_started(run: SessionRun | None, now: datetime) -> None:
+    state = team_state(game_session(), foxes(), frozenset(), now, run)
 
     assert (state.status, state.current, state.completed, state.total) == (
         "not_started",
@@ -103,38 +117,42 @@ def test_before_start_is_not_started() -> None:
     )
 
 
-@pytest.mark.parametrize("now", [START, DURING, END], ids=["at-start", "during", "at-end"])
-def test_during_the_session_plays_the_first_checkpoint(now: datetime) -> None:
-    state = team_state(game_session(), foxes(), frozenset(), now)
+@pytest.mark.parametrize(
+    "now",
+    [START - timedelta(hours=1), DURING, END + timedelta(hours=1)],
+    ids=["before-planned-start", "during", "after-planned-end"],
+)
+def test_a_running_session_plays_the_first_checkpoint_whatever_the_clock(now: datetime) -> None:
+    state = team_state(game_session(), foxes(), frozenset(), now, RUNNING)
 
     assert state.status == "playing"
     assert state.current is not None
     assert (state.current.sequence, state.current.position, state.current.clue) == (1, 1, "Clue 1")
 
 
-def test_after_end_unfinished_is_ended() -> None:
-    state = team_state(game_session(), foxes(), {1}, END + timedelta(seconds=1))
+def test_after_a_stop_unfinished_is_ended() -> None:
+    state = team_state(game_session(), foxes(), {1}, DURING, STOPPED)
 
     assert (state.status, state.current, state.completed) == ("ended", None, 1)
 
 
 def test_completed_checkpoints_move_the_team_along_its_route() -> None:
-    state = team_state(game_session(), foxes(), {1}, DURING)
+    state = team_state(game_session(), foxes(), {1}, DURING, RUNNING)
 
     assert state.current is not None
     assert (state.current.sequence, state.current.position, state.completed) == (2, 2, 1)
 
 
 def test_out_of_order_completion_still_takes_the_first_gap() -> None:
-    state = team_state(game_session(), foxes(), {2}, DURING)  # 2 done before 1
+    state = team_state(game_session(), foxes(), {2}, DURING, RUNNING)  # 2 done before 1
 
     assert state.current is not None
     assert (state.current.sequence, state.current.position, state.completed) == (1, 1, 1)
 
 
-@pytest.mark.parametrize("now", [START - timedelta(hours=1), DURING, END + timedelta(hours=1)])
-def test_everything_completed_is_finished_at_any_time(now: datetime) -> None:
-    state = team_state(game_session(), foxes(), {1, 2, 3}, now)
+@pytest.mark.parametrize("run", [None, RUNNING, STOPPED], ids=["scheduled", "running", "stopped"])
+def test_everything_completed_is_finished_in_any_phase(run: SessionRun | None) -> None:
+    state = team_state(game_session(), foxes(), {1, 2, 3}, DURING, run)
 
     assert (state.status, state.current, state.completed, state.total) == ("finished", None, 3, 3)
 
@@ -143,7 +161,7 @@ def test_each_team_follows_its_own_route() -> None:
     session = game_session()
     herons = session.teams[1]
 
-    state = team_state(session, herons, frozenset(), WINDOW_OPENS)
+    state = team_state(session, herons, frozenset(), WINDOW_OPENS, RUNNING)
 
     assert state.current is not None
     assert (state.current.sequence, state.current.position, state.current.clue) == (3, 1, "Clue 3")
@@ -162,14 +180,24 @@ def test_each_team_follows_its_own_route() -> None:
 def test_open_follows_the_effective_window(now: datetime, is_open: bool) -> None:
     herons = game_session().teams[1]  # starts at checkpoint 3, which has its own window
 
-    state = team_state(game_session(), herons, frozenset(), now)
+    state = team_state(game_session(), herons, frozenset(), now, RUNNING)
 
     assert state.current is not None
     assert state.current.open is is_open
 
 
-def test_checkpoint_without_window_is_open_during_the_session() -> None:
-    state = team_state(game_session(), foxes(), frozenset(), DURING)
+def test_a_window_closing_before_a_late_start_is_never_open() -> None:
+    herons = game_session().teams[1]
+    late = SessionRun(started_at=WINDOW_CLOSES + timedelta(minutes=1), stopped_at=None)
+
+    for now in (WINDOW_OPENS, WINDOW_CLOSES, WINDOW_CLOSES + timedelta(minutes=2)):
+        state = team_state(game_session(), herons, frozenset(), now, late)
+        assert state.current is not None
+        assert state.current.open is False
+
+
+def test_checkpoint_without_window_is_open_while_running() -> None:
+    state = team_state(game_session(), foxes(), frozenset(), END + timedelta(hours=1), RUNNING)
 
     assert state.current is not None
     assert state.current.open is True
@@ -184,7 +212,8 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def client(now: list[datetime]) -> Iterator[TestClient]:
+def client(now: list[datetime], store: SubmissionStore) -> Iterator[TestClient]:
+    store.start_run(UUID(SESSION), START)
     app = create_app()
     settings = Settings()
     sessions = repository()
@@ -243,22 +272,37 @@ def test_playing_response(client: TestClient) -> None:
     }
 
 
-@pytest.mark.parametrize(
-    ("at", "status"),
-    [
-        (START - timedelta(minutes=1), "not_started"),
-        (END + timedelta(minutes=1), "ended"),
-    ],
-)
-def test_no_current_checkpoint_outside_the_session(
-    client: TestClient, now: list[datetime], at: datetime, status: str
+def test_before_the_start_there_is_no_current_checkpoint(
+    client: TestClient, db: psycopg.Connection[DictRow]
 ) -> None:
     participant = join(client)
-    now[0] = at
+    db.execute("TRUNCATE session_runs")  # joined, but the moderator hasn't started yet
 
     body = state(client, participant).json()
 
-    assert (body["status"], body["current"]) == (status, None)
+    assert (body["status"], body["current"]) == ("not_started", None)
+
+
+def test_after_a_stop_there_is_no_current_checkpoint(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    participant = join(client)
+    store.stop_run(UUID(SESSION), DURING)
+
+    body = state(client, participant).json()
+
+    assert (body["status"], body["current"]) == ("ended", None)
+
+
+def test_the_planned_end_does_not_end_a_running_session(
+    client: TestClient, now: list[datetime]
+) -> None:
+    participant = join(client)
+    now[0] = END + timedelta(hours=1)
+
+    body = state(client, participant).json()
+
+    assert (body["status"], body["current"]["open"]) == ("playing", True)
 
 
 def test_two_teams_get_their_own_first_clue(client: TestClient, now: list[datetime]) -> None:
@@ -293,13 +337,13 @@ def test_accepted_submission_completes_and_shows_the_next_clue(
     assert body["current"] == {"sequence": 2, "position": 2, "clue": "Clue 2", "open": True}
 
 
-def test_everything_completed_is_finished_even_after_end(
-    client: TestClient, store: SubmissionStore, now: list[datetime]
+def test_everything_completed_is_finished_even_after_a_stop(
+    client: TestClient, store: SubmissionStore
 ) -> None:
     participant = join(client)
     for checkpoint in (1, 2, 3):
         submit(store, participant, checkpoint, "pending")
-    now[0] = END + timedelta(hours=2)
+    store.stop_run(UUID(SESSION), END)
 
     body = state(client, participant).json()
 

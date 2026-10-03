@@ -173,29 +173,41 @@ def test_unknown_code_is_404(client: TestClient, db: psycopg.Connection[DictRow]
 
 
 @pytest.mark.parametrize(
-    ("at", "status"),
+    "at",
     [
-        pytest.param(START - timedelta(days=1), 201, id="day-before-start"),
-        pytest.param(START, 201, id="at-start"),
-        pytest.param(END, 201, id="at-end"),
-        pytest.param(END + timedelta(seconds=1), 409, id="after-end"),
+        pytest.param(START - timedelta(days=1), id="day-before-planned-start"),
+        pytest.param(START, id="at-planned-start"),
+        pytest.param(END + timedelta(hours=1), id="after-planned-end"),
     ],
 )
-def test_joining_is_open_until_the_session_ends(
-    client: TestClient,
-    now: list[datetime],
-    db: psycopg.Connection[DictRow],
-    at: datetime,
-    status: int,
+def test_joining_a_scheduled_session_is_open_whatever_the_clock(
+    client: TestClient, now: list[datetime], at: datetime
 ) -> None:
     now[0] = at
 
+    assert join(client).status_code == 201
+
+
+def test_joining_a_running_session_after_its_planned_end_is_open(
+    client: TestClient, now: list[datetime], store: SubmissionStore
+) -> None:
+    store.start_run(UUID(SESSION), START)
+    now[0] = END + timedelta(hours=1)
+
+    assert join(client).status_code == 201
+
+
+def test_joining_a_stopped_session_is_409(
+    client: TestClient, db: psycopg.Connection[DictRow], store: SubmissionStore
+) -> None:
+    store.start_run(UUID(SESSION), START)
+    store.stop_run(UUID(SESSION), START + timedelta(hours=1))
+
     response = join(client)
 
-    assert response.status_code == status
-    if status == 409:
-        assert response.json() == {"detail": "session has ended"}
-        assert participants(db) == []
+    assert response.status_code == 409
+    assert response.json() == {"detail": "session has ended", "code": "session_stopped"}
+    assert participants(db) == []
 
 
 # --- concurrency and logging ---------------------------------------------------------

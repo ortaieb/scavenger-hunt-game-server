@@ -118,9 +118,10 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
     pose = "/sessions/{session}/checkpoints/{sequence}/challenge"
     state = "/sessions/{session}/participants/{participant}/state"
     arrive = "/sessions/{session}/participants/{participant}/arrive"
-    joined = client.post("/join", json={"code": JOIN_CODE, "consent": True})  # 201
+    joined = client.post("/join", json={"code": JOIN_CODE, "consent": True})  # 201, scheduled
     participant = joined.json()["participant"]
-    return {
+    opening = session_opening_responses(client)  # the session runs from here on
+    responses = {
         ("GET", "/"): [client.get("/")],
         ("POST", "/challenge"): [
             submit(client, metadata()),  # pending
@@ -170,34 +171,54 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
         ("GET", "/docs"): [client.get("/docs")],
         ("GET", "/docs/oauth2-redirect"): [client.get("/docs/oauth2-redirect")],
         ("GET", "/redoc"): [client.get("/redoc")],
-        # Last: stopping the session will matter to the participant routes (#51).
-        **session_control_responses(client),
     }
-
-
-def session_control_responses(client: TestClient) -> dict[tuple[str, str], list[Response]]:
-    """The moderator's start and stop, success and error paths, in a meaningful order."""
-    moderator = {"Authorization": f"Bearer {MODERATOR_CODE}"}
-
-    def post(action: str, session: str = SESSION, **kwargs: Any) -> Response:
-        return client.post(f"/sessions/{session}/{action}", **kwargs)
-
-    stop_early = post("stop", headers=moderator)  # 409 not started
-    start_anonymous = post("start")  # 401
-    start, start_again = post("start", headers=moderator), post("start", headers=moderator)
-    stop, stop_again = post("stop", headers=moderator), post("stop", headers=moderator)
-    start_late = post("start", headers=moderator)  # 409 stopped
-    unknown = post("start", session=UNKNOWN, headers=moderator)  # 404
-    return {
-        ("POST", "/sessions/{session}/start"): [
-            start_anonymous,
-            start,
-            start_again,
-            start_late,
-            unknown,
+    closing = session_closing_responses(client)  # the session is stopped from here on
+    after_stop = {
+        ("POST", "/join"): [client.post("/join", json={"code": JOIN_CODE, "consent": True})],
+        ("GET", state): [client.get(f"/sessions/{SESSION}/participants/{participant}/state")],
+        ("POST", arrive): [
+            client.post(
+                f"/sessions/{SESSION}/participants/{participant}/arrive", json={"checkpoint": 1}
+            )
         ],
-        ("POST", "/sessions/{session}/stop"): [stop_early, stop, stop_again],
+        ("POST", "/challenge"): [submit(client, metadata(), image=jpeg(scene(5)))],
+        ("POST", "/checkpoint/proximity"): [hint(client, participant=str(UNKNOWN))],
     }
+    for route, route_responses in (*opening.items(), *closing.items(), *after_stop.items()):
+        responses.setdefault(route, []).extend(route_responses)
+    return responses
+
+
+def moderator_post(
+    client: TestClient, action: str, session: str = SESSION, **kwargs: Any
+) -> Response:
+    return client.post(f"/sessions/{session}/{action}", **kwargs)
+
+
+MODERATOR = {"Authorization": f"Bearer {MODERATOR_CODE}"}
+START = ("POST", "/sessions/{session}/start")
+STOP = ("POST", "/sessions/{session}/stop")
+
+
+def session_opening_responses(client: TestClient) -> dict[tuple[str, str], list[Response]]:
+    """The moderator's calls up to and including starting the session."""
+    stop_early = moderator_post(client, "stop", headers=MODERATOR)  # 409 not started
+    start_anonymous = moderator_post(client, "start")  # 401
+    start = moderator_post(client, "start", headers=MODERATOR)  # 201
+    start_again = moderator_post(client, "start", headers=MODERATOR)  # 200
+    unknown = moderator_post(client, "start", session=UNKNOWN, headers=MODERATOR)  # 404
+    return {
+        START: [start_anonymous, start, start_again, unknown],
+        STOP: [stop_early],
+    }
+
+
+def session_closing_responses(client: TestClient) -> dict[tuple[str, str], list[Response]]:
+    """The moderator stopping the session, and what follows."""
+    stop = moderator_post(client, "stop", headers=MODERATOR)  # 201
+    stop_again = moderator_post(client, "stop", headers=MODERATOR)  # 200
+    start_late = moderator_post(client, "start", headers=MODERATOR)  # 409 stopped
+    return {START: [start_late], STOP: [stop, stop_again]}
 
 
 def app_routes(client: TestClient) -> set[tuple[str, str]]:
@@ -249,7 +270,7 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
 
     assert statuses[("POST", "/challenge")] == [200, 202, 404, 422]
     assert statuses[("POST", "/checkpoint/proximity")] == [200, 404, 422, 429]
-    assert statuses[("POST", "/join")] == [200, 201, 404, 422]
+    assert statuses[("POST", "/join")] == [200, 201, 404, 409, 422]
     assert statuses[("POST", "/sessions/{session}/start")] == [200, 201, 401, 404, 409]
     assert statuses[("POST", "/sessions/{session}/stop")] == [200, 201, 409]
     assert statuses[("POST", "/sessions/{session}/participants/{participant}/arrive")] == [

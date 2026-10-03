@@ -3,7 +3,7 @@ TAG   ?= dev
 PORT  ?= 8000
 
 .DEFAULT_GOAL := help
-.PHONY: help install run dev lint format typecheck test coverage check eval-referee docker-build docker-run clean
+.PHONY: help install run dev lint format typecheck test coverage check db-up db-down db-reset eval-referee docker-build docker-run clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -33,6 +33,21 @@ coverage: ## Run tests with a coverage report
 	uv run pytest --cov=src --cov-report=term-missing
 
 check: lint format typecheck test ## Lint, format, type-check and test
+
+DB_CONTAINER ?= game-server-db
+DB_PORT       ?= 5432
+
+db-up: ## Start a local PostgreSQL in Docker (game_server and game_server_test databases)
+	docker run -d --name $(DB_CONTAINER) -p $(DB_PORT):5432 \
+		-e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=game_server postgres:16
+	@until docker exec $(DB_CONTAINER) pg_isready -h localhost -U postgres >/dev/null 2>&1; do sleep 1; done
+	docker exec $(DB_CONTAINER) createdb -U postgres game_server_test
+
+db-down: ## Stop and remove the local PostgreSQL (its data goes with it)
+	docker rm -f $(DB_CONTAINER)
+
+db-reset: ## DESTRUCTIVE: drop the configured database's tables and recreate them
+	uv run python -m game_server.db_reset --yes
 
 RUNS ?= 1
 

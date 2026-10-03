@@ -162,12 +162,13 @@ def judge_and_record(
 
     `earlier` are the results of the checks already run outside the lock; they come first
     in the verdict. The accepted-photo snapshot, these checks and the insert are serialised
-    against other submissions, so two uploads of the same photo can't both be accepted.
+    against the session's other submissions, so two uploads of the same photo can't both be
+    accepted.
     If anything fails after the image is saved, the image is removed.
     """
     saved: Path | None = None
     try:
-        with submissions.transaction() as transaction:
+        with submissions.transaction(ctx.metadata.session) as transaction:
             ctx = replace(ctx, accepted_photos=transaction.accepted_photos(ctx.metadata.session))
             results = [*earlier, *run_checks(checks, ctx)]
             image_id, image_path = images.save(ctx.image)

@@ -1,20 +1,20 @@
 import json
 import logging
-import sqlite3
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
 from typing import Any
 from uuid import UUID
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
 from images import jpeg, scene
+from psycopg.rows import DictRow
 from pytest_mock import MockerFixture
 
 from game_server.app import create_app
@@ -80,20 +80,15 @@ def image_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def db_path(tmp_path: Path) -> Path:
-    return tmp_path / "game.sqlite3"
-
-
-@pytest.fixture
 def checks() -> list[Check]:
     """Checks the endpoint runs; tests append fakes before posting."""
     return []
 
 
 @pytest.fixture
-def client(image_dir: Path, db_path: Path, checks: list[Check]) -> Iterator[TestClient]:
+def client(image_dir: Path, checks: list[Check]) -> Iterator[TestClient]:
     app = create_app()
-    settings = Settings(image_base_path=image_dir, max_image_bytes=MAX_IMAGE_BYTES, db_path=db_path)
+    settings = Settings(image_base_path=image_dir, max_image_bytes=MAX_IMAGE_BYTES)
     repository = sessions_repository()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: repository
@@ -123,10 +118,8 @@ def stored_files(image_dir: Path) -> list[Path]:
     return sorted(image_dir.glob("*")) if image_dir.exists() else []
 
 
-def stored_rows(db_path: Path) -> list[sqlite3.Row]:
-    with closing(sqlite3.connect(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        return conn.execute("SELECT * FROM submissions ORDER BY id").fetchall()
+def stored_rows(db: psycopg.Connection[DictRow]) -> list[DictRow]:
+    return db.execute("SELECT * FROM submissions ORDER BY id").fetchall()
 
 
 def checkpoint_verdict(response: Response) -> dict[str, Any]:
@@ -224,9 +217,9 @@ def test_time_is_received_at_not_capture_time(client: TestClient, capture_time: 
     assert checkpoint_verdict(response)["time"] == "2026-10-03T09:30:00Z"
 
 
-def test_received_at_is_normalised_to_utc(image_dir: Path, db_path: Path) -> None:
+def test_received_at_is_normalised_to_utc(image_dir: Path, db: psycopg.Connection[DictRow]) -> None:
     app = create_app()
-    settings = Settings(image_base_path=image_dir, db_path=db_path)
+    settings = Settings(image_base_path=image_dir)
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = sessions_repository
     app.dependency_overrides[get_clock] = lambda: (
@@ -264,41 +257,39 @@ def test_failed_submissions_count_as_attempts(client: TestClient, checks: list[C
 # --- storage -----------------------------------------------------------------
 
 
-def test_records_submission_row(client: TestClient, checks: list[Check], db_path: Path) -> None:
+def test_records_submission_row(
+    client: TestClient, checks: list[Check], db: psycopg.Connection[DictRow]
+) -> None:
     checks.append(rejecting("outside_window"))
 
     image_id = post_challenge(client).json()["image_id"]
 
-    [row] = stored_rows(db_path)
+    [row] = stored_rows(db)
     assert dict(row) == {
         "id": row["id"],
-        "session": SESSION,
-        "participant": PARTICIPANT,
+        "session": UUID(SESSION),
+        "participant": UUID(PARTICIPANT),
         "checkpoint": 1,
         "attempt": 1,
-        "received_at": "2026-10-03T09:30:00+00:00",
-        "capture_time": "2026-10-03T10:29:00+01:00",
+        "received_at": NOW,
+        "capture_time": datetime(2026, 10, 3, 9, 29, tzinfo=UTC),  # the instant sent
         "lat": 51.5001,
         "long": -0.1,
-        "image_id": image_id,
+        "image_id": UUID(image_id),
         "verdict": "failed",
-        "rejections": json.dumps(
-            [{"code": "outside_window", "message": "Rejected: outside_window"}]
-        ),
+        "rejections": [{"code": "outside_window", "message": "Rejected: outside_window"}],
         "distance_m": pytest.approx(11.1, abs=0.1),
         "phash": to_hex(perceptual_hash(JPEG)),
         "phash_match_id": None,
-        "checks": json.dumps(
-            [
-                {
-                    "check": "no_outside_window",
-                    "outcome": "failed",
-                    "confidence": 1.0,
-                    "reason": "Rejected: outside_window",
-                    "detail": None,
-                }
-            ]
-        ),
+        "checks": [
+            {
+                "check": "no_outside_window",
+                "outcome": "failed",
+                "confidence": 1.0,
+                "reason": "Rejected: outside_window",
+                "detail": None,
+            }
+        ],
         # The referee isn't consulted: the checkpoint has no challenge and a check failed.
         "referee_status": None,
         "referee_model": None,
@@ -322,10 +313,10 @@ def test_image_removed_if_recording_fails(
     client: TestClient, image_dir: Path, mocker: MockerFixture
 ) -> None:
     mocker.patch(
-        "game_server.submissions.SubmissionTransaction.record", side_effect=sqlite3.OperationalError
+        "game_server.submissions.SubmissionTransaction.record", side_effect=psycopg.OperationalError
     )
 
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(psycopg.OperationalError):
         post_challenge(client)
 
     assert stored_files(image_dir) == []
@@ -353,9 +344,9 @@ def test_logs_received_challenge(
 # --- rejected requests store nothing ----------------------------------------
 
 
-def assert_nothing_stored(image_dir: Path, db_path: Path) -> None:
+def assert_nothing_stored(image_dir: Path, db: psycopg.Connection[DictRow]) -> None:
     assert stored_files(image_dir) == []
-    assert stored_rows(db_path) == []
+    assert stored_rows(db) == []
 
 
 @pytest.mark.parametrize(
@@ -366,13 +357,17 @@ def assert_nothing_stored(image_dir: Path, db_path: Path) -> None:
     ],
 )
 def test_unknown_target_is_404(
-    client: TestClient, image_dir: Path, db_path: Path, metadata: dict[str, Any], detail: str
+    client: TestClient,
+    image_dir: Path,
+    db: psycopg.Connection[DictRow],
+    metadata: dict[str, Any],
+    detail: str,
 ) -> None:
     response = post_challenge(client, metadata)
 
     assert response.status_code == 404
     assert response.json() == {"detail": detail}
-    assert_nothing_stored(image_dir, db_path)
+    assert_nothing_stored(image_dir, db)
 
 
 @pytest.mark.parametrize(
@@ -394,30 +389,35 @@ def test_unknown_target_is_404(
     ],
 )
 def test_invalid_metadata_is_422(
-    client: TestClient, image_dir: Path, db_path: Path, metadata: str | dict[str, Any]
+    client: TestClient,
+    image_dir: Path,
+    db: psycopg.Connection[DictRow],
+    metadata: str | dict[str, Any],
 ) -> None:
     response = post_challenge(client, metadata)
 
     assert response.status_code == 422
     assert response.json()["detail"][0]["loc"][:2] == ["body", "metadata"]
-    assert_nothing_stored(image_dir, db_path)
+    assert_nothing_stored(image_dir, db)
 
 
-def test_rejects_non_jpeg_content_type(client: TestClient, image_dir: Path, db_path: Path) -> None:
+def test_rejects_non_jpeg_content_type(
+    client: TestClient, image_dir: Path, db: psycopg.Connection[DictRow]
+) -> None:
     response = post_challenge(client, image_type="image/png")
 
     assert response.status_code == 415
-    assert_nothing_stored(image_dir, db_path)
+    assert_nothing_stored(image_dir, db)
 
 
 @pytest.mark.parametrize("image", [b"", b"\x89PNG\r\n\x1a\n-not-a-jpeg"])
 def test_rejects_body_that_is_not_jpeg(
-    client: TestClient, image_dir: Path, db_path: Path, image: bytes
+    client: TestClient, image_dir: Path, db: psycopg.Connection[DictRow], image: bytes
 ) -> None:
     response = post_challenge(client, image=image)
 
     assert response.status_code == 422
-    assert_nothing_stored(image_dir, db_path)
+    assert_nothing_stored(image_dir, db)
 
 
 def test_accepts_image_at_size_limit(client: TestClient) -> None:
@@ -426,13 +426,15 @@ def test_accepts_image_at_size_limit(client: TestClient) -> None:
     assert post_challenge(client, image=image).status_code == 202
 
 
-def test_rejects_image_over_size_limit(client: TestClient, image_dir: Path, db_path: Path) -> None:
+def test_rejects_image_over_size_limit(
+    client: TestClient, image_dir: Path, db: psycopg.Connection[DictRow]
+) -> None:
     image = JPEG + b"\x00" * (MAX_IMAGE_BYTES - len(JPEG) + 1)
 
     response = post_challenge(client, image=image)
 
     assert response.status_code == 413
-    assert_nothing_stored(image_dir, db_path)
+    assert_nothing_stored(image_dir, db)
 
 
 @pytest.mark.parametrize("missing", ["metadata", "challenge-image"])
@@ -459,11 +461,11 @@ def clock_now() -> list[datetime]:
 
 @pytest.fixture
 def real_checks_client(
-    image_dir: Path, db_path: Path, clock_now: list[datetime]
+    image_dir: Path, db: psycopg.Connection[DictRow], clock_now: list[datetime]
 ) -> Iterator[TestClient]:
     """Like `client`, but with the registered checks rather than fakes."""
     app = create_app()
-    settings = Settings(image_base_path=image_dir, db_path=db_path)
+    settings = Settings(image_base_path=image_dir)
     repository = sessions_repository()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: repository
@@ -480,7 +482,7 @@ def test_time_rules_pass_inside_window(real_checks_client: TestClient) -> None:
 
 
 def test_received_after_session_end_fails(
-    real_checks_client: TestClient, clock_now: list[datetime], db_path: Path
+    real_checks_client: TestClient, clock_now: list[datetime], db: psycopg.Connection[DictRow]
 ) -> None:
     clock_now[0] = datetime(2026, 10, 3, 12, 0, 1, tzinfo=UTC)  # session ends 12:00Z
     # Capture time inside the session and fresh: the claim can't rescue the submission.
@@ -491,7 +493,7 @@ def test_received_after_session_end_fails(
     assert response.status_code == 200
     assert checkpoint_verdict(response)["verdict"] == "failed"
     assert [r["code"] for r in checkpoint_verdict(response)["rejections"]] == ["outside_window"]
-    [row] = stored_rows(db_path)
+    [row] = stored_rows(db)
     assert row["verdict"] == "failed"
 
 
@@ -514,24 +516,26 @@ def test_capture_time_claims_can_fail_submission(
 FAR_AWAY = {"lat": 51.51, "long": -0.1}  # ~1.1 km north of the checkpoints
 
 
-def test_out_of_range_submission_fails(real_checks_client: TestClient, db_path: Path) -> None:
+def test_out_of_range_submission_fails(
+    real_checks_client: TestClient, db: psycopg.Connection[DictRow]
+) -> None:
     response = post_challenge(real_checks_client, {**METADATA, "location": FAR_AWAY})
 
     assert response.status_code == 200
     assert checkpoint_verdict(response)["verdict"] == "failed"
     assert [r["code"] for r in checkpoint_verdict(response)["rejections"]] == ["out_of_range"]
-    [row] = stored_rows(db_path)
+    [row] = stored_rows(db)
     assert row["distance_m"] == pytest.approx(1112, abs=1)
 
 
 def test_in_range_submission_is_pending_never_pass(
-    real_checks_client: TestClient, db_path: Path
+    real_checks_client: TestClient, db: psycopg.Connection[DictRow]
 ) -> None:
     response = post_challenge(real_checks_client)
 
     assert response.status_code == 202
     assert checkpoint_verdict(response)["verdict"] == "pending"
-    [row] = stored_rows(db_path)
+    [row] = stored_rows(db)
     assert row["distance_m"] == pytest.approx(11.1, abs=0.1)
 
 
@@ -579,7 +583,7 @@ def codes(response: Response) -> list[str]:
 
 
 def test_another_participants_accepted_photo_is_a_duplicate(
-    real_checks_client: TestClient, db_path: Path
+    real_checks_client: TestClient, db: psycopg.Connection[DictRow]
 ) -> None:
     first = post_challenge(real_checks_client, image=PHOTO)
     second = post_challenge(
@@ -589,7 +593,7 @@ def test_another_participants_accepted_photo_is_a_duplicate(
     assert first.status_code == 202
     assert second.status_code == 200
     assert codes(second) == ["duplicate_photo"]
-    accepted, duplicate = stored_rows(db_path)
+    accepted, duplicate = stored_rows(db)
     assert duplicate["phash_match_id"] == accepted["id"]
     assert accepted["phash_match_id"] is None
     assert duplicate["phash"] == accepted["phash"]
@@ -624,14 +628,14 @@ def test_different_photo_is_not_a_duplicate(real_checks_client: TestClient) -> N
 
 
 def test_photo_from_a_failed_attempt_can_be_resubmitted(
-    real_checks_client: TestClient, db_path: Path
+    real_checks_client: TestClient, db: psycopg.Connection[DictRow]
 ) -> None:
     failed = post_challenge(real_checks_client, {**METADATA, "location": FAR_AWAY}, image=PHOTO)
     retry = post_challenge(real_checks_client, image=PHOTO)
 
     assert codes(failed) == ["out_of_range"]
     assert retry.status_code == 202
-    assert [row["attempt"] for row in stored_rows(db_path)] == [1, 2]
+    assert [row["attempt"] for row in stored_rows(db)] == [1, 2]
 
 
 def test_photos_are_never_compared_across_sessions(real_checks_client: TestClient) -> None:
@@ -665,16 +669,18 @@ def test_duplicate_response_reveals_no_match(real_checks_client: TestClient) -> 
     ],
 )
 def test_undecodable_jpeg_is_422_and_stores_nothing(
-    real_checks_client: TestClient, image_dir: Path, db_path: Path, image: bytes
+    real_checks_client: TestClient, image_dir: Path, db: psycopg.Connection[DictRow], image: bytes
 ) -> None:
     response = post_challenge(real_checks_client, image=image)
 
     assert response.status_code == 422
     assert response.json() == {"detail": "challenge-image could not be decoded"}
-    assert_nothing_stored(image_dir, db_path)
+    assert_nothing_stored(image_dir, db)
 
 
-def test_concurrent_uploads_of_one_photo_accept_exactly_one(image_dir: Path, db_path: Path) -> None:
+def test_concurrent_uploads_of_one_photo_accept_exactly_one(
+    image_dir: Path, store: SubmissionStore
+) -> None:
     """Both requests pass the checks' own logic unless the snapshot and insert are atomic."""
     barrier = Barrier(2)
 
@@ -684,7 +690,6 @@ def test_concurrent_uploads_of_one_photo_accept_exactly_one(image_dir: Path, db_
 
     checks: list[Check] = [DuplicatePhotoCheck(max_distance=6), slow_check]
     images = ImageStore(image_dir)
-    store = SubmissionStore(db_path)
     repository = sessions_repository()
     session = repository.get_session(UUID(SESSION))
     checkpoint = repository.get_checkpoint(UUID(SESSION), 1)
@@ -844,7 +849,7 @@ SENTINEL = "MODERATOR-ONLY-7f3a9c"
 
 
 def test_detail_is_stored_but_never_returned(
-    client: TestClient, checks: list[Check], db_path: Path
+    client: TestClient, checks: list[Check], db: psycopg.Connection[DictRow]
 ) -> None:
     checks.append(
         lambda ctx: CheckResult(
@@ -864,8 +869,8 @@ def test_detail_is_stored_but_never_returned(
             "reason": "We couldn't tell.",
         }
     ]
-    [row] = stored_rows(db_path)
-    assert json.loads(row["checks"])[0]["detail"] == SENTINEL
+    [row] = stored_rows(db)
+    assert row["checks"][0]["detail"] == SENTINEL
 
 
 def test_check_schema_has_no_detail(client: TestClient) -> None:

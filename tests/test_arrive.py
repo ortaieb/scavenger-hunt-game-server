@@ -1,21 +1,20 @@
 import json
 import logging
 import re
-import sqlite3
 from collections import Counter
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from itertools import count
-from pathlib import Path
 from threading import Barrier
 from typing import Any
 from uuid import UUID, uuid4
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
+from psycopg.rows import DictRow
 from pytest_mock import MockerFixture
 
 from game_server import arrive as arrive_module
@@ -84,14 +83,9 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def db_path(tmp_path: Path) -> Path:
-    return tmp_path / "game.sqlite3"
-
-
-@pytest.fixture
-def client(db_path: Path, now: list[datetime]) -> Iterator[TestClient]:
+def client(now: list[datetime]) -> Iterator[TestClient]:
     app = create_app()
-    settings = Settings(db_path=db_path, arrival_code_ttl_seconds=TTL)
+    settings = Settings(arrival_code_ttl_seconds=TTL)
     sessions = repository()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: sessions
@@ -122,9 +116,9 @@ def arrive(client: TestClient, participant: str, checkpoint: int | str = 1) -> R
 
 
 def submit(
-    db_path: Path, participant: str, checkpoint: int, verdict: VerdictStatus, at: datetime
+    store: SubmissionStore, participant: str, checkpoint: int, verdict: VerdictStatus, at: datetime
 ) -> None:
-    SubmissionStore(db_path).record(
+    store.record(
         NewSubmission(
             session=UUID(SESSION),
             participant=UUID(participant),
@@ -188,12 +182,12 @@ def test_after_expiry_a_fresh_code_is_issued(client: TestClient, now: list[datet
 
 @pytest.mark.usefixtures("codes")
 def test_after_a_failed_photo_a_fresh_code_is_issued(
-    client: TestClient, db_path: Path, now: list[datetime]
+    client: TestClient, store: SubmissionStore, now: list[datetime]
 ) -> None:
     participant = join(client)
     arrive(client, participant)
     now[0] += timedelta(minutes=1)
-    submit(db_path, participant, 1, "failed", now[0])
+    submit(store, participant, 1, "failed", now[0])
 
     response = arrive(client, participant)
 
@@ -203,10 +197,10 @@ def test_after_a_failed_photo_a_fresh_code_is_issued(
 
 @pytest.mark.usefixtures("codes")
 def test_a_photo_before_the_arrival_does_not_end_it(
-    client: TestClient, db_path: Path, now: list[datetime]
+    client: TestClient, store: SubmissionStore, now: list[datetime]
 ) -> None:
     participant = join(client)
-    submit(db_path, participant, 1, "failed", now[0] - timedelta(minutes=5))
+    submit(store, participant, 1, "failed", now[0] - timedelta(minutes=5))
     first = arrive(client, participant).json()
 
     assert arrive(client, participant).json() == first
@@ -215,12 +209,12 @@ def test_a_photo_before_the_arrival_does_not_end_it(
 @pytest.mark.parametrize("verdict", ["pass", "pending"])
 @pytest.mark.usefixtures("codes")
 def test_after_an_accepted_photo_the_team_has_moved_on(
-    client: TestClient, db_path: Path, now: list[datetime], verdict: VerdictStatus
+    client: TestClient, store: SubmissionStore, now: list[datetime], verdict: VerdictStatus
 ) -> None:
     participant = join(client)
     arrive(client, participant)
     now[0] += timedelta(minutes=1)
-    submit(db_path, participant, 1, verdict, now[0])
+    submit(store, participant, 1, verdict, now[0])
 
     response = arrive(client, participant)
 
@@ -231,10 +225,10 @@ def test_after_an_accepted_photo_the_team_has_moved_on(
 
 @pytest.mark.usefixtures("codes")
 def test_checkpoint_without_a_challenge_has_no_pose_but_a_code(
-    client: TestClient, db_path: Path
+    client: TestClient, store: SubmissionStore
 ) -> None:
     participant = join(client)
-    submit(db_path, participant, 1, "pass", DURING - timedelta(minutes=1))
+    submit(store, participant, 1, "pass", DURING - timedelta(minutes=1))
 
     response = arrive(client, participant, 2)
 
@@ -275,21 +269,23 @@ def conflict(response: Response) -> str:
     return detail
 
 
-def test_before_start_comes_first(client: TestClient, db_path: Path, now: list[datetime]) -> None:
+def test_before_start_comes_first(
+    client: TestClient, store: SubmissionStore, now: list[datetime]
+) -> None:
     participant = join(client)
     for checkpoint in (1, 2, 3):  # even a team with everything done
-        submit(db_path, participant, checkpoint, "pass", DURING)
+        submit(store, participant, checkpoint, "pass", DURING)
     now[0] = START - timedelta(seconds=1)
 
     assert conflict(arrive(client, participant, 2)) == "session hasn't started"
 
 
 def test_finished_comes_before_ended(
-    client: TestClient, db_path: Path, now: list[datetime]
+    client: TestClient, store: SubmissionStore, now: list[datetime]
 ) -> None:
     participant = join(client)
     for checkpoint in (1, 2, 3):
-        submit(db_path, participant, checkpoint, "pass", DURING)
+        submit(store, participant, checkpoint, "pass", DURING)
     now[0] = END + timedelta(minutes=1)
 
     assert conflict(arrive(client, participant)) == "hunt finished"
@@ -336,8 +332,9 @@ def test_invalid_body_is_422(client: TestClient, body: dict[str, Any]) -> None:
 # --- concurrency, codes and logging -------------------------------------------------------
 
 
-def test_concurrent_arrives_create_one_arrival(db_path: Path) -> None:
-    store = SubmissionStore(db_path)
+def test_concurrent_arrives_create_one_arrival(
+    store: SubmissionStore, db: psycopg.Connection[DictRow]
+) -> None:
     barrier = Barrier(8)
     participant = uuid4()
 
@@ -359,8 +356,7 @@ def test_concurrent_arrives_create_one_arrival(db_path: Path) -> None:
 
     assert len({code for code, _ in results}) == 1
     assert [new for _, new in results].count(True) == 1
-    with closing(sqlite3.connect(db_path)) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM arrivals").fetchone() == (1,)
+    assert db.execute("SELECT COUNT(*) AS n FROM arrivals").fetchone() == {"n": 1}
 
 
 def test_codes_are_four_digits_over_many_draws() -> None:

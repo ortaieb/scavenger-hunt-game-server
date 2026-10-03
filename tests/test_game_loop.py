@@ -88,7 +88,7 @@ def clock() -> list[datetime]:
 @pytest.fixture
 def client(tmp_path: Path, clock: list[datetime]) -> Iterator[TestClient]:
     app = create_app()
-    settings = Settings(image_base_path=tmp_path / "images", db_path=tmp_path / "game.sqlite3")
+    settings = Settings(image_base_path=tmp_path / "images")
     sessions = parse_sessions(sessions_file())
     referee = PassingReferee()
     app.dependency_overrides[get_settings] = lambda: settings

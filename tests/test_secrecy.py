@@ -64,7 +64,7 @@ SESSIONS_JSON = json.dumps(
 @pytest.fixture
 def client(tmp_path: Path) -> Iterator[TestClient]:
     app = create_app()
-    settings = Settings(image_base_path=tmp_path / "images", db_path=tmp_path / "game.sqlite3")
+    settings = Settings(image_base_path=tmp_path / "images")
     app.dependency_overrides[get_settings] = lambda: settings
     (tmp_path / "reference").mkdir()
     (tmp_path / "reference" / f"{PHOTO_NAME}.jpg").write_bytes(jpeg(scene(4, (64, 48))))

@@ -1,15 +1,15 @@
 import json
 import logging
-import sqlite3
 from collections.abc import Iterator
-from contextlib import closing
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
+from psycopg import sql
+from psycopg.rows import DictRow
 from pytest_mock import MockerFixture
 
 from game_server.app import create_app
@@ -76,14 +76,9 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def db_path(tmp_path: Path) -> Path:
-    return tmp_path / "game.sqlite3"
-
-
-@pytest.fixture
-def client(now: list[datetime], db_path: Path) -> Iterator[TestClient]:
+def client(now: list[datetime]) -> Iterator[TestClient]:
     app = create_app()
-    settings = Settings(db_path=db_path, proximity_hint_interval_seconds=INTERVAL)
+    settings = Settings(proximity_hint_interval_seconds=INTERVAL)
     repository = sessions_repository()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: repository
@@ -183,17 +178,16 @@ def test_does_not_log_coordinates(client: TestClient, caplog: pytest.LogCaptureF
     assert "0.100456" not in caplog.text
 
 
-def test_stores_nothing(client: TestClient, now: list[datetime], db_path: Path) -> None:
+def test_stores_nothing(
+    client: TestClient, now: list[datetime], db: psycopg.Connection[DictRow]
+) -> None:
     for step in range(3):
         now[0] = INSIDE_WINDOW + timedelta(seconds=step * INTERVAL)
         ask(client)
 
-    if db_path.exists():
-        with closing(sqlite3.connect(db_path)) as conn:
-            assert conn.execute("SELECT COUNT(*) FROM submissions").fetchone() == (0,)
-    default_db = get_settings().db_path  # the one the app's startup created
-    with closing(sqlite3.connect(default_db)) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM submissions").fetchone() == (0,)
+    for table in ("submissions", "participants", "arrivals"):
+        query = sql.SQL("SELECT COUNT(*) AS n FROM {}").format(sql.Identifier(table))
+        assert db.execute(query).fetchone() == {"n": 0}
 
 
 # --- rate limit ---------------------------------------------------------------

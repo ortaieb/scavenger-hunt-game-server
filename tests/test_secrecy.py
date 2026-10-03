@@ -170,6 +170,33 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
         ("GET", "/docs"): [client.get("/docs")],
         ("GET", "/docs/oauth2-redirect"): [client.get("/docs/oauth2-redirect")],
         ("GET", "/redoc"): [client.get("/redoc")],
+        # Last: stopping the session will matter to the participant routes (#51).
+        **session_control_responses(client),
+    }
+
+
+def session_control_responses(client: TestClient) -> dict[tuple[str, str], list[Response]]:
+    """The moderator's start and stop, success and error paths, in a meaningful order."""
+    moderator = {"Authorization": f"Bearer {MODERATOR_CODE}"}
+
+    def post(action: str, session: str = SESSION, **kwargs: Any) -> Response:
+        return client.post(f"/sessions/{session}/{action}", **kwargs)
+
+    stop_early = post("stop", headers=moderator)  # 409 not started
+    start_anonymous = post("start")  # 401
+    start, start_again = post("start", headers=moderator), post("start", headers=moderator)
+    stop, stop_again = post("stop", headers=moderator), post("stop", headers=moderator)
+    start_late = post("start", headers=moderator)  # 409 stopped
+    unknown = post("start", session=UNKNOWN, headers=moderator)  # 404
+    return {
+        ("POST", "/sessions/{session}/start"): [
+            start_anonymous,
+            start,
+            start_again,
+            start_late,
+            unknown,
+        ],
+        ("POST", "/sessions/{session}/stop"): [stop_early, stop, stop_again],
     }
 
 
@@ -223,6 +250,8 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
     assert statuses[("POST", "/challenge")] == [200, 202, 404, 422]
     assert statuses[("POST", "/checkpoint/proximity")] == [200, 404, 422, 429]
     assert statuses[("POST", "/join")] == [200, 201, 404, 422]
+    assert statuses[("POST", "/sessions/{session}/start")] == [200, 201, 401, 404, 409]
+    assert statuses[("POST", "/sessions/{session}/stop")] == [200, 201, 409]
     assert statuses[("POST", "/sessions/{session}/participants/{participant}/arrive")] == [
         200,
         201,

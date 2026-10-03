@@ -10,7 +10,7 @@
 
 BEGIN;
 
-DROP TABLE IF EXISTS arrivals, participants, submissions CASCADE;
+DROP TABLE IF EXISTS session_runs, arrivals, participants, submissions CASCADE;
 
 -- One row per photo submitted. Every row carries its session, so all of a session's data can
 -- be deleted together when the session closes.
@@ -72,5 +72,13 @@ CREATE TABLE arrivals (
     expires_at  TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX arrivals_by_team ON arrivals (session, participant, checkpoint);
+
+-- When the moderator started and finished each session. No row means not started. The file's
+-- start-time/end-time are only the planned window; these are the session's real run.
+CREATE TABLE session_runs (
+    session    UUID        PRIMARY KEY,
+    started_at TIMESTAMPTZ NULL,
+    stopped_at TIMESTAMPTZ NULL
+);
 
 COMMIT;

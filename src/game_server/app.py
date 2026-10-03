@@ -17,6 +17,7 @@ from game_server import (
     join,
     moderation,
     proximity,
+    session_control,
 )
 from game_server.config import get_settings
 from game_server.database import close_databases, database_config, open_database
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(join.router)
     app.include_router(game_state.router)
     app.include_router(arrive.router)
+    app.include_router(session_control.router)
 
     return app
 

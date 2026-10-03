@@ -22,6 +22,7 @@ from game_server.database import Database, get_database
 from game_server.models import VerdictStatus
 from game_server.phash import from_hex, to_hex
 from game_server.referee import RefereeReport
+from game_server.session_runs import RunChange, SessionRun, session_phase
 
 # How long the health check waits for a connection before reporting the database unavailable.
 PING_TIMEOUT_SECONDS = 5.0
@@ -122,6 +123,24 @@ class SubmissionStore:
         """Check the database answers and has its schema; raises `psycopg.Error` if not."""
         with self._database.connection(timeout=PING_TIMEOUT_SECONDS) as conn:
             conn.execute("SELECT 1 FROM submissions LIMIT 1").fetchall()
+
+    def session_run(self, session: UUID) -> SessionRun | None:
+        """The session's run, or None if it was never started."""
+        with self._database.connection() as conn:
+            return _session_run(conn, session)
+
+    def start_run(self, session: UUID, now: datetime) -> RunChange:
+        """Start a scheduled session; leave a running or stopped one as it is.
+
+        Session-locked, so two moderators starting at once stamp one `started_at`.
+        """
+        with self.transaction(session) as transaction:
+            return transaction.start_run(session, now)
+
+    def stop_run(self, session: UUID, now: datetime) -> RunChange:
+        """Stop a running session; leave a scheduled or stopped one as it is."""
+        with self.transaction(session) as transaction:
+            return transaction.stop_run(session, now)
 
     def join_team(self, session: UUID, team: str, now: datetime) -> JoinOutcome:
         """Create the team's participant, or return it and record the renewed consent.
@@ -243,6 +262,28 @@ class SubmissionTransaction:
         arrival = Arrival(*row)
         return arrival if now < arrival.expires_at else None
 
+    def start_run(self, session: UUID, now: datetime) -> RunChange:
+        """See `SubmissionStore.start_run`."""
+        run = _session_run(self._conn, session)
+        if session_phase(run) != "scheduled":
+            return RunChange(run, changed=False)
+        self._conn.execute(
+            "INSERT INTO session_runs (session, started_at) VALUES (%s, %s)"
+            " ON CONFLICT (session) DO UPDATE SET started_at = EXCLUDED.started_at",
+            (session, now),
+        )
+        return RunChange(SessionRun(started_at=now, stopped_at=None), changed=True)
+
+    def stop_run(self, session: UUID, now: datetime) -> RunChange:
+        """See `SubmissionStore.stop_run`."""
+        run = _session_run(self._conn, session)
+        if run is None or session_phase(run) != "running":
+            return RunChange(run, changed=False)
+        self._conn.execute(
+            "UPDATE session_runs SET stopped_at = %s WHERE session = %s", (now, session)
+        )
+        return RunChange(SessionRun(started_at=run.started_at, stopped_at=now), changed=True)
+
     def join_team(self, session: UUID, team: str, now: datetime) -> JoinOutcome:
         """See `SubmissionStore.join_team`."""
         existing = self._conn.execute(
@@ -298,6 +339,13 @@ class SubmissionTransaction:
         if inserted is None:  # pragma: no cover - INSERT ... RETURNING always returns the row
             raise RuntimeError("the database did not return the inserted row id")
         return RecordedSubmission(id=inserted[0], attempt=attempt)
+
+
+def _session_run(conn: Connection[TupleRow], session: UUID) -> SessionRun | None:
+    row = conn.execute(
+        "SELECT started_at, stopped_at FROM session_runs WHERE session = %s", (session,)
+    ).fetchone()
+    return None if row is None else SessionRun(started_at=row[0], stopped_at=row[1])
 
 
 def _lock_key(session: UUID) -> int:

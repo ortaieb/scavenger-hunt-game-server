@@ -9,9 +9,10 @@ import secrets
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 
+from game_server import errors
+from game_server.errors import ApiError
 from game_server.sessions import (
     GameSession,
     SessionRepository,
@@ -22,22 +23,21 @@ from game_server.sessions import (
 UNAUTHORISED_BODY = {"detail": "moderator code required", "code": "moderator_unauthorised"}
 
 
-class ModeratorUnauthorisedError(Exception):
-    """The request didn't present this session's moderator code."""
-
-
-async def moderator_unauthorised(_request: Request, _exc: Exception) -> JSONResponse:
+class ModeratorUnauthorisedError(ApiError):
     """`401`, the same body every time, so a caller can't tell why it was refused."""
-    return JSONResponse(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        content=UNAUTHORISED_BODY,
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+
+    def __init__(self) -> None:
+        super().__init__(
+            status.HTTP_401_UNAUTHORIZED,
+            UNAUTHORISED_BODY["detail"],
+            UNAUTHORISED_BODY["code"],
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 def install(app: FastAPI) -> None:
-    """Register the `401` response for `require_moderator` on an app."""
-    app.add_exception_handler(ModeratorUnauthorisedError, moderator_unauthorised)
+    """Register the error responses moderator routes use (`ApiError`, including the 401)."""
+    errors.install(app)
 
 
 def _bearer_token(authorization: str | None) -> str | None:

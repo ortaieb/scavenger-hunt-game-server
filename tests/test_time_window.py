@@ -13,6 +13,7 @@ from game_server.checks.time_window import (
 )
 from game_server.config import Settings
 from game_server.models import ChallengeMetadata, Location
+from game_server.session_runs import SessionRun
 from game_server.sessions import Checkpoint, GameSession, Window
 
 SESSION_START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
@@ -22,6 +23,8 @@ WINDOW_CLOSES = datetime(2026, 10, 3, 11, 0, tzinfo=UTC)
 INSIDE = datetime(2026, 10, 3, 10, 30, tzinfo=UTC)
 SECOND = timedelta(seconds=1)
 CHECKPOINT_WINDOW = Window(opens_at=WINDOW_OPENS, closes_at=WINDOW_CLOSES)
+# Started and stopped by the moderator exactly at the planned times.
+ON_TIME = SessionRun(started_at=SESSION_START, stopped_at=SESSION_END)
 
 CHECK = TimeWindowCheck(
     max_capture_age=timedelta(seconds=300), max_clock_skew=timedelta(seconds=30)
@@ -32,6 +35,7 @@ def make_ctx(
     received_at: datetime,
     capture_time: datetime | None = None,
     window: Window | None = CHECKPOINT_WINDOW,
+    run: SessionRun | None = ON_TIME,
 ) -> SubmissionContext:
     """A submission for a checkpoint with `window`; capture defaults to `received_at`."""
     checkpoint = Checkpoint(
@@ -57,7 +61,7 @@ def make_ctx(
         location=Location(lat=0, long=0),
         capture_time=capture_time or received_at,
     )
-    return SubmissionContext(metadata, received_at, session, checkpoint, b"img", 0)
+    return SubmissionContext(metadata, received_at, session, checkpoint, b"img", 0, run=run)
 
 
 def rejections(ctx: SubmissionContext) -> list[Rejection]:
@@ -90,10 +94,47 @@ def test_checkpoint_window_bounds(received_at: datetime, expected: list[Rejectio
         pytest.param(SESSION_END + SECOND, [OUTSIDE_WINDOW], id="after-session"),
     ],
 )
-def test_without_checkpoint_window_uses_session_times(
+def test_without_checkpoint_window_uses_the_session_run(
     received_at: datetime, expected: list[Rejection]
 ) -> None:
     assert rejections(make_ctx(received_at, window=None)) == expected
+
+
+@pytest.mark.parametrize(
+    "run",
+    [None, SessionRun(started_at=None, stopped_at=None)],
+    ids=["no-run", "not-started"],
+)
+def test_a_session_that_never_started_is_never_open(run: SessionRun | None) -> None:
+    assert rejections(make_ctx(INSIDE, window=None, run=run)) == [OUTSIDE_WINDOW]
+
+
+def test_the_planned_end_does_not_close_a_running_session() -> None:
+    late = SESSION_END + timedelta(hours=2)
+    run = SessionRun(started_at=SESSION_START, stopped_at=None)
+
+    assert rejections(make_ctx(late, window=None, run=run)) == []
+
+
+def test_a_late_start_opens_the_window_late() -> None:
+    run = SessionRun(started_at=WINDOW_OPENS + timedelta(minutes=10), stopped_at=None)
+
+    assert rejections(make_ctx(INSIDE - timedelta(minutes=25), run=run)) == [OUTSIDE_WINDOW]
+    assert rejections(make_ctx(INSIDE, run=run)) == []
+
+
+def test_an_early_stop_closes_the_window_early() -> None:
+    run = SessionRun(started_at=SESSION_START, stopped_at=INSIDE)
+
+    assert rejections(make_ctx(INSIDE + SECOND)) == []
+    assert rejections(make_ctx(INSIDE + SECOND, run=run)) == [OUTSIDE_WINDOW]
+
+
+def test_a_window_closing_before_a_late_start_is_never_open() -> None:
+    run = SessionRun(started_at=WINDOW_CLOSES + timedelta(minutes=5), stopped_at=None)
+
+    for at in (WINDOW_OPENS, INSIDE, WINDOW_CLOSES, WINDOW_CLOSES + timedelta(minutes=10)):
+        assert rejections(make_ctx(at, run=run)) == [OUTSIDE_WINDOW]
 
 
 @pytest.mark.parametrize(

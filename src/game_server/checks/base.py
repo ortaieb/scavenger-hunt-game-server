@@ -14,6 +14,7 @@ from typing import Protocol, Self
 from game_server import geo
 from game_server.models import ChallengeMetadata, CheckOutcome, VerdictStatus
 from game_server.referee import RefereeReport
+from game_server.session_runs import SessionRun
 from game_server.sessions import Checkpoint, GameSession
 
 
@@ -60,6 +61,8 @@ class SubmissionContext:
     # The referee's report, or None when the referee wasn't consulted (a check before it
     # failed, or the checkpoint has no visual challenge). Filled in before the transaction.
     referee_report: RefereeReport | None = None
+    # The session's run when the photo arrived; None if it was never started.
+    run: SessionRun | None = None
 
     @cached_property
     def distance_m(self) -> float:

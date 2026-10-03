@@ -11,7 +11,9 @@ from images import jpeg, scene
 
 from game_server import imaging
 from game_server.config import Settings
+from game_server.session_runs import SessionRun
 from game_server.sessions import (
+    FOREVER,
     Checkpoint,
     GameSession,
     SessionRepository,
@@ -135,22 +137,74 @@ def lookup(repository: SessionRepository, sequence: int) -> tuple[GameSession, C
     return session, checkpoint
 
 
-def test_effective_window_is_checkpoint_window_when_set(repository: SessionRepository) -> None:
-    session, checkpoint = lookup(repository, 2)
+START = datetime(2026, 10, 3, 10, tzinfo=BST)
+RUNNING = SessionRun(started_at=START, stopped_at=None)
 
-    assert repository.effective_window(session, checkpoint) == (
+
+def test_effective_window_is_checkpoint_window_when_set(repository: SessionRepository) -> None:
+    _, checkpoint = lookup(repository, 2)
+
+    assert repository.effective_window(RUNNING, checkpoint) == (
         datetime(2026, 10, 3, 11, tzinfo=BST),
         datetime(2026, 10, 3, 12, tzinfo=BST),
     )
 
 
-def test_effective_window_is_session_times_otherwise(repository: SessionRepository) -> None:
-    session, checkpoint = lookup(repository, 1)
+def test_effective_window_is_the_run_otherwise(repository: SessionRepository) -> None:
+    _, checkpoint = lookup(repository, 1)
+    stopped = SessionRun(started_at=START, stopped_at=START + timedelta(hours=5))
 
-    assert repository.effective_window(session, checkpoint) == (
-        session.start_time,
-        session.end_time,
+    assert repository.effective_window(RUNNING, checkpoint) == (START, FOREVER)
+    assert repository.effective_window(stopped, checkpoint) == (
+        START,
+        START + timedelta(hours=5),
     )
+
+
+@pytest.mark.parametrize(
+    "run", [None, SessionRun(started_at=None, stopped_at=None)], ids=["no-run", "not-started"]
+)
+def test_no_effective_window_before_the_start(
+    repository: SessionRepository, run: SessionRun | None
+) -> None:
+    _, checkpoint = lookup(repository, 2)
+
+    assert repository.effective_window(run, checkpoint) is None
+
+
+@pytest.mark.parametrize(
+    ("started_at", "stopped_at", "expected"),
+    [
+        pytest.param(
+            datetime(2026, 10, 3, 11, 30, tzinfo=BST),
+            None,
+            (datetime(2026, 10, 3, 11, 30, tzinfo=BST), datetime(2026, 10, 3, 12, tzinfo=BST)),
+            id="late-start-narrows",
+        ),
+        pytest.param(
+            START,
+            datetime(2026, 10, 3, 11, 15, tzinfo=BST),
+            (datetime(2026, 10, 3, 11, tzinfo=BST), datetime(2026, 10, 3, 11, 15, tzinfo=BST)),
+            id="early-stop-narrows",
+        ),
+        pytest.param(
+            datetime(2026, 10, 3, 12, 1, tzinfo=BST), None, None, id="start-after-window-closes"
+        ),
+        pytest.param(
+            START, datetime(2026, 10, 3, 10, 59, tzinfo=BST), None, id="stop-before-window-opens"
+        ),
+    ],
+)
+def test_the_run_intersects_the_checkpoint_window(
+    repository: SessionRepository,
+    started_at: datetime,
+    stopped_at: datetime | None,
+    expected: tuple[datetime, datetime] | None,
+) -> None:
+    _, checkpoint = lookup(repository, 2)
+    run = SessionRun(started_at=started_at, stopped_at=stopped_at)
+
+    assert repository.effective_window(run, checkpoint) == expected
 
 
 # --- validation --------------------------------------------------------------

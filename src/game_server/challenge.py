@@ -281,7 +281,8 @@ def submit_challenge(
     image = read_jpeg(challenge_image, settings.max_image_bytes)
     phash = hash_image(image)  # decoded outside the write lock: it's the slow part
     session, checkpoint = find_checkpoint(sessions, parsed.session, parsed.checkpoint)
-    ctx = SubmissionContext(parsed, received_at, session, checkpoint, image, phash)
+    run = submissions.session_run(session.id)
+    ctx = SubmissionContext(parsed, received_at, session, checkpoint, image, phash, run=run)
     before, during = split_stages(checks)
     earlier = run_checks(before, ctx)
     ctx = replace(ctx, referee_report=consult_referee(referee, ctx, earlier))

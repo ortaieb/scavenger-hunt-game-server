@@ -15,6 +15,7 @@ TABLES = [
     "participants",
     "referee_prompts",
     "referee_traces",
+    "rulings",
     "session_runs",
     "submissions",
 ]
@@ -51,7 +52,11 @@ def test_reset_deletes_the_data_and_recreates_the_tables(
 
 
 def test_reset_creates_the_tables_when_none_exist(db: psycopg.Connection[DictRow]) -> None:
-    db.execute("DROP TABLE referee_traces, referee_prompts, arrivals, participants, submissions")
+    db.execute("DROP VIEW ruled_submissions")
+    db.execute(
+        "DROP TABLE rulings, referee_traces, referee_prompts, blocked_attempts, session_runs,"
+        " arrivals, participants, submissions"
+    )
 
     reset_schema(db)
 

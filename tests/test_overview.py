@@ -19,6 +19,7 @@ from game_server.app import create_app
 from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
 from game_server.models import VerdictStatus
+from game_server.rulings import Ruling
 from game_server.sessions import get_session_repository, parse_sessions
 from game_server.submissions import BLOCKED_KEPT, NewSubmission, SubmissionStore
 
@@ -131,8 +132,8 @@ def photograph(client: TestClient, participant: str, at: datetime, **changes: An
 
 def submit(
     store: SubmissionStore, participant: str, checkpoint: int, verdict: VerdictStatus, at: datetime
-) -> None:
-    store.record(
+) -> int:
+    return store.record(
         NewSubmission(
             session=UUID(SESSION),
             participant=UUID(participant),
@@ -148,7 +149,7 @@ def submit(
             phash=checkpoint,
             processing_ms=40,
         )
-    )
+    ).id
 
 
 def blocked_rows(db: psycopg.Connection[DictRow]) -> list[tuple[str, str, str]]:
@@ -307,6 +308,7 @@ def test_the_overview_response(client: TestClient, store: SubmissionStore) -> No
             "stopped-at": None,
             "server-time": "2026-10-03T10:00:00Z",
         },
+        "to-review": 1,
         "teams": [
             {
                 "team": "Red Foxes",
@@ -459,6 +461,54 @@ def test_a_team_mid_route_shows_its_latest_accepted_photo(
         "at": "2026-10-03T10:05:00Z",
     }
     assert row["current"] == {"sequence": 2, "name": "Spot 2"}
+
+
+def test_to_review_counts_the_unruled_pending_photos(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    fox, heron = join(client), join(client, HERON)
+    moderate(client, "start")
+    ruled = submit(store, fox, 1, "pending", minutes(1))
+    submit(store, heron, 3, "pending", minutes(2))
+    submit(store, fox, 2, "failed", minutes(3))
+    submit(store, heron, 1, "pass", minutes(4))
+    assert overview(client)["to-review"] == 2
+
+    store.rule(UUID(SESSION), ruled, "approve", None, minutes(5))
+
+    assert overview(client)["to-review"] == 1
+
+
+@pytest.mark.parametrize(
+    ("verdict", "ruling", "shown"),
+    [
+        ("pending", "approve", "pass"),
+        ("pending", "reject", "failed"),
+        ("failed", "approve", "pass"),
+    ],
+)
+def test_last_completed_shows_the_effective_verdict(
+    client: TestClient,
+    store: SubmissionStore,
+    verdict: VerdictStatus,
+    ruling: Ruling,
+    shown: VerdictStatus,
+) -> None:
+    fox = join(client)
+    moderate(client, "start")
+    submit(store, fox, 1, "pass", minutes(1))
+    photo = submit(store, fox, 2, verdict, minutes(2))
+
+    store.rule(UUID(SESSION), photo, ruling, None, minutes(3))
+
+    row = team_row(client, "Red Foxes")
+    assert row["last-completed"] == {
+        "sequence": 2,
+        "name": "Spot 2",
+        "verdict": shown,
+        "at": "2026-10-03T10:02:00Z",
+    }
+    assert (row["completed"], row["current"]) == (2, {"sequence": 3, "name": "Spot 3"})
 
 
 def test_a_finished_team_has_no_current_checkpoint(

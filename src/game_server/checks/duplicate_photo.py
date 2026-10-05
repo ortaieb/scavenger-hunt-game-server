@@ -1,9 +1,10 @@
 """Duplicate-photo rule: a photo that already counts in this session can't count again.
 
 Compares perceptual hashes, so re-encoding, resizing or EXIF rotation doesn't evade it.
-The comparison set is the session's accepted photos (verdict not `failed`), from any
-participant at any checkpoint; photos from rejected attempts are not in it, so a player
-can resubmit after e.g. a timing rejection. Never compared across sessions.
+The comparison set is the session's accepted photos (effective verdict not `failed`: the
+moderator's ruling if there is one, else the referee's verdict), from any participant at any
+checkpoint; photos from rejected attempts are not in it, so a player can resubmit after e.g.
+a timing rejection, or after the moderator rejects the photo. Never compared across sessions.
 """
 
 from dataclasses import dataclass, field

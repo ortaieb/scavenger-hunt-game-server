@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from game_server.checks.time_window import window_is_open
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.join import find_participant
-from game_server.scoring import SessionResults, places, team_points
+from game_server.scoring import SessionResults, places, results_final, team_points
 from game_server.session_control import SessionClock, session_clock
 from game_server.session_runs import SessionRun, session_phase
 from game_server.sessions import GameSession, SessionRepository, Team, get_session_repository
@@ -106,7 +106,8 @@ class ScoreOut(BaseModel):
     """The team's own total only: never another team's, nor a per-checkpoint breakdown.
 
     `points` is what the team would score if the session finished now; lower is better.
-    `place` is its final position among the teams that joined, set once the session stops.
+    `place` is its final position among the teams that joined, set once the results are
+    `final`: the session has stopped and the moderator has ruled on every `pending` photo.
     """
 
     model_config = ConfigDict(validate_by_name=True)
@@ -164,7 +165,7 @@ def participant_state(
     results = store.session_results(session)
     now = clock().astimezone(UTC)
     state = team_state(joined.session, joined.team, completed, now, run)
-    final = session_phase(run) == "stopped"
+    final = results_final(results, session_phase(run))
     current = state.current
     return TeamStateOut(
         status=state.status,

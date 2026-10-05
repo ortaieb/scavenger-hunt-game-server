@@ -37,6 +37,7 @@ PHOTO_NAME = "SENTINEL-PHOTO-fountain-north"  # a reference photo's file name sh
 MODERATOR_CODE = "SENTINEL-MOD-4Q"  # a credential: never in a response or a log line
 RIVALS = "SENTINEL-RIVALS-5d"  # another team: never in this team's state
 RIVAL_CODE = "SENTINEL-RIVAL-CODE-2W"
+NOTE = "SENTINEL-NOTE-6c"  # the moderator's note on a ruling may describe the photo: never logged
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 UNKNOWN = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 NOW = datetime(2026, 10, 3, 10, 30, tzinfo=UTC)
@@ -231,6 +232,7 @@ START = ("POST", "/sessions/{session}/start")
 STOP = ("POST", "/sessions/{session}/stop")
 OVERVIEW = ("GET", "/sessions/{session}/overview")
 TRACES = ("GET", "/sessions/{session}/traces")
+RULING = ("POST", "/sessions/{session}/submissions/{submission}/ruling")
 # Routes only the moderator can call, which name checkpoints on purpose.
 NAMES_CHECKPOINTS = {OVERVIEW}
 # Routes only the moderator can call, whose 200 shows the scene and the model's reasons on
@@ -271,17 +273,39 @@ def session_closing_responses(client: TestClient) -> dict[tuple[str, str], list[
         overview(UNKNOWN, headers=MODERATOR),  # 404
     ]
 
+    def rule(submission: int, session: str = SESSION, **kwargs: Any) -> Response:
+        return client.post(f"/sessions/{session}/submissions/{submission}/ruling", **kwargs)
+
     def traces(session: str = SESSION, **kwargs: Any) -> Response:
         return client.get(f"/sessions/{session}/traces", **kwargs)
 
+    items = traces(headers=MODERATOR).json()["items"]
+    pending = next(item["submission"] for item in items if item["verdict"] == "pending")
+    approve = {"ruling": "approve", "note": f"{NOTE} the arm is cropped"}
+    rulings = [
+        rule(pending, headers=MODERATOR, json=approve),  # 201
+        rule(pending, headers=MODERATOR, json={"ruling": "reject", "note": NOTE}),  # 200
+        rule(pending, json=approve),  # 401
+        rule(pending, headers={"Authorization": f"Bearer {JOIN_CODE}"}, json=approve),  # 401
+        rule(pending, UNKNOWN, headers=MODERATOR, json=approve),  # 404 unknown session
+        rule(10**6, headers=MODERATOR, json=approve),  # 404 unknown submission
+        rule(pending, headers=MODERATOR, json={"ruling": "maybe"}),  # 422
+    ]
+
     traced = [
-        traces(headers=MODERATOR),  # 200, with the referee's calls
+        traces(headers=MODERATOR),  # 200, with the referee's calls and a ruling
         traces(),  # 401
         traces(headers={"Authorization": f"Bearer {JOIN_CODE}"}),  # 401: not a moderator
         traces(UNKNOWN, headers=MODERATOR),  # 404
         traces(headers=MODERATOR, params={"limit": 0}),  # 422
     ]
-    return {START: [start_late], STOP: [stop, stop_again], OVERVIEW: overviews, TRACES: traced}
+    return {
+        START: [start_late],
+        STOP: [stop, stop_again],
+        OVERVIEW: overviews,
+        RULING: rulings,
+        TRACES: traced,
+    }
 
 
 def app_routes(client: TestClient) -> set[tuple[str, str]]:
@@ -335,6 +359,7 @@ def test_no_route_ever_returns_the_scene(
     for secret in (MODERATOR_CODE, JOIN_CODE):
         assert secret not in caplog.text.upper(), "a credential reached the logs"
     assert SENTINEL not in caplog.text, "the scene reached the logs"
+    assert NOTE not in caplog.text, "a ruling's note reached the logs"
     assert REASON not in caplog.text, "the model's description reached the logs"
     # Not vacuous: the referee was consulted, and its traces hold both.
     traced = db.execute("SELECT user_text, response_text, judgement FROM referee_traces").fetchall()
@@ -358,6 +383,7 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
     assert statuses[("POST", "/sessions/{session}/stop")] == [200, 201, 409]
     assert statuses[OVERVIEW] == [200, 401, 404]
     assert statuses[TRACES] == [200, 401, 404, 422]
+    assert statuses[RULING] == [200, 201, 401, 404, 422]
     assert statuses[("POST", "/sessions/{session}/participants/{participant}/arrive")] == [
         200,
         201,
@@ -389,8 +415,8 @@ def test_arrive_reveals_no_place(client: TestClient) -> None:
 
 def record(
     store: SubmissionStore, participant: str, checkpoint: int, verdict: VerdictStatus, at: datetime
-) -> None:
-    store.record(
+) -> int:
+    return store.record(
         NewSubmission(
             session=UUID(SESSION),
             participant=UUID(participant),
@@ -406,7 +432,7 @@ def record(
             phash=checkpoint,
             processing_ms=40,
         )
-    )
+    ).id
 
 
 def test_state_reveals_only_the_teams_own_score(client: TestClient, store: SubmissionStore) -> None:
@@ -419,10 +445,16 @@ def test_state_reveals_only_the_teams_own_score(client: TestClient, store: Submi
     )
     record(store, rivals, 1, "pass", NOW)  # rivals first at 1: Testers are 2nd there
     record(store, testers, 1, "pass", NOW + timedelta(minutes=1))
-    record(store, testers, 2, "pending", NOW + timedelta(minutes=2))
+    pending = record(store, testers, 2, "pending", NOW + timedelta(minutes=2))
     url = f"/sessions/{SESSION}/participants/{testers}/state"
     states = [client.get(url)]
     client.post(f"/sessions/{SESSION}/stop", headers=moderator)
+    states.append(client.get(url))  # not final: the pending photo isn't ruled on yet
+    client.post(
+        f"/sessions/{SESSION}/submissions/{pending}/ruling",
+        headers=moderator,
+        json={"ruling": "reject"},
+    )
     states.append(client.get(url))
 
     for response in states:
@@ -439,10 +471,12 @@ def test_state_reveals_only_the_teams_own_score(client: TestClient, store: Submi
         }
         for leak in (RIVALS, RIVAL_CODE, rivals, MODERATOR_CODE, JOIN_CODE):
             assert leak not in response.text
-    # Testers: 2nd at checkpoint 1, pending at 2 (3 = two teams joined + 1). Rivals: 1 + 3.
+    # Testers: 2nd at checkpoint 1, pending then rejected at 2 (3 = two teams joined + 1).
+    # Rivals: 1 + 3.
     assert [r.json()["score"] for r in states] == [
         {"points": 5, "in-review": 1, "final": False, "place": None},
-        {"points": 5, "in-review": 1, "final": True, "place": 2},
+        {"points": 5, "in-review": 1, "final": False, "place": None},
+        {"points": 5, "in-review": 0, "final": True, "place": 2},
     ]
 
 

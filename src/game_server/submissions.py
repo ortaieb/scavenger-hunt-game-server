@@ -24,6 +24,7 @@ from game_server.models import VerdictStatus
 from game_server.phash import from_hex, to_hex
 from game_server.referee import RefereeReport
 from game_server.referee_traces import TracePage, read_traces, record_trace
+from game_server.rulings import RecordedRuling, Ruling, record_ruling
 from game_server.scoring import SessionResults
 from game_server.session_runs import RunChange, SessionRun, session_phase
 
@@ -105,8 +106,12 @@ class BlockedAttempt:
 
 
 @dataclass(frozen=True)
-class AcceptedSubmission:
-    """A joined team's accepted photo (`pass` or `pending`): which checkpoint, and when."""
+class CompletingSubmission:
+    """A joined team's photo that completes its checkpoint: which one, and when.
+
+    `verdict` is the effective verdict: `failed` when the moderator rejected it, which
+    doesn't take the checkpoint back.
+    """
 
     team: str
     checkpoint: int
@@ -202,32 +207,43 @@ class SubmissionStore:
             return _latest_arrival(conn, (session, participant, checkpoint), at)
 
     def completed_checkpoints(self, session: UUID, participant: UUID) -> frozenset[int]:
-        """Checkpoints the participant has an accepted submission for (`pass` or `pending`).
+        """Checkpoints the participant has a photo for that completes them.
 
-        "Accepted" as the duplicate-photo check defines it. A `pending` verdict completes a
-        checkpoint: the moderator's review changes the team's score, not its progress.
+        A photo completes its checkpoint if the referee's verdict was `pass` or `pending`, or
+        the moderator ever approved it (`ruled_submissions.completes`). A `pending` verdict
+        completes a checkpoint, and a ruling never takes one back: the moderator's review
+        changes the team's score, not its progress.
         """
         with self._database.connection() as conn:
             rows = conn.execute(
-                "SELECT DISTINCT checkpoint FROM submissions"
-                " WHERE session = %s AND participant = %s AND verdict IN ('pass', 'pending')",
+                "SELECT DISTINCT checkpoint FROM ruled_submissions"
+                " WHERE session = %s AND participant = %s AND completes",
                 (session, participant),
             ).fetchall()
         return frozenset(checkpoint for (checkpoint,) in rows)
 
     def session_results(self, session: UUID) -> SessionResults:
-        """The teams that joined the session, with their first `pass` and any `pending` photo
-        per checkpoint. One statement, so a consistent snapshot."""
-        with self._database.connection() as conn:
+        """The teams that joined the session, with their first `pass` and any unruled `pending`
+        photo per checkpoint, by effective verdict, and the session's unruled `pending` photos.
+
+        Read in one read-only snapshot, so the counts agree.
+        """
+        with self._database.transaction() as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             rows = conn.execute(
-                "SELECT p.team, s.checkpoint, s.verdict, MIN(s.received_at)"
-                " FROM participants p LEFT JOIN submissions s"
+                "SELECT p.team, s.checkpoint, s.effective_verdict, MIN(s.received_at)"
+                " FROM participants p LEFT JOIN ruled_submissions s"
                 " ON s.session = p.session AND s.participant = p.id"
-                " AND s.verdict IN ('pass', 'pending')"
+                " AND s.effective_verdict IN ('pass', 'pending')"
                 " WHERE p.session = %s"
-                " GROUP BY p.team, s.checkpoint, s.verdict",
+                " GROUP BY p.team, s.checkpoint, s.effective_verdict",
                 (session,),
             ).fetchall()
+            (to_review,) = conn.execute(
+                "SELECT COUNT(*) FROM ruled_submissions"
+                " WHERE session = %s AND effective_verdict = 'pending'",
+                (session,),
+            ).fetchone() or (0,)
         return SessionResults(
             joined=frozenset(team for team, *_ in rows),
             passes={
@@ -238,20 +254,22 @@ class SubmissionStore:
             pending=frozenset(
                 (team, checkpoint) for team, checkpoint, verdict, _ in rows if verdict == "pending"
             ),
+            to_review=to_review,
         )
 
-    def accepted_submissions(self, session: UUID) -> list[AcceptedSubmission]:
-        """Every accepted photo (`pass` or `pending`) of the teams that joined the session."""
+    def completing_submissions(self, session: UUID) -> list[CompletingSubmission]:
+        """Every photo that completes its checkpoint (see `completed_checkpoints`) of the teams
+        that joined the session, with its effective verdict."""
         with self._database.connection() as conn:
             rows = conn.execute(
-                "SELECT p.team, s.checkpoint, s.verdict, s.received_at"
-                " FROM submissions s JOIN participants p"
+                "SELECT p.team, s.checkpoint, s.effective_verdict, s.received_at"
+                " FROM ruled_submissions s JOIN participants p"
                 " ON s.session = p.session AND s.participant = p.id"
-                " WHERE s.session = %s AND s.verdict IN ('pass', 'pending')"
+                " WHERE s.session = %s AND s.completes"
                 " ORDER BY s.received_at, s.id",
                 (session,),
             ).fetchall()
-        return [AcceptedSubmission(*row) for row in rows]
+        return [CompletingSubmission(*row) for row in rows]
 
     def record_blocked(
         self, session: UUID, team: str, action: BlockedAction, code: PhaseCode, at: datetime
@@ -297,6 +315,19 @@ class SubmissionStore:
         with self.transaction(submission.session) as transaction:
             return transaction.record(submission)
 
+    def rule(
+        self, session: UUID, submission: int, ruling: Ruling, note: str | None, now: datetime
+    ) -> RecordedRuling | None:
+        """Record the moderator's ruling on one of the session's submissions; None if no such
+        submission is in the session.
+
+        Session-locked, so it's serialised against the session's photos (a ruling can't change
+        the accepted photos while the duplicate check reads them), and two rulings at once
+        can't both be the first.
+        """
+        with self.transaction(session) as transaction:
+            return transaction.rule(session, submission, ruling, note, now)
+
 
 class SubmissionTransaction:
     """Reads and writes inside one `SubmissionStore.transaction()`."""
@@ -305,10 +336,10 @@ class SubmissionTransaction:
         self._conn = conn
 
     def accepted_photos(self, session: UUID) -> tuple[AcceptedPhoto, ...]:
-        """Photos of this session's submissions whose verdict is not `failed`."""
+        """Photos of this session's submissions whose effective verdict is not `failed`."""
         rows = self._conn.execute(
-            "SELECT id, phash FROM submissions WHERE session = %s AND verdict != 'failed'"
-            " ORDER BY id",
+            "SELECT id, phash FROM ruled_submissions"
+            " WHERE session = %s AND effective_verdict != 'failed' ORDER BY id",
             (session,),
         ).fetchall()
         return tuple(AcceptedPhoto(submission_id=id_, phash=from_hex(hex_)) for id_, hex_ in rows)
@@ -465,6 +496,12 @@ class SubmissionTransaction:
                 self._conn, recorded.id, submission.session, submission.image_id, submission.referee
             )
         return recorded
+
+    def rule(
+        self, session: UUID, submission: int, ruling: Ruling, note: str | None, now: datetime
+    ) -> RecordedRuling | None:
+        """See `SubmissionStore.rule`."""
+        return record_ruling(self._conn, session, submission, ruling, note, now)
 
 
 def _session_run(conn: Connection[TupleRow], session: UUID) -> SessionRun | None:

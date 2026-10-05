@@ -488,10 +488,7 @@ def test_prompt_quotes_the_labels_the_request_uses(sent: dict[str, Any]) -> None
         ),
         pytest.param("too dark, too blurry or too obstructed", id="unsure"),
         pytest.param("Don't guess", id="no-guessing"),
-        pytest.param(
-            "Don't identify, name or describe the person's identity or physical characteristics",
-            id="privacy",
-        ),
+        pytest.param("Never identify or name the person", id="no-identification"),
         pytest.param("one or two short sentences", id="brevity"),
         pytest.param("<scene>", id="scene-tag"),
         pytest.param("<pose>", id="pose-tag"),
@@ -523,6 +520,47 @@ def test_prompt_quotes_the_labels_the_request_uses(sent: dict[str, Any]) -> None
 )
 def test_system_prompt_states_every_rule(sent: dict[str, Any], rule: str) -> None:
     assert rule in sent["system"]
+
+
+# A reason describes the pose and the scene, never what the person looks like.
+PERSON_ATTRIBUTES = (
+    "age, gender, ethnicity, skin, hair, facial hair, build, clothing or accessories"
+)
+
+
+def test_privacy_rule_sits_next_to_pose_correct() -> None:
+    lines = system_prompt().splitlines()
+    pose_check = next(line for line in lines if line.startswith("2. pose_correct:"))
+
+    assert (
+        "Describe the pose only by body position: arms, hands, head direction and stance."
+        in pose_check
+    )
+    assert 'Call the subject "the person", never he or she.' in pose_check
+    assert f"Never mention their {PERSON_ATTRIBUTES}." in pose_check
+
+
+def test_privacy_rule_is_the_prompts_last_line() -> None:
+    last = system_prompt().rstrip("\n").splitlines()[-1]
+
+    assert last.startswith(
+        "- Never identify or name the person, and never describe what they look like. "
+        "Every reason describes only the scene and the pose"
+    )
+    assert 'call the subject "the person", never he or she' in last
+    assert last.endswith(f"never mention {PERSON_ATTRIBUTES}.")
+
+
+def test_privacy_rule_is_in_the_reason_description_the_schema_sends() -> None:
+    schema: dict[str, Any] = referee._output_format()["schema"]
+    description = schema["$defs"]["VisualCheckJudgement"]["properties"]["reason"]["description"]
+
+    assert (
+        "Describe the pose only by body position (arms, hands, head direction, stance)"
+        in description
+    )
+    assert 'call the subject "the person", never he or she' in description
+    assert f"Never mention {PERSON_ATTRIBUTES}." in description
 
 
 def test_output_schema_forces_both_checks_with_reason_first() -> None:

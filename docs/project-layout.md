@@ -47,7 +47,7 @@ src/game_server/
   referee_prompt.md  # the referee's system prompt
   referee_references.py  # ReferencePhotos: each checkpoint's reference photos, prepared once
   pricing.py         # Claude API list prices and cost_usd (traces and eval report)
-  evals/             # offline referee eval harness (manifest, scoring, report, runner)
+  evals/             # offline referee eval harness (manifest, scoring, privacy, report, runner)
 evals/referee/       # eval manifest schema and example (no photos in the repo)
   rate_limit.py      # in-memory per-key RateLimiter
   config.py          # Settings (env / .env)

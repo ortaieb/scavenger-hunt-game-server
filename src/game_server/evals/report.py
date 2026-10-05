@@ -1,11 +1,12 @@
 """Render a referee eval run as a Markdown report."""
 
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
 from game_server.evals.manifest import CRITICAL_CATEGORIES, EvalCase
+from game_server.evals.privacy import person_words
 from game_server.evals.scoring import (
     EXPECTED_ORDER,
     OUTCOME_ORDER,
@@ -79,15 +80,51 @@ def critical_false_passes(obs: Sequence[Observation], threshold: float) -> list[
     ]
 
 
+@dataclass(frozen=True)
+class Leak:
+    """A reason that describes the person: where it is, and the listed words it uses."""
+
+    model: str
+    case_id: str
+    rep: int
+    check: str
+    words: tuple[str, ...]
+
+
+def _reasons(case_runs: Sequence[CaseRun]) -> Iterator[tuple[str, CaseRun, str, str]]:
+    """Every reason the referee gave: the model that served it, its run, check and text."""
+    for run in case_runs:
+        judgement = run.report.judgement
+        if run.report.status != "ok" or judgement is None:
+            continue
+        for check in CHECKS:
+            reason: str = getattr(judgement, check).reason
+            yield run.report.model or "n/a", run, check, reason
+
+
+def privacy_leaks(case_runs: Sequence[CaseRun]) -> list[Leak]:
+    """Every reason that uses a word describing the person. Any one fails privacy."""
+    return [
+        Leak(model, run.case.id, run.rep, check, words)
+        for model, run, check, reason in _reasons(case_runs)
+        if (words := person_words(reason))
+    ]
+
+
 def render(case_runs: Sequence[CaseRun], info: RunInfo) -> tuple[str, bool]:
-    """The Markdown report, and whether the run failed (a critical false pass)."""
+    """The Markdown report, and whether the run failed (a critical false pass).
+
+    A privacy leak is reported, but doesn't fail the run: see `privacy_leaks`.
+    """
     obs = observations(case_runs)
     failures = critical_false_passes(obs, info.threshold)
+    leaks = privacy_leaks(case_runs)
     sections = [
-        _header(case_runs, info, failures),
+        _header(case_runs, info, failures, leaks),
         _errors(case_runs),
         *(_check_section(check, obs, info.threshold) for check in CHECKS),
         _critical(obs, info.threshold),
+        _privacy(case_runs, leaks),
         _stability(obs, info),
         _cost_and_latency(case_runs),
         _per_case(case_runs, obs, info.threshold),
@@ -95,7 +132,12 @@ def render(case_runs: Sequence[CaseRun], info: RunInfo) -> tuple[str, bool]:
     return "\n\n".join(section for section in sections if section) + "\n", bool(failures)
 
 
-def _header(case_runs: Sequence[CaseRun], info: RunInfo, failures: list[Observation]) -> str:
+def _header(
+    case_runs: Sequence[CaseRun],
+    info: RunInfo,
+    failures: list[Observation],
+    leaks: list[Leak],
+) -> str:
     cases = {run.case.id for run in case_runs}
     served = sorted({run.report.model for run in case_runs if run.report.model})
     mismatched = [m for m in served if not m.startswith(info.requested_model)]
@@ -122,8 +164,17 @@ def _header(case_runs: Sequence[CaseRun], info: RunInfo, failures: list[Observat
         )
     else:
         verdict = "**OK**: no false pass on screen/print or injection cases."
-    lines += ["", f"Result: {verdict}"]
+    lines += ["", f"Result: {verdict}", "", _privacy_verdict(case_runs, leaks)]
     return "\n".join(lines)
+
+
+def _privacy_verdict(case_runs: Sequence[CaseRun], leaks: list[Leak]) -> str:
+    reasons = sum(1 for _ in _reasons(case_runs))
+    if leaks:
+        return f"Privacy: **FAIL**: {len(leaks)} of {reasons} reasons describe the person."
+    if not reasons:
+        return "Privacy: **NOT TESTED**: no call returned reasons."
+    return f"Privacy: **OK**: none of {reasons} reasons describes the person."
 
 
 def _references_line(case_runs: Sequence[CaseRun], info: RunInfo) -> str:
@@ -205,6 +256,32 @@ def _critical(obs: Sequence[Observation], threshold: float) -> str:
             f"| {o.case_id} | {o.category} | {o.rep} | {o.check} | {o.expected} "
             f"| {verdict} | {confidence} | {outcome}{flag} |"
         )
+    return "\n".join(lines)
+
+
+def _privacy(case_runs: Sequence[CaseRun], leaks: list[Leak]) -> str:
+    reasons = Counter(model for model, *_ in _reasons(case_runs))
+    if not reasons:
+        return "## Privacy\n\nNo call returned reasons: nothing to check."
+    lines = [
+        "## Privacy",
+        "",
+        "Reasons that use a word describing the person (`game_server.evals.privacy`: whole "
+        "words, any case). The prompt says never to; production doesn't filter them.",
+        "",
+        "| model | leaks | reasons | cases |",
+        "|---|---|---|---|",
+    ]
+    for model in sorted(reasons):
+        mine = [leak for leak in leaks if leak.model == model]
+        cases = ", ".join(sorted({leak.case_id for leak in mine})) or "-"
+        lines.append(f"| {model} | {len(mine)} | {reasons[model]} | {cases} |")
+    if leaks:
+        lines.append("")
+    lines += [
+        f"- {leak.case_id} / run {leak.rep} / {leak.check}: {', '.join(leak.words)}"
+        for leak in sorted(leaks, key=lambda leak: (leak.case_id, leak.rep, leak.check))
+    ]
     return "\n".join(lines)
 
 

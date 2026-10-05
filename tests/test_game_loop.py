@@ -1,7 +1,7 @@
 """Day 4's finish line: a whole hunt played through the API (with a fake referee)."""
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from pathlib import Path
@@ -15,6 +15,7 @@ from game_server.app import create_app
 from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
 from game_server.referee import (
+    PreparedReference,
     RefereeJudgement,
     RefereeReport,
     VisualCheckJudgement,
@@ -72,7 +73,12 @@ class PassingReferee:
     def __init__(self) -> None:
         self.calls = []
 
-    def judge(self, image: bytes, challenge: VisualChallenge) -> RefereeReport:
+    def judge(
+        self,
+        image: bytes,
+        challenge: VisualChallenge,
+        references: Sequence[PreparedReference] = (),
+    ) -> RefereeReport:
         self.calls.append(challenge.pose)
         check = VisualCheckJudgement(reason="fine", verdict="pass", confidence=0.95)
         return RefereeReport(

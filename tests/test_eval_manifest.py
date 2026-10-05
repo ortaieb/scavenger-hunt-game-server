@@ -45,7 +45,15 @@ def test_example_manifest_parses() -> None:
 def test_example_points_at_no_real_photos() -> None:
     manifest, base = load_manifest(EXAMPLE, check_images=False)
 
-    assert not any((base / case.image).exists() for case in manifest.cases)
+    assert not any((base / image).exists() for image in manifest.image_paths())
+
+
+def test_example_shows_reference_photos_per_place_and_per_case() -> None:
+    manifest, _ = load_manifest(EXAMPLE, check_images=False)
+
+    assert manifest.places
+    assert all(place.reference_photos for place in manifest.places.values())
+    assert any(case.reference_photos == () for case in manifest.cases)
 
 
 def test_committed_schema_matches_the_model() -> None:
@@ -75,10 +83,64 @@ def test_missing_images_are_listed_before_any_api_call(tmp_path: Path) -> None:
         load_manifest(write(tmp_path, manifest))
 
 
+def test_a_case_uses_its_places_reference_photos() -> None:
+    manifest = Manifest.model_validate(
+        {
+            "places": {"diana-fountain": {"reference_photos": ["ref/a.jpg", "ref/b.jpg"]}},
+            "cases": [case(), case(id="b", place="elsewhere")],
+        }
+    )
+
+    assert manifest.reference_photos(manifest.cases[0]) == (Path("ref/a.jpg"), Path("ref/b.jpg"))
+    assert manifest.reference_photos(manifest.cases[1]) == ()  # its place lists none
+
+
+@pytest.mark.parametrize(
+    ("own", "sent"),
+    [
+        pytest.param(["ref/own.jpg"], (Path("ref/own.jpg"),), id="its-own"),
+        pytest.param([], (), id="none"),
+    ],
+)
+def test_a_cases_own_reference_photos_replace_its_places(
+    own: list[str], sent: tuple[Path, ...]
+) -> None:
+    manifest = Manifest.model_validate(
+        {
+            "places": {"diana-fountain": {"reference_photos": ["ref/a.jpg"]}},
+            "cases": [case(reference_photos=own)],
+        }
+    )
+
+    assert manifest.reference_photos(manifest.cases[0]) == sent
+
+
+def test_missing_reference_photos_are_listed_before_any_api_call(tmp_path: Path) -> None:
+    (tmp_path / "photos").mkdir()
+    (tmp_path / "photos" / "fountain-01.jpg").write_bytes(b"jpeg")
+    manifest = {
+        "places": {"diana-fountain": {"reference_photos": ["ref/place.jpg"]}},
+        "cases": [case(), case(id="b", reference_photos=["ref/own.jpg"])],
+    }
+
+    with pytest.raises(ManifestError, match=r"not found .*: ref/place\.jpg, ref/own\.jpg$"):
+        load_manifest(write(tmp_path, manifest))
+
+
 @pytest.mark.parametrize(
     ("manifest", "problem"),
     [
         ({"cases": []}, "at least 1 item"),
+        (
+            {"places": {"diana-fountian": {"reference_photos": []}}, "cases": [case()]},
+            "places without cases: diana-fountian",
+        ),
+        ({"places": {"diana-fountain": {"photos": []}}, "cases": [case()]}, "Extra inputs"),
+        (
+            {"places": {"diana-fountain": {"reference_photos": ["r.jpg"] * 6}}, "cases": [case()]},
+            "at most 5 items",
+        ),
+        ({"cases": [case(reference_photos=["r.jpg"] * 6)]}, "at most 5 items"),
         ({"cases": [case(), case()]}, "duplicate case id: fountain-01"),
         ({"cases": [case(id="has space")]}, "pattern"),
         ({"cases": [case(category="selfie")]}, "category"),

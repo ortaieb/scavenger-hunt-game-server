@@ -45,6 +45,7 @@ src/game_server/
   imaging.py         # safe image decoding: pixel cap, EXIF orientation, decode errors
   referee.py         # visual-challenge referee on the Claude API
   referee_prompt.md  # the referee's system prompt
+  referee_references.py  # ReferencePhotos: each checkpoint's reference photos, prepared once
   pricing.py         # Claude API list prices and cost_usd (traces and eval report)
   evals/             # offline referee eval harness (manifest, scoring, report, runner)
 evals/referee/       # eval manifest schema and example (no photos in the repo)

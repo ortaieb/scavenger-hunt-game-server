@@ -3,7 +3,7 @@
 import hashlib
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -29,6 +29,7 @@ from game_server.imaging import UndecodableImageError
 from game_server.referee import (
     ClaudeReferee,
     ModelReply,
+    PreparedReference,
     RefereeCall,
     RefereeJudgement,
     RefereeReport,
@@ -123,7 +124,12 @@ class FakeReferee:
     calls: list[VisualChallenge] = field(default_factory=list)
     lock_free_during_call: list[bool] = field(default_factory=list)
 
-    def judge(self, image: bytes, challenge: VisualChallenge) -> RefereeReport:
+    def judge(
+        self,
+        image: bytes,
+        challenge: VisualChallenge,
+        references: Sequence[PreparedReference] = (),
+    ) -> RefereeReport:
         self.calls.append(challenge)
         self.lock_free_during_call.append(write_lock_is_free(self.db))
         self.timer.now += REFEREE_SECONDS

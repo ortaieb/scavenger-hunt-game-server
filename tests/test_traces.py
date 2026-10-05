@@ -62,7 +62,13 @@ REVISED = "You are the referee. Judge the pose too."
 RULING = VisualCheckJudgement(reason="A fountain.", verdict="pass", confidence=0.9)
 JUDGEMENT = RefereeJudgement(scene_matches=RULING, pose_correct=RULING)
 SENT = SentImage(sha256="ab" * 32, width=1568, height=1045)
-CALL = RefereeCall(PROMPT, "<scene>A fountain</scene>", SENT, "end_turn", '{"scene_matches": …}')
+CALL = RefereeCall(
+    PROMPT,
+    "<scene>A fountain</scene>",
+    SENT,
+    stop_reason="end_turn",
+    response_text='{"scene_matches": …}',
+)
 OK = RefereeReport(
     status="ok",
     judgement=JUDGEMENT,

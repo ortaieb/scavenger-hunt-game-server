@@ -11,6 +11,7 @@ import base64
 import hashlib
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import cache, lru_cache
@@ -34,6 +35,11 @@ logger = logging.getLogger(__name__)
 # A comfortable ceiling for two short reasons plus the JSON around them.
 MAX_TOKENS = 1024
 JPEG_QUALITY = 85
+# The text blocks that say which image is which, when reference photos are sent.
+REFERENCE_LABEL = (
+    "Reference photo {number} of {count}: the checkpoint, photographed by the organiser"
+)
+PLAYER_LABEL = "The player's photo"
 
 
 class VisualCheckJudgement(BaseModel):
@@ -69,6 +75,17 @@ class SentImage:
 
 
 @dataclass(frozen=True)
+class SentReference:
+    """A reference photo the model saw: its index in the checkpoint's list, and its hash.
+
+    Never its path, which can describe the place.
+    """
+
+    position: int
+    sha256: str
+
+
+@dataclass(frozen=True)
 class RefereeCall:
     """What one call sent and got back: the record its trace keeps.
 
@@ -81,6 +98,8 @@ class RefereeCall:
     user_text: str = field(repr=False)
     # None when the photo couldn't be prepared, so nothing was sent.
     image: SentImage | None = None
+    # The checkpoint's reference photos sent before it, in order; () when none were sent.
+    references: tuple[SentReference, ...] = ()
     stop_reason: str | None = None
     # The model's output as received; None when no reply came back.
     response_text: str | None = field(default=None, repr=False)
@@ -110,17 +129,55 @@ class RefereeReport:
     call: RefereeCall | None = None
 
 
-class Referee(Protocol):
-    """Judges a photo against a checkpoint's visual challenge. Never raises."""
+@dataclass(frozen=True)
+class PreparedImage:
+    """The photo as the model receives it."""
 
-    def judge(self, image: bytes, challenge: VisualChallenge) -> RefereeReport: ...
+    jpeg: bytes = field(repr=False)
+    width: int
+    height: int
+
+    def sent(self) -> SentImage:
+        """How the trace identifies this JPEG."""
+        return SentImage(hashlib.sha256(self.jpeg).hexdigest(), self.width, self.height)
+
+
+@dataclass(frozen=True)
+class PreparedReference:
+    """A checkpoint's reference photo as the model receives it, and its index in the list."""
+
+    position: int
+    image: PreparedImage
+
+    def sent(self) -> SentReference:
+        """How the trace identifies this reference: its position and its JPEG's hash."""
+        return SentReference(self.position, self.image.sent().sha256)
+
+
+class Referee(Protocol):
+    """Judges a photo against a checkpoint's visual challenge. Never raises.
+
+    `references` are the checkpoint's prepared reference photos, to compare the place with.
+    """
+
+    def judge(
+        self,
+        image: bytes,
+        challenge: VisualChallenge,
+        references: Sequence[PreparedReference] = (),
+    ) -> RefereeReport: ...
 
 
 class DisabledReferee:
     """Used when no API key is configured: makes no network call."""
 
-    def judge(self, image: bytes, challenge: VisualChallenge) -> RefereeReport:
-        """Report `disabled` without looking at the photo."""
+    def judge(
+        self,
+        image: bytes,
+        challenge: VisualChallenge,
+        references: Sequence[PreparedReference] = (),
+    ) -> RefereeReport:
+        """Report `disabled` without looking at the photo or the references."""
         return RefereeReport(status="disabled")
 
 
@@ -173,19 +230,6 @@ def _create_structured_message(
     )
 
 
-@dataclass(frozen=True)
-class PreparedImage:
-    """The photo as the model receives it."""
-
-    jpeg: bytes = field(repr=False)
-    width: int
-    height: int
-
-    def sent(self) -> SentImage:
-        """How the trace identifies this JPEG."""
-        return SentImage(hashlib.sha256(self.jpeg).hexdigest(), self.width, self.height)
-
-
 def prepare_image(image: bytes, max_edge: int) -> PreparedImage:
     """Re-encode the photo for the referee: upright, long edge <= `max_edge`, no metadata.
 
@@ -211,27 +255,48 @@ def prompt_sha256(prompt: str) -> str:
     return hashlib.sha256(prompt.encode()).hexdigest()
 
 
-def user_text(challenge: VisualChallenge) -> str:
-    """The text part of the user turn: the scene and pose inside their delimiting tags."""
+def user_text(challenge: VisualChallenge, with_references: bool = False) -> str:
+    """The text part of the user turn: the scene and pose inside their delimiting tags.
+
+    With reference photos there are several images, so it names the one to judge.
+    """
+    photo = "the player's photo" if with_references else "this photo"
     return (
         f"<scene>\n{challenge.scene}\n</scene>\n\n<pose>\n{challenge.pose}\n</pose>\n\n"
-        "Judge scene_matches and pose_correct for this photo."
+        f"Judge scene_matches and pose_correct for {photo}."
     )
 
 
-def build_content(prepared_jpeg: bytes, text: str) -> list[ImageBlockParam | TextBlockParam]:
-    """The user turn: the image, then the text."""
-    return [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": base64.standard_b64encode(prepared_jpeg).decode("ascii"),
-            },
+def _image_block(jpeg: bytes) -> ImageBlockParam:
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/jpeg",
+            "data": base64.standard_b64encode(jpeg).decode("ascii"),
         },
-        {"type": "text", "text": text},
-    ]
+    }
+
+
+def _text_block(text: str) -> TextBlockParam:
+    return {"type": "text", "text": text}
+
+
+def build_content(
+    prepared_jpeg: bytes, text: str, references: Sequence[PreparedReference] = ()
+) -> list[ImageBlockParam | TextBlockParam]:
+    """The user turn: the image, then the text.
+
+    With references, each reference photo and then the player's photo come after a label
+    saying which is which; the text still comes last.
+    """
+    if not references:
+        return [_image_block(prepared_jpeg), _text_block(text)]
+    content: list[ImageBlockParam | TextBlockParam] = []
+    for number, reference in enumerate(references, start=1):
+        label = REFERENCE_LABEL.format(number=number, count=len(references))
+        content += [_text_block(label), _image_block(reference.image.jpeg)]
+    return [*content, _text_block(PLAYER_LABEL), _image_block(prepared_jpeg), _text_block(text)]
 
 
 class ClaudeReferee:
@@ -242,26 +307,41 @@ class ClaudeReferee:
         self.model = model
         self.max_image_edge = max_image_edge
 
-    def judge(self, image: bytes, challenge: VisualChallenge) -> RefereeReport:
-        """Ask the model for a judgement. Never raises: failures become `status="error"`."""
+    def judge(
+        self,
+        image: bytes,
+        challenge: VisualChallenge,
+        references: Sequence[PreparedReference] = (),
+    ) -> RefereeReport:
+        """Ask the model for a judgement. Never raises: failures become `status="error"`.
+
+        `references` are sent as given, before the photo: the caller picks and prepares them.
+        """
         started = time.monotonic()
-        report = self._judge(image, challenge, started)
+        report = self._judge(image, challenge, references, started)
         _log(report)
         return report
 
-    def _judge(self, image: bytes, challenge: VisualChallenge, started: float) -> RefereeReport:
-        system, text = system_prompt(), user_text(challenge)
+    def _judge(
+        self,
+        image: bytes,
+        challenge: VisualChallenge,
+        references: Sequence[PreparedReference],
+        started: float,
+    ) -> RefereeReport:
+        system, text = system_prompt(), user_text(challenge, with_references=bool(references))
         try:
             prepared = prepare_image(image, self.max_image_edge)
-        except UndecodableImageError:
+        except UndecodableImageError:  # nothing is sent, the references included
             return self._error("invalid_image", started, RefereeCall(system, text))
-        call = RefereeCall(system, text, prepared.sent())
+        sent = tuple(reference.sent() for reference in references)
+        call = RefereeCall(system, text, prepared.sent(), sent)
         try:
             reply = _create_structured_message(
                 self._client,
                 model=self.model,
                 system=system,
-                content=build_content(prepared.jpeg, text),
+                content=build_content(prepared.jpeg, text, references),
             )
         except anthropic.APITimeoutError:  # a subclass of APIConnectionError: check it first
             return self._error("timeout", started, call)
@@ -326,6 +406,7 @@ def _log(report: RefereeReport) -> None:
     parts = [
         f"referee model={report.model}",
         f"status={report.status}",
+        f"references={len(report.call.references) if report.call else 0}",
         f"latency_ms={report.latency_ms}",
         f"tokens={report.input_tokens}/{report.output_tokens}",
         f"cost_usd={report.cost_usd}",

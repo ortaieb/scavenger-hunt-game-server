@@ -1,11 +1,13 @@
 """The eval set's manifest (`cases.json`): one labelled test photo per case.
 
 Only the organisers' own test photos, never player photos. The photos and the manifest
-live outside the repo, in the directory passed to the harness.
+live outside the repo, in the directory passed to the harness. A case can be judged with
+reference photos of its place, as a checkpoint's are in production: its own, or its
+place's.
 """
 
 from pathlib import Path
-from typing import Literal, Self, get_args
+from typing import Annotated, Literal, Self, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -28,6 +30,10 @@ Category = Literal[
 ]
 # A false pass on these is a failure of the whole run.
 CRITICAL_CATEGORIES: frozenset[Category] = frozenset({"screen-or-print", "injection"})
+# As many as a checkpoint can list in the sessions file.
+MAX_REFERENCE_PHOTOS = 5
+# Relative to the manifest's directory, in the order they're sent.
+ReferencePhotos = Annotated[tuple[Path, ...], Field(max_length=MAX_REFERENCE_PHOTOS)]
 
 
 class ExpectedChecks(BaseModel):
@@ -52,6 +58,10 @@ class EvalCase(BaseModel):
     pose: str = Field(min_length=1, max_length=200)
     expected: ExpectedChecks
     notes: str = ""
+    reference_photos: ReferencePhotos | None = Field(
+        default=None,
+        description="Instead of its place's reference photos; [] sends none",
+    )
 
     @property
     def challenge(self) -> VisualChallenge:
@@ -59,11 +69,25 @@ class EvalCase(BaseModel):
         return VisualChallenge(scene=self.scene, pose=self.pose)
 
 
+class Place(BaseModel):
+    """What the cases at one real place share."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reference_photos: ReferencePhotos = Field(
+        default=(),
+        description="The organiser's photos of the place, sent with each of its cases",
+    )
+
+
 class Manifest(BaseModel):
     """The whole eval set."""
 
     model_config = ConfigDict(extra="forbid")
 
+    places: dict[str, Place] = Field(
+        default_factory=dict, description="By the cases' `place`: what its cases share"
+    )
     cases: tuple[EvalCase, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -75,6 +99,27 @@ class Manifest(BaseModel):
             seen.add(case.id)
         return self
 
+    @model_validator(mode="after")
+    def _places_have_cases(self) -> Self:
+        unknown = sorted(set(self.places) - {case.place for case in self.cases})
+        if unknown:  # most likely a typo, which would silently send no references
+            raise ValueError(f"places without cases: {', '.join(unknown)}")
+        return self
+
+    def reference_photos(self, case: EvalCase) -> tuple[Path, ...]:
+        """The reference photos sent with this case: its own if it lists any, else its place's."""
+        if case.reference_photos is not None:
+            return case.reference_photos
+        place = self.places.get(case.place)
+        return place.reference_photos if place else ()
+
+    def image_paths(self) -> list[Path]:
+        """Every photo the manifest names, case photos first, each once, in order."""
+        paths = [case.image for case in self.cases]
+        paths += [path for place in self.places.values() for path in place.reference_photos]
+        paths += [path for case in self.cases for path in case.reference_photos or ()]
+        return list(dict.fromkeys(paths))
+
 
 class ManifestError(ValueError):
     """The manifest can't be read, is invalid, or points at missing photos."""
@@ -83,7 +128,8 @@ class ManifestError(ValueError):
 def load_manifest(path: Path, *, check_images: bool = True) -> tuple[Manifest, Path]:
     """Parse `path` and return the manifest and the directory its image paths are relative to.
 
-    With `check_images`, every image must exist, so a typo fails before any API spend.
+    With `check_images`, every image (reference photos included) must exist, so a typo fails
+    before any API spend.
     """
     try:
         manifest = Manifest.model_validate_json(path.read_bytes())
@@ -93,7 +139,7 @@ def load_manifest(path: Path, *, check_images: bool = True) -> tuple[Manifest, P
         raise ManifestError(f"invalid manifest {path}:\n{exc}") from exc
     base = path.parent
     if check_images:
-        missing = [str(case.image) for case in manifest.cases if not (base / case.image).is_file()]
+        missing = [str(image) for image in manifest.image_paths() if not (base / image).is_file()]
         if missing:
             raise ManifestError(f"images not found (relative to {base}): {', '.join(missing)}")
     return manifest, base

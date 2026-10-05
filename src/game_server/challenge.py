@@ -37,6 +37,7 @@ from game_server.models import (
 )
 from game_server.phash import UndecodableImageError, perceptual_hash
 from game_server.referee import Referee, RefereeReport, get_referee
+from game_server.referee_references import ReferencePhotos, get_reference_photos
 from game_server.sessions import SessionRepository, get_session_repository
 from game_server.storage import ImageStore
 from game_server.submissions import (
@@ -145,21 +146,25 @@ def split_stages(checks: Sequence[Check]) -> tuple[list[Check], list[Check]]:
 
 
 def consult_referee(
-    referee: Referee, ctx: SubmissionContext, earlier: Sequence[CheckResult]
+    referee: Referee,
+    ctx: SubmissionContext,
+    earlier: Sequence[CheckResult],
+    references: ReferencePhotos,
 ) -> RefereeReport | None:
     """Ask the referee about the photo, unless there's no point.
 
-    It judges the checkpoint's scene and the pose issued when the team checked in. Not
-    consulted when there's no such challenge (no visual challenge, no active check-in, or no
-    pose issued with it), or when an earlier check already failed: that saves the cost, and
-    the photo of a submission that has already failed isn't sent to a third party. Called
-    outside the write transaction, because a model call takes seconds and would otherwise
-    queue every submission behind it.
+    It judges the checkpoint's scene, compared with its reference photos, and the pose
+    issued when the team checked in. Not consulted when there's no such challenge (no
+    visual challenge, no active check-in, or no pose issued with it), or when an earlier
+    check already failed: that saves the cost, and the photo of a submission that has
+    already failed isn't sent to a third party. Called outside the write transaction,
+    because a model call takes seconds and would otherwise queue every submission behind it.
     """
     challenge = ctx.challenge
     if challenge is None or any(result.outcome == "failed" for result in earlier):
         return None
-    return referee.judge(ctx.image, challenge)
+    sent = references.for_checkpoint(ctx.session.id, ctx.checkpoint.sequence)
+    return referee.judge(ctx.image, challenge, sent)
 
 
 def blocked_by_phase(submission: NewSubmission) -> PhaseCode | None:
@@ -321,6 +326,7 @@ def submit_challenge(
     images: Annotated[ImageStore, Depends(get_image_store)],
     submissions: Annotated[SubmissionStore, Depends(get_submission_store)],
     referee: Annotated[Referee, Depends(get_referee)],
+    references: Annotated[ReferencePhotos, Depends(get_reference_photos)],
 ) -> ChallengeVerdict:
     """Check the submission, record it as the next attempt, and return the verdict.
 
@@ -346,7 +352,7 @@ def submit_challenge(
     )
     before, during = split_stages(checks)
     earlier = run_checks(before, ctx)
-    ctx = replace(ctx, referee_report=consult_referee(referee, ctx, earlier))
+    ctx = replace(ctx, referee_report=consult_referee(referee, ctx, earlier, references))
     submission, attempt, image_path = judge_and_record(
         ctx, before, earlier, during, images, submissions, stopwatch
     )

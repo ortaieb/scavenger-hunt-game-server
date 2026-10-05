@@ -9,7 +9,6 @@ pass, 2 for a setup problem (no key, bad manifest, missing photos).
 """
 
 import argparse
-import hashlib
 import json
 import sys
 from collections.abc import Callable, Sequence
@@ -25,7 +24,7 @@ from game_server.evals.manifest import (
     load_manifest,
 )
 from game_server.evals.report import CaseRun, RunInfo, render
-from game_server.referee import Referee, build_referee, system_prompt
+from game_server.referee import Referee, build_referee, prompt_sha256, system_prompt
 
 
 @dataclass(frozen=True)
@@ -144,7 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         threshold=args.threshold,
         runs=args.runs,
         started_at=datetime.now(UTC),
-        prompt_digest=hashlib.sha256(system_prompt().encode()).hexdigest()[:12],
+        prompt_digest=prompt_sha256(system_prompt())[:12],  # as in referee_traces
         max_image_edge=settings.referee_max_image_edge,
     )
 

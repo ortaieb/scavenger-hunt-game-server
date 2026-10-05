@@ -11,7 +11,6 @@ from game_server.evals.scoring import (
     OUTCOME_ORDER,
     Observation,
     confusion,
-    cost_usd,
     grade,
     grades_at,
     outcome_at,
@@ -19,6 +18,7 @@ from game_server.evals.scoring import (
     suggested_threshold,
     sweep,
 )
+from game_server.pricing import cost_usd
 from game_server.referee import RefereeJudgement, RefereeReport
 
 CHECKS = tuple(RefereeJudgement.model_fields)

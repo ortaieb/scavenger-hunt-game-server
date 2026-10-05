@@ -4,6 +4,7 @@ import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta, timezone
+from itertools import count
 from pathlib import Path
 from threading import Barrier
 from typing import Any, Protocol
@@ -21,7 +22,7 @@ from game_server.app import create_app
 from game_server.challenge import judge_and_record
 from game_server.checks import Check, CheckResult, Rejection, SubmissionContext, get_checks
 from game_server.checks.duplicate_photo import DuplicatePhotoCheck
-from game_server.clock import get_clock
+from game_server.clock import Stopwatch, get_clock, get_timer
 from game_server.config import Settings, get_settings
 from game_server.models import ChallengeMetadata
 from game_server.phash import perceptual_hash, to_hex
@@ -46,6 +47,7 @@ JOINED = {  # participant: (session, team)
 }
 NOW = datetime(2026, 10, 3, 9, 30, tzinfo=UTC)
 START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)  # the planned start, 10:00+01:00
+TICK_SECONDS = 0.25  # the fake monotonic clock advances this much on every reading
 
 METADATA: dict[str, Any] = {
     "session": SESSION,
@@ -147,6 +149,8 @@ def client(image_dir: Path, checks: list[Check]) -> Iterator[TestClient]:
     app.dependency_overrides[get_session_repository] = lambda: repository
     app.dependency_overrides[get_checks] = lambda: checks
     app.dependency_overrides[get_clock] = lambda: lambda: NOW
+    ticks = count(step=TICK_SECONDS)
+    app.dependency_overrides[get_timer] = lambda: lambda: next(ticks)
     with TestClient(app) as test_client:
         yield test_client
 
@@ -343,16 +347,11 @@ def test_records_submission_row(
                 "detail": None,
             }
         ],
-        # The referee isn't consulted: the checkpoint has no challenge and a check failed.
-        "referee_status": None,
-        "referee_model": None,
-        "referee_error": None,
-        "referee_judgement": None,
-        "referee_input_tokens": None,
-        "referee_output_tokens": None,
-        "referee_latency_ms": None,
         "arrival_id": None,  # the team didn't check in
+        "processing_ms": 250,  # one tick: from receiving the photo to recording its verdict
     }
+    # The referee isn't consulted: the checkpoint has no challenge and a check failed.
+    assert db.execute("SELECT * FROM referee_traces").fetchall() == []
 
 
 def test_stores_image_named_by_image_id(client: TestClient, image_dir: Path) -> None:
@@ -390,7 +389,8 @@ def test_logs_received_challenge(
         f"image stored in: {image_dir.resolve() / f'{image_id}.jpeg'}; "
         "checkpoint 1 attempt 1 arrival none distance 11.1m "
         "referee not_consulted "
-        "verdict failed checks [no_outside_window:failed,no_outside_geofence:failed] "
+        "verdict failed processing_ms 250 "
+        "checks [no_outside_window:failed,no_outside_geofence:failed] "
         "rejections [outside_window,outside_geofence]"
     ]
 
@@ -780,7 +780,9 @@ def test_concurrent_uploads_of_one_photo_accept_exactly_one(
         metadata = ChallengeMetadata.model_validate({**METADATA, "participant": participant})
         ctx = SubmissionContext(metadata, NOW, session, checkpoint, PHOTO, perceptual_hash(PHOTO))
         barrier.wait()
-        submission, _, _ = judge_and_record(ctx, [], [], checks, images, store)
+        submission, _, _ = judge_and_record(
+            ctx, [], [], checks, images, store, Stopwatch(time.monotonic)
+        )
         return submission.verdict
 
     with ThreadPoolExecutor(max_workers=2) as pool:

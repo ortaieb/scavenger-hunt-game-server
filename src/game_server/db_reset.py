@@ -32,7 +32,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m game_server.db_reset",
         description="Drop the game server's tables (if they exist) and create them from "
-        "scratch. Every submission, participant and arrival is deleted.",
+        "scratch. Every submission, referee trace, participant and arrival is deleted.",
     )
     parser.add_argument("--yes", action="store_true", help="confirm deleting all the data")
     args = parser.parse_args(argv)

@@ -74,8 +74,8 @@ def isolated_storage(
     monkeypatch.setenv("GAME_SERVER_DB_SSLMODE", "prefer")  # CI's server has no TLS
     monkeypatch.setenv("GAME_SERVER_IMAGE_BASE_PATH", str(tmp_path / "default-images"))
     db.execute(
-        "TRUNCATE blocked_attempts, session_runs, arrivals, participants, submissions"
-        " RESTART IDENTITY"
+        "TRUNCATE referee_traces, referee_prompts, blocked_attempts, session_runs, arrivals,"
+        " participants, submissions RESTART IDENTITY"
     )
     caches = (get_settings, hint_rate_limiter, build_referee)
     for cache in caches:

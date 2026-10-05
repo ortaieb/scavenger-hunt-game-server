@@ -8,9 +8,11 @@ All Anthropic SDK use goes through `_create_structured_message`; tests mock that
 """
 
 import base64
+import hashlib
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from functools import cache, lru_cache
 from importlib.resources import files
 from io import BytesIO
@@ -24,6 +26,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from game_server.config import Settings, get_settings
 from game_server.imaging import UndecodableImageError, open_upright
+from game_server.pricing import cost_usd
 from game_server.sessions import VisualChallenge
 
 logger = logging.getLogger(__name__)
@@ -57,17 +60,54 @@ RefereeErrorCode = Literal[
 
 
 @dataclass(frozen=True)
+class SentImage:
+    """The prepared JPEG the model saw, identified by its hash and size: no second copy."""
+
+    sha256: str
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
+class RefereeCall:
+    """What one call sent and got back: the record its trace keeps.
+
+    Server-side only and never logged: `user_text` holds the scene (the answer to the
+    clue), and the response describes the photo. Both are kept out of `repr`, so neither
+    reaches a log line by accident.
+    """
+
+    system_prompt: str = field(repr=False)
+    user_text: str = field(repr=False)
+    # None when the photo couldn't be prepared, so nothing was sent.
+    image: SentImage | None = None
+    stop_reason: str | None = None
+    # The model's output as received; None when no reply came back.
+    response_text: str | None = field(default=None, repr=False)
+
+    @property
+    def prompt_sha256(self) -> str:
+        """The system prompt's identity in the trace."""
+        return prompt_sha256(self.system_prompt)
+
+
+@dataclass(frozen=True)
 class RefereeReport:
     """What the referee concluded, plus what the call cost, for moderator audit."""
 
     status: RefereeStatus
-    judgement: RefereeJudgement | None = None
+    # The reasons describe the photo: kept out of `repr`, like the call's texts.
+    judgement: RefereeJudgement | None = field(default=None, repr=False)
     error_code: RefereeErrorCode | None = None
     model: str | None = None
     request_id: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     latency_ms: int | None = None
+    # At list price (`game_server.pricing`); None without a reply, or for an unknown model.
+    cost_usd: Decimal | None = None
+    # What was sent and received; None when the referee is disabled and made no call.
+    call: RefereeCall | None = None
 
 
 class Referee(Protocol):
@@ -133,7 +173,20 @@ def _create_structured_message(
     )
 
 
-def prepare_image(image: bytes, max_edge: int) -> bytes:
+@dataclass(frozen=True)
+class PreparedImage:
+    """The photo as the model receives it."""
+
+    jpeg: bytes = field(repr=False)
+    width: int
+    height: int
+
+    def sent(self) -> SentImage:
+        """How the trace identifies this JPEG."""
+        return SentImage(hashlib.sha256(self.jpeg).hexdigest(), self.width, self.height)
+
+
+def prepare_image(image: bytes, max_edge: int) -> PreparedImage:
     """Re-encode the photo for the referee: upright, long edge <= `max_edge`, no metadata.
 
     Re-encoding from pixels drops all EXIF, GPS included, so the provider receives pixels
@@ -144,7 +197,7 @@ def prepare_image(image: bytes, max_edge: int) -> bytes:
         rgb.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
         buffer = BytesIO()
         rgb.save(buffer, "JPEG", quality=JPEG_QUALITY, exif=b"")
-        return buffer.getvalue()
+        return PreparedImage(buffer.getvalue(), *rgb.size)
 
 
 @cache
@@ -153,26 +206,31 @@ def system_prompt() -> str:
     return files("game_server").joinpath("referee_prompt.md").read_text(encoding="utf-8")
 
 
-def build_content(
-    prepared_image: bytes, challenge: VisualChallenge
-) -> list[ImageBlockParam | TextBlockParam]:
-    """The user turn: the image, then the scene and pose inside their delimiting tags."""
+def prompt_sha256(prompt: str) -> str:
+    """A system prompt's identity in traces and eval reports: the SHA-256 of its UTF-8."""
+    return hashlib.sha256(prompt.encode()).hexdigest()
+
+
+def user_text(challenge: VisualChallenge) -> str:
+    """The text part of the user turn: the scene and pose inside their delimiting tags."""
+    return (
+        f"<scene>\n{challenge.scene}\n</scene>\n\n<pose>\n{challenge.pose}\n</pose>\n\n"
+        "Judge scene_matches and pose_correct for this photo."
+    )
+
+
+def build_content(prepared_jpeg: bytes, text: str) -> list[ImageBlockParam | TextBlockParam]:
+    """The user turn: the image, then the text."""
     return [
         {
             "type": "image",
             "source": {
                 "type": "base64",
                 "media_type": "image/jpeg",
-                "data": base64.standard_b64encode(prepared_image).decode("ascii"),
+                "data": base64.standard_b64encode(prepared_jpeg).decode("ascii"),
             },
         },
-        {
-            "type": "text",
-            "text": (
-                f"<scene>\n{challenge.scene}\n</scene>\n\n<pose>\n{challenge.pose}\n</pose>\n\n"
-                "Judge scene_matches and pose_correct for this photo."
-            ),
-        },
+        {"type": "text", "text": text},
     ]
 
 
@@ -192,24 +250,26 @@ class ClaudeReferee:
         return report
 
     def _judge(self, image: bytes, challenge: VisualChallenge, started: float) -> RefereeReport:
+        system, text = system_prompt(), user_text(challenge)
         try:
             prepared = prepare_image(image, self.max_image_edge)
         except UndecodableImageError:
-            return self._error("invalid_image", started)
+            return self._error("invalid_image", started, RefereeCall(system, text))
+        call = RefereeCall(system, text, prepared.sent())
         try:
             reply = _create_structured_message(
                 self._client,
                 model=self.model,
-                system=system_prompt(),
-                content=build_content(prepared, challenge),
+                system=system,
+                content=build_content(prepared.jpeg, text),
             )
         except anthropic.APITimeoutError:  # a subclass of APIConnectionError: check it first
-            return self._error("timeout", started)
+            return self._error("timeout", started, call)
         except anthropic.APIError:  # status errors and connection errors, after SDK retries
-            return self._error("api_error", started)
-        return self._interpret(reply, started)
+            return self._error("api_error", started, call)
+        return self._interpret(reply, started, call)
 
-    def _interpret(self, reply: ModelReply, started: float) -> RefereeReport:
+    def _interpret(self, reply: ModelReply, started: float, call: RefereeCall) -> RefereeReport:
         def report(
             status: RefereeStatus,
             judgement: RefereeJudgement | None = None,
@@ -224,6 +284,8 @@ class ClaudeReferee:
                 input_tokens=reply.input_tokens,
                 output_tokens=reply.output_tokens,
                 latency_ms=_elapsed_ms(started),
+                cost_usd=_cost_usd(reply),
+                call=replace(call, stop_reason=reply.stop_reason, response_text=reply.text),
             )
 
         # On these the output may be cut short or empty: it can't be trusted to fit the schema.
@@ -237,9 +299,13 @@ class ClaudeReferee:
             return report("error", error_code="invalid_output")
         return report("ok", judgement=judgement)
 
-    def _error(self, code: RefereeErrorCode, started: float) -> RefereeReport:
+    def _error(self, code: RefereeErrorCode, started: float, call: RefereeCall) -> RefereeReport:
         return RefereeReport(
-            status="error", error_code=code, model=self.model, latency_ms=_elapsed_ms(started)
+            status="error",
+            error_code=code,
+            model=self.model,
+            latency_ms=_elapsed_ms(started),
+            call=call,
         )
 
 
@@ -247,13 +313,23 @@ def _elapsed_ms(started: float) -> int:
     return round((time.monotonic() - started) * 1000)
 
 
+def _cost_usd(reply: ModelReply) -> Decimal | None:
+    """What the call cost at list price; None, with a warning, for a model without a price."""
+    cost = cost_usd(reply.model, reply.input_tokens, reply.output_tokens)
+    if cost is None:
+        logger.warning("referee model=%s has no price in game_server.pricing", reply.model)
+    return cost
+
+
 def _log(report: RefereeReport) -> None:
-    """One line per call. Never the image and never the reasons: they describe the photo."""
+    """One line per call. Never the image, the scene or the reasons."""
     parts = [
         f"referee model={report.model}",
         f"status={report.status}",
         f"latency_ms={report.latency_ms}",
         f"tokens={report.input_tokens}/{report.output_tokens}",
+        f"cost_usd={report.cost_usd}",
+        f"request_id={report.request_id}",
     ]
     if report.error_code:
         parts.append(f"error={report.error_code}")

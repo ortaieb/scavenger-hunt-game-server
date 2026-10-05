@@ -23,7 +23,8 @@ src/game_server/
   schema.sql         # the tables: dropped and created from scratch (destructive)
   db_reset.py        # `python -m game_server.db_reset --yes`: runs schema.sql
   submissions.py     # SubmissionStore: submissions, attempts, participants, arrivals
-  clock.py           # injectable UTC clock
+  referee_traces.py  # record_trace: one row per referee call, with its submission
+  clock.py           # injectable UTC clock, and the monotonic timer for processing_ms
   geo.py             # haversine distance_m
   phash.py           # perceptual_hash (Pillow + numpy), hamming_distance
   proximity.py       # `POST /checkpoint/proximity` advisory hint
@@ -43,6 +44,7 @@ src/game_server/
   imaging.py         # safe image decoding: pixel cap, EXIF orientation, decode errors
   referee.py         # visual-challenge referee on the Claude API
   referee_prompt.md  # the referee's system prompt
+  pricing.py         # Claude API list prices and cost_usd (traces and eval report)
   evals/             # offline referee eval harness (manifest, scoring, report, runner)
 evals/referee/       # eval manifest schema and example (no photos in the repo)
   rate_limit.py      # in-memory per-key RateLimiter

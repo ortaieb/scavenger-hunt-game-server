@@ -10,7 +10,6 @@ from psycopg.rows import DictRow
 from game_server.checks import CheckResult, Rejection
 from game_server.config import Settings
 from game_server.database import Database, database_config, open_database
-from game_server.referee import RefereeJudgement, RefereeReport, VisualCheckJudgement
 from game_server.submissions import NewSubmission, SubmissionStore, get_submission_store
 
 SESSION = UUID(int=1)
@@ -29,6 +28,7 @@ SUBMISSION = NewSubmission(
     checks=(),
     distance_m=12.5,
     phash=0xFEDC_BA98_7654_3210,
+    processing_ms=40,
 )
 
 
@@ -72,41 +72,8 @@ def test_records_all_fields(store: SubmissionStore, db: psycopg.Connection[DictR
         "reason": "Unsure.",
         "detail": "blurry",
     }
-    assert row["referee_status"] is None
-    assert row["referee_judgement"] is None
-
-
-def test_records_the_referee_report(
-    store: SubmissionStore, db: psycopg.Connection[DictRow]
-) -> None:
-    ruling = VisualCheckJudgement(reason="A fountain.", verdict="pass", confidence=0.9)
-    report = RefereeReport(
-        status="ok",
-        judgement=RefereeJudgement(scene_matches=ruling, pose_correct=ruling),
-        model="claude-haiku-4-5",
-        input_tokens=1200,
-        output_tokens=80,
-        latency_ms=950,
-    )
-
-    store.record(replace(SUBMISSION, referee=report))
-
-    [row] = rows(db)
-    assert (row["referee_status"], row["referee_model"], row["referee_error"]) == (
-        "ok",
-        "claude-haiku-4-5",
-        None,
-    )
-    assert row["referee_judgement"]["scene_matches"] == {
-        "reason": "A fountain.",
-        "verdict": "pass",
-        "confidence": 0.9,
-    }
-    assert (
-        row["referee_input_tokens"],
-        row["referee_output_tokens"],
-        row["referee_latency_ms"],
-    ) == (1200, 80, 950)
+    assert row["processing_ms"] == 40
+    assert db.execute("SELECT * FROM referee_traces").fetchall() == []  # no referee report
 
 
 def test_attempts_are_numbered_per_session_participant_and_checkpoint(
@@ -147,8 +114,9 @@ def test_duplicate_attempt_is_refused_by_the_database(
     with pytest.raises(psycopg.errors.UniqueViolation):
         db.execute(
             "INSERT INTO submissions (session, participant, checkpoint, attempt, received_at,"
-            " capture_time, lat, long, image_id, verdict, rejections, distance_m, phash, checks)"
-            " VALUES (%s, %s, 1, 1, now(), now(), 0, 0, %s, 'pending', '[]', 0, '0', '[]')",
+            " capture_time, lat, long, image_id, verdict, rejections, distance_m, phash, checks,"
+            " processing_ms)"
+            " VALUES (%s, %s, 1, 1, now(), now(), 0, 0, %s, 'pending', '[]', 0, '0', '[]', 0)",
             (SESSION, PARTICIPANT, uuid4()),
         )
 

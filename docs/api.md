@@ -390,18 +390,47 @@ Submissions are stored in [PostgreSQL](../README.md#database), in a `submissions
 | `distance_m`                | Metres from the claimed position to the checkpoint (server-side only) |
 | `phash`                     | The photo's 64-bit perceptual hash, 16 hex digits         |
 | `phash_match_id`            | On a `duplicate_photo` rejection, the `id` of the accepted submission it matched (server-side only) |
-| `checks`                    | `JSONB` list of every check that ran: `{check, outcome, confidence, reason, detail}`. `detail` is moderator-only and never returned; for the visual checks it holds the model's reason |
-| `referee_status`            | `ok`, `disabled` or `error`; empty when the referee wasn't consulted |
-| `referee_model`, `referee_error` | The model used, and the error code on `error` (`timeout`, `api_error`, `refusal`, `max_tokens`, `invalid_output`, `invalid_image`) |
-| `referee_judgement`         | `JSONB` of the model's verdicts, confidences and **reasons**, which describe the photo. Server-side only |
-| `referee_input_tokens`, `referee_output_tokens`, `referee_latency_ms` | For cost tracking |
+| `checks`                    | `JSONB` list of every check that ran: `{check, outcome, confidence, reason, detail}`. `detail` is moderator-only and never returned; for the visual checks it holds the model's reason, or why the referee wasn't asked (e.g. `referee disabled: no API key`) |
 | `arrival_id`                | The [arrival](#arrivals) the photo used: the team's active check-in at the checkpoint. Empty when there was none |
+| `processing_ms`             | Milliseconds from `received_at` until the verdict was recorded, on a monotonic clock: how long the player waited, referee call included. Recorded for every submission |
 
 The attempt number is allocated and the row inserted in one transaction that holds the
 session's advisory lock, so concurrent submissions can't share an attempt number. A unique
 constraint backs this up. Every row carries its `session`, so all of a session's data can be
 deleted together when the session closes. The tables are defined in
 [`schema.sql`](../src/game_server/schema.sql); see [Database](../README.md#database) for how they're created.
+
+### Referee traces
+
+Each call to the [referee](#referee-visual-challenge) (status `ok` or `error`) is recorded
+as one row in `referee_traces`, **in the same transaction as its submission**: they commit
+or roll back together. The call itself happens before that transaction opens, so its report
+carries everything the row needs. A submission the referee wasn't consulted on (an earlier
+check failed, no visual challenge or pose, or the referee is disabled) has no trace: its
+submission row is the whole record.
+
+| Column                         | Content |
+|--------------------------------|---------|
+| `id`, `session`, `created_at`  | Row id, the session, and when the row was written (the database's clock) |
+| `submission_id`                | The submission it judged (one trace per submission); deleted with it |
+| `image_id`                     | The stored player photo: the submission's own file, never a second copy |
+| `image_sha256`, `image_width`, `image_height` | The exact JPEG the model saw: upright, resized and stripped of EXIF. Empty for `invalid_image`, when nothing was sent |
+| `reference_photos`             | `JSONB` list of the reference photos sent: `[]` until they are |
+| `prompt_sha256`                | SHA-256 of the system prompt ([`referee_prompt.md`](../src/game_server/referee_prompt.md)). Its text is stored once in `referee_prompts (sha256, text, first_used_at)`, so a verdict stays explainable after the prompt changes |
+| `user_text`                    | The text part of the user turn: the `<scene>` and the `<pose>` judged |
+| `model`, `request_id`          | The model that served the call (the configured one when no reply came back), and the API's request id |
+| `status`, `error_code`, `stop_reason` | `ok` or `error`; the [error code](#referee-visual-challenge) (`timeout`, `api_error`, `refusal`, `max_tokens`, `invalid_output`, `invalid_image`); the model's stop reason |
+| `response_text`                | The model's raw output, as received. Empty when no reply came back |
+| `judgement`                    | `JSONB` of the parsed verdicts, confidences and reasons, when the output was valid |
+| `input_tokens`, `output_tokens` | As reported by the API. `cache_read_input_tokens` and `cache_creation_input_tokens` stay empty until the referee uses prompt caching |
+| `cost_usd`                     | `NUMERIC`: the tokens at list price, from the same table as the eval report ([`pricing.py`](../src/game_server/pricing.py)), which also matches dated snapshot ids. Empty when no reply came back, or for a model without a price (a warning is logged) |
+| `latency_ms`                   | The model call, SDK retries included |
+
+**Server-only.** `user_text` holds the scene (the answer to the clue), and `response_text`
+and `judgement` describe the photo. They're never logged and never returned by a participant
+endpoint. Traces carry their `session` and are deleted with their submission, so the
+session-close purge removes them with the session's other data. Prompts aren't session
+data: they hold no player data.
 
 ### Participants
 
@@ -893,10 +922,11 @@ a submission can `pass`.
   it makes no network call and reports `disabled`. Local development and CI never need a key.
   Other Anthropic credentials in the environment (`ANTHROPIC_API_KEY`, `ant auth` profiles)
   are deliberately ignored: only the game server's own setting enables the referee.
-- **Logging.** One line per call: model, status or error code, latency, tokens, and each
-  check's verdict and confidence. **Never the image and never the reasons**, which describe
-  the photo. They're stored with the submission (`referee_judgement` and the visual checks'
-  `detail`) and deleted with the session's other data when it closes.
+- **Logging.** One line per call: model, status or error code, latency, tokens, `cost_usd`,
+  `request_id`, and each check's verdict and confidence. The `POST /challenge` line adds the
+  submission's `processing_ms`. **Never the image, the scene or the reasons**, which describe
+  the photo. They're stored in the call's [trace](#referee-traces) and the visual checks'
+  `detail`, and deleted with the session's other data when it closes.
 
 ## Referee evals
 
@@ -1000,13 +1030,15 @@ About 30 cases on Haiku 4.5 cost a few cents per run.
   run.
 - **Stability** (with `RUNS>1`): (case, check) pairs whose outcome changed between runs. Treat
   differences smaller than this churn as noise.
-- **Cost and latency**: tokens as reported by the API, cost at list prices, p50/p95 latency,
-  and a warning if the serving model differs from the one requested.
+- **Cost and latency**: tokens as reported by the API, cost at list prices (the same
+  [`pricing.py`](../src/game_server/pricing.py) table the referee's traces use), p50/p95
+  latency, and a warning if the serving model differs from the one requested.
 
 To tune: run each candidate model with `RUNS=3`. Pick the cheapest model with no critical
 false pass and acceptably few false fails and deferrals. Then set
 `GAME_SERVER_REFEREE_MIN_CONFIDENCE` to (at least) the suggested threshold. Re-run after any
-change to `referee_prompt.md`: the report records a digest of the prompt it used.
+change to `referee_prompt.md`: the report records a digest of the prompt it used (the first
+12 hex digits of the traces' `prompt_sha256`).
 
 ### Results so far
 

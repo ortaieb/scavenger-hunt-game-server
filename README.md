@@ -15,7 +15,7 @@ and managed with [uv](https://docs.astral.sh/uv/).
 | `POST` | [`/sessions/{session}/stop`](docs/api.md#post-sessionssessionstop) | **Moderator:** finish the session, for good |
 | `GET`  | [`/sessions/{session}/overview`](docs/api.md#get-sessionssessionoverview) | **Moderator:** the clock, standings, each team's progress and blocked attempts |
 | `GET`  | [`/health`](#deploying-on-railway) | Readiness: `200 {"status": "ok"}` when the submissions database answers, else `503 {"status": "unavailable"}` |
-| `POST` | [`/challenge`](docs/api.md#post-challenge) | A participant submits a photo for a scavenger-hunt challenge |
+| `POST` | [`/challenge`](docs/api.md#post-challenge) | A participant submits a photo for the checkpoint it checked in at |
 | `POST` | [`/checkpoint/proximity`](docs/api.md#post-checkpointproximity) | **Advisory only:** does the player look in range of an open checkpoint? |
 | `GET`  | [`/sessions/{session}/checkpoints/{sequence}/challenge`](docs/api.md#get-sessionssessioncheckpointssequencechallenge) | The pose the player must strike in the photo |
 

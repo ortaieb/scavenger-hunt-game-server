@@ -12,6 +12,21 @@ BEGIN;
 
 DROP TABLE IF EXISTS blocked_attempts, session_runs, arrivals, participants, submissions CASCADE;
 
+-- A team's check-ins at a checkpoint, each with a one-time code. Not used for scoring: the
+-- order of arrival is set by the accepted photo's received_at. A photo is held to its team's
+-- active arrival (see submissions.arrival_id).
+CREATE TABLE arrivals (
+    id          BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    session     UUID        NOT NULL,
+    participant UUID        NOT NULL,
+    checkpoint  INTEGER     NOT NULL,
+    code        TEXT        NOT NULL,
+    pose        TEXT,
+    issued_at   TIMESTAMPTZ NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX arrivals_by_team ON arrivals (session, participant, checkpoint);
+
 -- One row per photo submitted. Every row carries its session, so all of a session's data can
 -- be deleted together when the session closes.
 CREATE TABLE submissions (
@@ -45,8 +60,11 @@ CREATE TABLE submissions (
     referee_input_tokens  INTEGER,
     referee_output_tokens INTEGER,
     referee_latency_ms    INTEGER,
+    -- The team's active arrival at the checkpoint that the photo used; NULL when there was none.
+    arrival_id            BIGINT           REFERENCES arrivals (id),
     UNIQUE (session, participant, checkpoint, attempt)
 );
+CREATE INDEX submissions_by_arrival ON submissions (arrival_id);
 
 -- One participant per team that has joined, keyed by a server-generated id. consented_at is
 -- updated on every join (the player ticked the consent box again).
@@ -58,20 +76,6 @@ CREATE TABLE participants (
     consented_at TIMESTAMPTZ NOT NULL,
     UNIQUE (session, team)
 );
-
--- A team's check-ins at a checkpoint, each with a one-time code. Not used for scoring: the
--- order of arrival is set by the accepted photo's received_at.
-CREATE TABLE arrivals (
-    id          BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    session     UUID        NOT NULL,
-    participant UUID        NOT NULL,
-    checkpoint  INTEGER     NOT NULL,
-    code        TEXT        NOT NULL,
-    pose        TEXT,
-    issued_at   TIMESTAMPTZ NOT NULL,
-    expires_at  TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX arrivals_by_team ON arrivals (session, participant, checkpoint);
 
 -- When the moderator started and finished each session. No row means not started. The file's
 -- start-time/end-time are only the planned window; these are the session's real run.

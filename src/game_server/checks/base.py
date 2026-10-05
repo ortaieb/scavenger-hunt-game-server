@@ -12,10 +12,11 @@ from functools import cached_property
 from typing import Protocol, Self
 
 from game_server import geo
+from game_server.arrivals import Arrival, LatestArrival
 from game_server.models import ChallengeMetadata, CheckOutcome, VerdictStatus
 from game_server.referee import RefereeReport
 from game_server.session_runs import SessionRun
-from game_server.sessions import Checkpoint, GameSession
+from game_server.sessions import Checkpoint, GameSession, VisualChallenge
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,28 @@ class SubmissionContext:
     referee_report: RefereeReport | None = None
     # The session's run when the photo arrived; None if it was never started.
     run: SessionRun | None = None
+    # The team's latest arrival at this checkpoint issued by `received_at`; None if it never
+    # arrived. Loaded before the checks, and confirmed again inside the write transaction.
+    arrival: LatestArrival | None = None
+
+    @property
+    def active_arrival(self) -> Arrival | None:
+        """The check-in this photo uses, if the team had an active one at `received_at`."""
+        if self.arrival is None or not self.arrival.active_at(self.received_at):
+            return None
+        return self.arrival.arrival
+
+    @property
+    def challenge(self) -> VisualChallenge | None:
+        """What the referee judges: the checkpoint's scene, and the pose issued at check-in.
+
+        The arrival's pose wins over the sessions file's: it's what the player was shown.
+        None without a visual challenge, an active arrival, or a pose issued with it.
+        """
+        challenge, arrival = self.checkpoint.challenge, self.active_arrival
+        if challenge is None or arrival is None or arrival.pose is None:
+            return None
+        return challenge.model_copy(update={"pose": arrival.pose})
 
     @cached_property
     def distance_m(self) -> float:

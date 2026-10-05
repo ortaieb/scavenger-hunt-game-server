@@ -1,10 +1,11 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
 import pytest
 
+from game_server.arrivals import Arrival, LatestArrival
 from game_server.checks.base import CheckResult, InTransaction, SubmissionContext
 from game_server.checks.visual import (
     SKIPPED_REASON,
@@ -232,3 +233,20 @@ def test_classify(verdict: Verdict, confidence: float, outcome: str) -> None:
     judged_check = VisualCheckJudgement(reason="r", verdict=verdict, confidence=confidence)
 
     assert classify(judged_check, THRESHOLD) == outcome
+
+
+def test_no_pose_issued_at_check_in_is_skipped_with_its_reason() -> None:
+    issued = datetime(2026, 1, 1, 11, 55, tzinfo=UTC)
+    arrival = Arrival(3, 1, "1234", None, issued_at=issued, expires_at=issued + timedelta(hours=1))
+    ctx = replace(make_ctx(None), arrival=LatestArrival(arrival, used=False))
+
+    results = [check(ctx) for check in (SCENE, POSE)]
+
+    assert {(r.outcome, r.confidence, r.reason) for r in results} == {SKIPPED}
+    assert {r.detail for r in results} == {"referee not consulted: no pose was issued at check-in"}
+
+
+def test_referee_not_consulted_after_a_failure_is_skipped() -> None:
+    results = [check(make_ctx(None)) for check in (SCENE, POSE)]
+
+    assert {r.detail for r in results} == {"referee not consulted: an earlier check failed"}

@@ -19,8 +19,9 @@ A whole hunt can be played through the API. The moderator opens it, then each te
    [`POST …/arrive`](#post-sessionssessionparticipantsparticipantarrive) checks it in and returns
    the pose to strike and a one-time code to hold up in the photo.
 4. **Photograph**: [`POST /challenge`](#post-challenge) with the photo and the checkpoint's
-   `sequence`. A `pass` or `pending` verdict completes the checkpoint. After a `failed` one the
-   team stays at the checkpoint, and arriving again gives it a fresh code.
+   `sequence`. The photo is held to that check-in, and the referee judges the pose it issued.
+   A `pass` or `pending` verdict completes the checkpoint. After a `failed` one the team stays
+   at the checkpoint, and arriving again gives it a fresh code.
 5. **Repeat** from step 2 until the state says `finished`.
 
 The rules in one place:
@@ -35,6 +36,11 @@ The rules in one place:
 - **Arriving needs the right checkpoint at the right time**: the team's current one, while the
   session is running and the checkpoint's window is open. It takes no location: the geofence is
   checked on the photo.
+- **A photo needs a check-in**: the team's active arrival at that checkpoint. Without one the
+  photo is recorded as `failed` (`not_checked_in`, or `check_in_expired` if the check-in ran
+  out), without consulting the referee. Each check-in holds for one photo, so after a `failed`
+  photo the team arrives again. Since arriving only works at the team's current checkpoint,
+  this also holds photos to it.
 - **The one-time code** is issued on arrival and expires after
   `GAME_SERVER_ARRIVAL_CODE_TTL_SECONDS`. It's recorded but not yet checked in the photo.
 - **`pending` completes a checkpoint**, so a hunt can be played through without the referee.
@@ -96,7 +102,7 @@ Request: `multipart/form-data` with two parts.
    | Field          | Rules                                                               |
    |----------------|---------------------------------------------------------------------|
    | `session`      | UUID of a [loaded game session](../docs/sessions-file.md#game-sessions-and-checkpoints)     |
-   | `participant`  | UUID of the participant (a claim: not authenticated yet)            |
+   | `participant`  | UUID of a participant that [joined](#post-join) this session (a claim: not authenticated yet) |
    | `checkpoint`   | The checkpoint's `sequence` in that session: a JSON integer ≥ 1. `"2"`, `2.0` and `true` are rejected |
    | `location`     | `lat` in [-90, 90], `long` in [-180, 180], decimal degrees          |
    | `capture-time` | ISO 8601 date-time **with** a UTC offset (e.g. `-06:00` or `Z`)      |
@@ -110,17 +116,25 @@ Processing:
 1. The server stamps **`received-at`** from its own UTC clock. This, not the client's
    `capture-time`, is the time the verdict uses and reports.
 2. The metadata and image are validated, the photo is decoded and
-   [fingerprinted](#submission-checks), and the session and checkpoint are looked up.
-   A request rejected at this stage (any `4xx`) stores nothing: no image, no database row.
-3. The checks run in a fixed order, in two stages, and every one of them is reported:
-   - **Outside the write lock:** the time and geofence checks.
+   [fingerprinted](#submission-checks), and the session, checkpoint and participant are looked
+   up, in that order. A request rejected at this stage (any `4xx`) stores nothing: no image,
+   no database row.
+3. The team's latest [arrival](#arrivals) at the checkpoint, issued by `received-at`, is
+   loaded.
+4. The checks run in a fixed order, in two stages, and every one of them is reported:
+   - **Outside the write lock:** the session, check-in, time and geofence checks.
    - **The [referee](#referee-visual-challenge)** is then asked to judge the photo, but only
-     if none of those checks failed *and* the checkpoint has a visual challenge. A model call
-     takes seconds, so it happens before the write transaction opens; otherwise it would
-     queue every submission in the game behind it. Skipping it for an already-failed
-     submission saves cost, and that photo isn't sent to a third party.
-   - **Inside the write transaction:** the duplicate-photo check and the two visual checks,
-     which read the referee's report.
+     if none of those checks failed *and* there's a challenge to judge: the checkpoint's
+     `challenge.scene`, with the **pose issued at check-in**. If the sessions file changed
+     between arriving and sending, the arrival's pose wins: it's what the player was shown.
+     A model call takes seconds, so it happens before the write transaction opens; otherwise
+     it would queue every submission in the game behind it. Skipping it for an already-failed
+     submission saves cost, and that photo isn't sent to a third party: no photo leaves the
+     server without a check-in.
+   - **Inside the write transaction:** the arrival is read again, so two photos sent against
+     one check-in at once can't both use it: if another photo used it meanwhile, the earlier
+     checks run again and `checked_in` fails with `not_checked_in`. Then the duplicate-photo
+     check and the two visual checks, which read the referee's report.
 
    The verdict follows from the checks:
    - Any check `failed` → verdict **`failed`**.
@@ -129,22 +143,23 @@ Processing:
      reviews it. That is always the case without an API key or without a visual challenge on
      the checkpoint.
 
-   **What `pass` means.** Presence is *evidenced*, not proven: the phone's claimed location
-   is inside the checkpoint area, and the referee judged that the photo shows the described
-   place, photographed for real, with the player posing as asked. The `code_visible` and
-   `bib_visible` checks are deferred.
+   **What `pass` means.** Presence is *evidenced*, not proven: the team checked in at the
+   checkpoint, the phone's claimed location is inside the checkpoint area, and the referee
+   judged that the photo shows the described place, photographed for real, with the player
+   striking the pose issued at check-in. The `code_visible` and `bib_visible` checks are
+   deferred.
 
    The registered checks are described in [Submission checks](#submission-checks).
-4. The image is written to `<image-base-path>/<random-uuid>.jpeg`, and the submission is
+5. The image is written to `<image-base-path>/<random-uuid>.jpeg`, and the submission is
    recorded in the database as the next **attempt** for its (session, participant, checkpoint):
-   1, 2, 3…. Failed submissions count as attempts.
-5. The server logs:
+   1, 2, 3…, with the arrival it used. Failed submissions count as attempts.
+6. The server logs:
 
    ```
-   Received challenge request for <session>[<participant>] arrived at <capture-time> from (<lat>,<long>), image stored in: <path>; checkpoint <n> attempt <n> distance <metres>m referee <status> model=<model> latency_ms=<ms> tokens=<in>/<out> verdict <verdict> checks [<check>:<outcome>,...] rejections [<code>,...]
+   Received challenge request for <session>[<participant>] arrived at <capture-time> from (<lat>,<long>), image stored in: <path>; checkpoint <n> attempt <n> arrival <id> distance <metres>m referee <status> model=<model> latency_ms=<ms> tokens=<in>/<out> verdict <verdict> checks [<check>:<outcome>,...] rejections [<code>,...]
    ```
 
-   When the referee isn't consulted, that part reads `referee not_consulted`, and without an API key `referee disabled`. The model's reasons are never logged.
+   `arrival` is the id of the arrival the photo used, or `none`; never its code. When the referee isn't consulted, that part reads `referee not_consulted`, and without an API key `referee disabled`. The model's reasons are never logged.
 
 Response body (`200` or `202`):
 
@@ -159,11 +174,15 @@ Response body (`200` or `202`):
       "time": "2026-10-03T11:06:02.113Z",
       "verdict": "failed",
       "checks": [
+        { "check": "session_running", "outcome": "passed", "confidence": 1.0, "reason": "The session is running." },
+        { "check": "checked_in", "outcome": "passed", "confidence": 1.0, "reason": "You checked in at this checkpoint." },
         { "check": "window_open", "outcome": "failed", "confidence": 1.0, "reason": "This checkpoint isn't open right now." },
         { "check": "capture_fresh", "outcome": "passed", "confidence": 1.0, "reason": "Photo was taken recently." },
         { "check": "capture_time_plausible", "outcome": "passed", "confidence": 1.0, "reason": "Photo's capture time is plausible." },
         { "check": "in_range", "outcome": "passed", "confidence": 1.0, "reason": "Your location is inside the checkpoint area." },
-        { "check": "photo_unique", "outcome": "passed", "confidence": 1.0, "reason": "This photo hasn't been used before." }
+        { "check": "photo_unique", "outcome": "passed", "confidence": 1.0, "reason": "This photo hasn't been used before." },
+        { "check": "scene_matches", "outcome": "skipped", "confidence": 0.0, "reason": "Not checked for this attempt." },
+        { "check": "pose_correct", "outcome": "skipped", "confidence": 0.0, "reason": "Not checked for this attempt." }
       ],
       "rejections": [
         { "code": "outside_window", "message": "This checkpoint isn't open right now." }
@@ -179,7 +198,7 @@ Response body (`200` or `202`):
   the verdict:
   - `check`: the check's stable snake_case name, phrased as a positive assertion (`in_range`).
   - `outcome`: `passed`, `failed`, `uncertain` or `skipped`. The deterministic checks only ever
-    pass or fail; `uncertain` and `skipped` are reserved for the upcoming visual checks.
+    pass or fail; `uncertain` and `skipped` come from the visual checks.
   - `confidence`: 0–1. Deterministic checks always report `1.0`.
   - `reason`: safe to show the player. For a failed check it is the rejection's message.
 - `rejections` lists the failed checks' rejections, unchanged from before `checks` existed, so
@@ -194,7 +213,7 @@ Responses:
 |--------|--------------------------------------------------------------------------------|
 | `200`  | Recorded, with a final verdict: `failed` (at least one rejection) or `pass` (every check passed) |
 | `202`  | Recorded, verdict `pending`: a moderator will review it                        |
-| `404`  | Unknown `session` (`{"detail": "unknown session"}`), or no checkpoint with that `sequence` in the session (`"unknown checkpoint"`) |
+| `404`  | Unknown `session` (`{"detail": "unknown session"}`), no checkpoint with that `sequence` in the session (`"unknown checkpoint"`), or a `participant` that hasn't joined the session (`"unknown participant"`), checked in that order |
 | `413`  | Image larger than `GAME_SERVER_MAX_IMAGE_BYTES`                                |
 | `415`  | `challenge-image` content type is not `image/jpeg`                             |
 | `422`  | Missing part, invalid metadata (JSON, fields, unknown fields), image bytes are not a JPEG, or the JPEG can't be decoded (corrupt, truncated, or over 100 megapixels): `{"detail": "challenge-image could not be decoded"}` |
@@ -216,13 +235,14 @@ the player.
 | # | Check                    | Fails with          | Reason when passed |
 |---|--------------------------|---------------------|--------------------|
 | 1 | `session_running`        | `session_not_started`, `session_stopped` | "The session is running." |
-| 2 | `window_open`            | `outside_window`    | "Submitted while the checkpoint was open." |
-| 3 | `capture_fresh`          | `stale_capture`     | "Photo was taken recently." |
-| 4 | `capture_time_plausible` | `capture_in_future` | "Photo's capture time is plausible." |
-| 5 | `in_range`               | `out_of_range`      | "Your location is inside the checkpoint area." |
-| 6 | `photo_unique`           | `duplicate_photo`   | "This photo hasn't been used before." |
-| 7 | `scene_matches`          | `scene_mismatch`    | "Your photo matches this checkpoint." |
-| 8 | `pose_correct`           | `pose_incorrect`    | "Your pose matches the challenge." |
+| 2 | `checked_in`             | `not_checked_in`, `check_in_expired` | "You checked in at this checkpoint." |
+| 3 | `window_open`            | `outside_window`    | "Submitted while the checkpoint was open." |
+| 4 | `capture_fresh`          | `stale_capture`     | "Photo was taken recently." |
+| 5 | `capture_time_plausible` | `capture_in_future` | "Photo's capture time is plausible." |
+| 6 | `in_range`               | `out_of_range`      | "Your location is inside the checkpoint area." |
+| 7 | `photo_unique`           | `duplicate_photo`   | "This photo hasn't been used before." |
+| 8 | `scene_matches`          | `scene_mismatch`    | "Your photo matches this checkpoint." |
+| 9 | `pose_correct`           | `pose_incorrect`    | "Your pose matches the challenge." |
 
 Clients should branch on the body's `verdict`, not the HTTP status.
 
@@ -237,6 +257,30 @@ planned times. A photo outside the run is still stored, so a team can dispute it
 | `session_running` → `session_stopped` | The moderator has stopped the session | "The session is over. This photo was recorded but doesn't count." |
 
 After a stop, `outside_window` usually fails too, since the effective window ends at the stop.
+Arriving is refused outside the run, so `checked_in` usually fails alongside `session_running`.
+
+**Check-in** (`checks/checked_in.py`). A photo is held to the team's
+[check-in](#post-sessionssessionparticipantsparticipantarrive) at that checkpoint, at
+`received-at` (the server's clock, with no grace period):
+
+| At `received-at` | Outcome | Code | Message |
+|---|---|---|---|
+| The team has an **active** arrival at this checkpoint: not expired, and no photo has used it | `passed` | | "You checked in at this checkpoint." |
+| The team's latest arrival here has expired, and no photo was sent for it | `failed` | `check_in_expired` | "Your check-in ran out. Tap I'm here again, then send your photo." |
+| Anything else: the team never checked in here, or an earlier photo already used the check-in | `failed` | `not_checked_in` | "Tap I'm here at the checkpoint before sending a photo." |
+
+- **One check-in, one photo.** A photo uses the active arrival, whatever its verdict. After a
+  `failed` photo the team taps *I'm here* again for a fresh one.
+- **The current checkpoint only.** Arrive only checks in at the team's current checkpoint, and
+  a `pass` or `pending` photo there ends the check-in, so an active arrival can only exist at
+  the team's current checkpoint: a photo for any other one fails with `not_checked_in`.
+- **No race.** The arrival is loaded before the checks run, so the check stays pure, then read
+  again inside the write transaction. Of two photos sent against one arrival at once, only one
+  uses it; the other fails with `not_checked_in`.
+- **Before the referee.** When `checked_in` fails the referee isn't consulted, so no photo is
+  sent to a third party without a check-in.
+- The moderator-only `detail` names the arrival (its id), or why none was active. It never
+  includes the code.
 
 **Time** (`checks/time_window.py`). The deciding clock is the server's `received-at`. The
 client's `capture-time` is a claim: it can get a submission rejected, but it can never rescue
@@ -305,6 +349,7 @@ calibrated, so #23 tunes it.
 | Referee report | Outcome | Confidence |
 |---|---|---|
 | No `challenge` configured on the checkpoint | `skipped` | 0 |
+| No pose issued at check-in (the checkpoint had no challenge when the team arrived) | `skipped` | 0 |
 | Referee disabled (no API key) | `skipped` | 0 |
 | Referee not consulted (an earlier check failed) | `skipped` | 0 |
 | Referee error | `uncertain` | 0 |
@@ -350,6 +395,7 @@ Submissions are stored in [PostgreSQL](../README.md#database), in a `submissions
 | `referee_model`, `referee_error` | The model used, and the error code on `error` (`timeout`, `api_error`, `refusal`, `max_tokens`, `invalid_output`, `invalid_image`) |
 | `referee_judgement`         | `JSONB` of the model's verdicts, confidences and **reasons**, which describe the photo. Server-side only |
 | `referee_input_tokens`, `referee_output_tokens`, `referee_latency_ms` | For cost tracking |
+| `arrival_id`                | The [arrival](#arrivals) the photo used: the team's active check-in at the checkpoint. Empty when there was none |
 
 The attempt number is allocated and the row inserted in one transaction that holds the
 session's advisory lock, so concurrent submissions can't share an attempt number. A unique
@@ -404,7 +450,7 @@ in a `blocked_attempts` table:
 
 A row is written whenever join or arrive is refused, or a photo is recorded as `failed`, for a
 session-phase reason, in the same transaction as that photo. Unknown codes, other `409`s,
-`422`s and photos from a participant that never joined aren't recorded. Only the newest 500 per
+`422`s and photos from a participant that never joined (a `404`) aren't recorded. Only the newest 500 per
 session are kept: older rows are deleted in the same transaction.
 
 ### Arrivals
@@ -418,6 +464,10 @@ Each check-in at a checkpoint is recorded in an `arrivals` table, with its one-t
 | `code`                                 | The one-time code |
 | `pose`                                 | The pose issued, or empty |
 | `issued_at`, `expires_at`              | Server times (`TIMESTAMPTZ`) |
+
+An arrival is **used** by the photo that records it (`submissions.arrival_id`), and ended by
+any photo the team sends to that checkpoint after it was issued. A photo is held to the
+team's active arrival, and the referee judges the `pose` it issued.
 
 Arrivals don't set the order of arrival: [scoring](#scoring) ranks teams by when their
 accepted photo was received, since arriving takes no location. Rows carry their `session`, so they're deleted with the session's other data.
@@ -565,10 +615,6 @@ The order is set by the **photo**, not the arrive tap: arriving takes no locatio
 by it would let a team tap early and buy a better place. `scoring.team_points` computes a
 team's total; the moderator's overview will use the same function.
 
-`POST /challenge` doesn't change: it still accepts a photo for a checkpoint that isn't the
-team's current one, and that photo counts when the checkpoint's turn comes. Holding
-submissions to the team's current checkpoint comes with the one-time code check.
-
 **Secrecy.** The response holds only the current clue: never other checkpoints' clues, any
 checkpoint's name, coordinates, proximity, window times, scene, the team's route, other teams
 or the join code. The score is the team's own total only: never another team's points, a
@@ -702,7 +748,8 @@ team's current checkpoint, so an out-of-date app can't check in at the wrong one
 ```
 
 - `pose`: the checkpoint's `challenge.pose`, or `null` if it has no challenge (a code is still
-  issued).
+  issued). The referee judges the photo against this pose, even if the sessions file changes
+  before the photo is sent.
 - `code`: 4 digits as a string, leading zeros kept, from a cryptographic random source. Short
   enough to write on a hand or a scrap of paper.
 - `expires-at`: `issued-at` plus `GAME_SERVER_ARRIVAL_CODE_TTL_SECONDS` (default 600). It isn't
@@ -716,8 +763,10 @@ team's current checkpoint, so an out-of-date app can't check in at the wrong one
 | `409`  | `{"detail", "code"}`, checked in this order: `"session hasn't started"` (`session_not_started`), `"hunt finished"` (`hunt_finished`), `"session has ended"` (`session_stopped`), `"not your current checkpoint"` (`not_current_checkpoint`), `"checkpoint isn't open"` (`checkpoint_closed`) |
 | `422`  | Invalid body |
 
-An arrival is **active** while it hasn't expired and the team hasn't submitted a photo for
-that checkpoint since it was issued:
+An arrival is **active** while it hasn't expired and no photo has used it: the
+[photo](#post-challenge) that recorded it, or any photo the team sent to that checkpoint after
+it was issued. A photo needs an active arrival at its checkpoint (the
+[`checked_in`](#submission-checks) check):
 
 - after a `failed` photo, or once the code expires, the next arrive issues a **fresh code**;
 - after a `pass` or `pending`, the team has moved on, so arriving there again is a `409`.
@@ -812,7 +861,7 @@ check it answers `pass`, `fail` or `unsure`, with a confidence (0–1) and a sho
 | Check           | Passes when |
 |-----------------|-------------|
 | `scene_matches` | The background is the checkpoint described in its `challenge.scene`, photographed for real (not a screen, print or another photo of it) |
-| `pose_correct`  | Exactly one clearly visible person is in the photo, posing as `challenge.pose` asks |
+| `pose_correct`  | Exactly one clearly visible person is in the photo, striking the pose issued when the team checked in (the checkpoint's `challenge.pose` at the time) |
 
 The referee's report feeds the two [visual checks](#submission-checks), which decide whether
 a submission can `pass`.

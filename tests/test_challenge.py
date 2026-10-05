@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 import psycopg
@@ -37,6 +37,13 @@ OTHER_SESSION = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"  # not loaded: unknown
 SECOND_SESSION = "9d2f4c1a-6b3e-4f8a-9c7d-1e2f3a4b5c6d"
 PARTICIPANT = "7c860ccc-9adf-4e22-b54f-3ff158f5d600"
 OTHER_PARTICIPANT = "5d0a8b8e-7f6c-4d4b-8f0e-2b1a9c3d4e5f"
+SECOND_PARTICIPANT = "2a6c1d3e-8b4f-4a7d-9e5c-6f1b2c3d4e5a"  # in SECOND_SESSION
+UNKNOWN_PARTICIPANT = "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a5b"  # never joined
+JOINED = {  # participant: (session, team)
+    PARTICIPANT: (SESSION, "Red Foxes"),
+    OTHER_PARTICIPANT: (SESSION, "Blue Herons"),
+    SECOND_PARTICIPANT: (SECOND_SESSION, "Red Foxes"),
+}
 NOW = datetime(2026, 10, 3, 9, 30, tzinfo=UTC)
 START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)  # the planned start, 10:00+01:00
 
@@ -50,7 +57,7 @@ METADATA: dict[str, Any] = {
 
 
 def sessions_repository() -> SessionRepository:
-    """Two identical sessions: SESSION and SECOND_SESSION."""
+    """Two identical sessions, SESSION and SECOND_SESSION, each with two teams."""
     checkpoint = {"name": "Spot", "clue": "Find it", "location": {"lat": 51.5, "long": -0.1}}
     session = {
         "name": "Test hunt",
@@ -71,8 +78,44 @@ def sessions_repository() -> SessionRepository:
             },
         ],
     }
+
+    def teams(prefix: str) -> list[dict[str, Any]]:
+        return [
+            {"name": "Red Foxes", "join-code": f"{prefix}-FOX", "order": [1, 2, 3]},
+            {"name": "Blue Herons", "join-code": f"{prefix}-HERON", "order": [1, 2, 3]},
+        ]
+
     return parse_sessions(
-        json.dumps([{**session, "id": SESSION}, {**session, "id": SECOND_SESSION}])
+        json.dumps(
+            [
+                {**session, "id": SESSION, "teams": teams("ONE")},
+                {**session, "id": SECOND_SESSION, "teams": teams("TWO")},
+            ]
+        )
+    )
+
+
+@pytest.fixture(autouse=True)
+def joined(isolated_storage: None, db: psycopg.Connection[DictRow]) -> None:
+    """The test participants have joined their sessions (their ids are fixed, for brevity)."""
+    for participant, (session, team) in JOINED.items():
+        db.execute(
+            "INSERT INTO participants (id, session, team, joined_at, consented_at)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (participant, session, team, START, START),
+        )
+
+
+def check_in(store: SubmissionStore, metadata: dict[str, Any], at: datetime) -> None:
+    """Arrive at the metadata's checkpoint, as POST .../arrive does (its own refusals aside)."""
+    store.arrive(
+        UUID(metadata["session"]),
+        UUID(metadata["participant"]),
+        metadata["checkpoint"],
+        pose=None,
+        now=at,
+        ttl=timedelta(minutes=10),
+        new_code=lambda: "1234",
     )
 
 
@@ -308,6 +351,7 @@ def test_records_submission_row(
         "referee_input_tokens": None,
         "referee_output_tokens": None,
         "referee_latency_ms": None,
+        "arrival_id": None,  # the team didn't check in
     }
 
 
@@ -344,7 +388,7 @@ def test_logs_received_challenge(
         f"Received challenge request for {SESSION}[{PARTICIPANT}] "
         "arrived at 2026-10-03T10:29:00+01:00 from (51.5001,-0.1), "
         f"image stored in: {image_dir.resolve() / f'{image_id}.jpeg'}; "
-        "checkpoint 1 attempt 1 distance 11.1m "
+        "checkpoint 1 attempt 1 arrival none distance 11.1m "
         "referee not_consulted "
         "verdict failed checks [no_outside_window:failed,no_outside_geofence:failed] "
         "rejections [outside_window,outside_geofence]"
@@ -364,6 +408,11 @@ def assert_nothing_stored(image_dir: Path, db: psycopg.Connection[DictRow]) -> N
     [
         ({**METADATA, "session": OTHER_SESSION}, "unknown session"),
         ({**METADATA, "checkpoint": 9}, "unknown checkpoint"),
+        ({**METADATA, "participant": UNKNOWN_PARTICIPANT}, "unknown participant"),
+        ({**METADATA, "participant": SECOND_PARTICIPANT}, "unknown participant"),  # elsewhere
+        # Session, then checkpoint, then participant.
+        ({**METADATA, "session": OTHER_SESSION, "checkpoint": 9}, "unknown session"),
+        ({**METADATA, "checkpoint": 9, "participant": UNKNOWN_PARTICIPANT}, "unknown checkpoint"),
     ],
 )
 def test_unknown_target_is_404(
@@ -487,32 +536,49 @@ def real_checks_client(
         yield test_client
 
 
-def test_time_rules_pass_inside_window(real_checks_client: TestClient) -> None:
-    response = post_challenge(real_checks_client)
+class Submit(Protocol):
+    def __call__(self, metadata: dict[str, Any] = ..., image: bytes = ...) -> Response: ...
+
+
+@pytest.fixture
+def submit(
+    real_checks_client: TestClient, store: SubmissionStore, clock_now: list[datetime]
+) -> Submit:
+    """Send a photo as the app does: check in at its checkpoint first."""
+
+    def submit(metadata: dict[str, Any] = METADATA, image: bytes = JPEG) -> Response:
+        check_in(store, metadata, clock_now[0])
+        return post_challenge(real_checks_client, metadata, image)
+
+    return submit
+
+
+def test_time_rules_pass_inside_window(submit: Submit) -> None:
+    response = submit()
 
     assert response.status_code == 202
     assert checkpoint_verdict(response)["verdict"] == "pending"
 
 
 def test_the_planned_end_does_not_close_a_running_session(
-    real_checks_client: TestClient, clock_now: list[datetime]
+    submit: Submit, clock_now: list[datetime]
 ) -> None:
     clock_now[0] = datetime(2026, 10, 3, 14, 0, tzinfo=UTC)  # planned end 12:00Z
     metadata = {**METADATA, "capture-time": "2026-10-03T14:00:00Z"}
 
-    response = post_challenge(real_checks_client, metadata)
+    response = submit(metadata)
 
     assert response.status_code == 202
     assert checkpoint_verdict(response)["verdict"] == "pending"
 
 
 def test_received_outside_the_checkpoint_window_fails(
-    real_checks_client: TestClient, db: psycopg.Connection[DictRow]
+    submit: Submit, db: psycopg.Connection[DictRow]
 ) -> None:
     # Capture time inside the window: the claim can't rescue the submission.
     metadata = {**METADATA, "checkpoint": 3, "capture-time": "2026-10-03T09:15:00Z"}
 
-    response = post_challenge(real_checks_client, metadata)
+    response = submit(metadata)
 
     assert response.status_code == 200
     assert checkpoint_verdict(response)["verdict"] == "failed"
@@ -529,9 +595,9 @@ def test_received_outside_the_checkpoint_window_fails(
     ],
 )
 def test_capture_time_claims_can_fail_submission(
-    real_checks_client: TestClient, capture_time: str, code: str
+    submit: Submit, capture_time: str, code: str
 ) -> None:
-    response = post_challenge(real_checks_client, {**METADATA, "capture-time": capture_time})
+    response = submit({**METADATA, "capture-time": capture_time})
 
     assert response.status_code == 200
     assert [r["code"] for r in checkpoint_verdict(response)["rejections"]] == [code]
@@ -540,10 +606,8 @@ def test_capture_time_claims_can_fail_submission(
 FAR_AWAY = {"lat": 51.51, "long": -0.1}  # ~1.1 km north of the checkpoints
 
 
-def test_out_of_range_submission_fails(
-    real_checks_client: TestClient, db: psycopg.Connection[DictRow]
-) -> None:
-    response = post_challenge(real_checks_client, {**METADATA, "location": FAR_AWAY})
+def test_out_of_range_submission_fails(submit: Submit, db: psycopg.Connection[DictRow]) -> None:
+    response = submit({**METADATA, "location": FAR_AWAY})
 
     assert response.status_code == 200
     assert checkpoint_verdict(response)["verdict"] == "failed"
@@ -553,9 +617,9 @@ def test_out_of_range_submission_fails(
 
 
 def test_in_range_submission_is_pending_never_pass(
-    real_checks_client: TestClient, db: psycopg.Connection[DictRow]
+    submit: Submit, db: psycopg.Connection[DictRow]
 ) -> None:
-    response = post_challenge(real_checks_client)
+    response = submit()
 
     assert response.status_code == 202
     assert checkpoint_verdict(response)["verdict"] == "pending"
@@ -580,9 +644,9 @@ def json_numbers(value: object) -> list[float]:
     "location", [METADATA["location"], FAR_AWAY], ids=["in-range", "out-of-range"]
 )
 def test_response_leaks_no_checkpoint_coordinates_or_distance(
-    real_checks_client: TestClient, location: dict[str, float]
+    submit: Submit, location: dict[str, float]
 ) -> None:
-    response = post_challenge(real_checks_client, {**METADATA, "location": location})
+    response = submit({**METADATA, "location": location})
 
     body = response.json()
     checks = body["verdict"]["checkpoint"].pop("checks")
@@ -607,12 +671,10 @@ def codes(response: Response) -> list[str]:
 
 
 def test_another_participants_accepted_photo_is_a_duplicate(
-    real_checks_client: TestClient, db: psycopg.Connection[DictRow]
+    submit: Submit, db: psycopg.Connection[DictRow]
 ) -> None:
-    first = post_challenge(real_checks_client, image=PHOTO)
-    second = post_challenge(
-        real_checks_client, {**METADATA, "participant": OTHER_PARTICIPANT}, image=PHOTO
-    )
+    first = submit(image=PHOTO)
+    second = submit({**METADATA, "participant": OTHER_PARTICIPANT}, image=PHOTO)
 
     assert first.status_code == 202
     assert second.status_code == 200
@@ -631,53 +693,47 @@ def test_another_participants_accepted_photo_is_a_duplicate(
         pytest.param(jpeg(scene(7).rotate(90, expand=True), orientation=6), id="exif-rotated"),
     ],
 )
-def test_altered_copy_of_accepted_photo_is_a_duplicate(
-    real_checks_client: TestClient, variant: bytes
-) -> None:
-    post_challenge(real_checks_client, image=PHOTO)
+def test_altered_copy_of_accepted_photo_is_a_duplicate(submit: Submit, variant: bytes) -> None:
+    submit(image=PHOTO)
 
-    response = post_challenge(real_checks_client, {**METADATA, "checkpoint": 2}, image=variant)
+    response = submit({**METADATA, "checkpoint": 2}, image=variant)
 
     assert codes(response) == ["duplicate_photo"]
 
 
-def test_different_photo_is_not_a_duplicate(real_checks_client: TestClient) -> None:
-    post_challenge(real_checks_client, image=PHOTO)
+def test_different_photo_is_not_a_duplicate(submit: Submit) -> None:
+    submit(image=PHOTO)
 
-    response = post_challenge(
-        real_checks_client, {**METADATA, "checkpoint": 2}, image=jpeg(scene(8))
-    )
+    response = submit({**METADATA, "checkpoint": 2}, image=jpeg(scene(8)))
 
     assert response.status_code == 202
 
 
 def test_photo_from_a_failed_attempt_can_be_resubmitted(
-    real_checks_client: TestClient, db: psycopg.Connection[DictRow]
+    submit: Submit, db: psycopg.Connection[DictRow]
 ) -> None:
-    failed = post_challenge(real_checks_client, {**METADATA, "location": FAR_AWAY}, image=PHOTO)
-    retry = post_challenge(real_checks_client, image=PHOTO)
+    failed = submit({**METADATA, "location": FAR_AWAY}, image=PHOTO)
+    retry = submit(image=PHOTO)
 
     assert codes(failed) == ["out_of_range"]
     assert retry.status_code == 202
     assert [row["attempt"] for row in stored_rows(db)] == [1, 2]
 
 
-def test_photos_are_never_compared_across_sessions(real_checks_client: TestClient) -> None:
-    post_challenge(real_checks_client, image=PHOTO)
+def test_photos_are_never_compared_across_sessions(submit: Submit) -> None:
+    submit(image=PHOTO)
 
-    response = post_challenge(
-        real_checks_client, {**METADATA, "session": SECOND_SESSION}, image=PHOTO
+    response = submit(
+        {**METADATA, "session": SECOND_SESSION, "participant": SECOND_PARTICIPANT}, image=PHOTO
     )
 
     assert response.status_code == 202
 
 
-def test_duplicate_response_reveals_no_match(real_checks_client: TestClient) -> None:
-    post_challenge(real_checks_client, image=PHOTO)
+def test_duplicate_response_reveals_no_match(submit: Submit) -> None:
+    submit(image=PHOTO)
 
-    response = post_challenge(
-        real_checks_client, {**METADATA, "participant": OTHER_PARTICIPANT}, image=PHOTO
-    )
+    response = submit({**METADATA, "participant": OTHER_PARTICIPANT}, image=PHOTO)
 
     [rejection] = checkpoint_verdict(response)["rejections"]
     assert set(rejection) == {"code", "message"}
@@ -693,9 +749,9 @@ def test_duplicate_response_reveals_no_match(real_checks_client: TestClient) -> 
     ],
 )
 def test_undecodable_jpeg_is_422_and_stores_nothing(
-    real_checks_client: TestClient, image_dir: Path, db: psycopg.Connection[DictRow], image: bytes
+    submit: Submit, image_dir: Path, db: psycopg.Connection[DictRow], image: bytes
 ) -> None:
-    response = post_challenge(real_checks_client, image=image)
+    response = submit(image=image)
 
     assert response.status_code == 422
     assert response.json() == {"detail": "challenge-image could not be decoded"}
@@ -724,7 +780,7 @@ def test_concurrent_uploads_of_one_photo_accept_exactly_one(
         metadata = ChallengeMetadata.model_validate({**METADATA, "participant": participant})
         ctx = SubmissionContext(metadata, NOW, session, checkpoint, PHOTO, perceptual_hash(PHOTO))
         barrier.wait()
-        submission, _, _ = judge_and_record(ctx, checks, images, store)
+        submission, _, _ = judge_and_record(ctx, [], [], checks, images, store)
         return submission.verdict
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -737,6 +793,7 @@ def test_concurrent_uploads_of_one_photo_accept_exactly_one(
 
 REGISTRY_ORDER = [
     "session_running",
+    "checked_in",
     "window_open",
     "capture_fresh",
     "capture_time_plausible",
@@ -753,9 +810,9 @@ def outcomes(response: Response) -> dict[str, str]:
 
 
 def test_without_a_challenge_visual_checks_skip_and_verdict_is_pending(
-    real_checks_client: TestClient,
+    submit: Submit,
 ) -> None:
-    response = post_challenge(real_checks_client)  # the test checkpoints have no challenge
+    response = submit()  # the test checkpoints have no challenge
 
     verdict = checkpoint_verdict(response)
     assert response.status_code == 202
@@ -809,7 +866,7 @@ def test_without_a_challenge_visual_checks_skip_and_verdict_is_pending(
     ],
 )
 def test_each_failure_keeps_its_rejection_and_shows_in_checks(
-    real_checks_client: TestClient,
+    submit: Submit,
     clock_now: list[datetime],
     changes: dict[str, Any],
     now: datetime,
@@ -819,7 +876,7 @@ def test_each_failure_keeps_its_rejection_and_shows_in_checks(
 ) -> None:
     clock_now[0] = now
 
-    response = post_challenge(real_checks_client, {**METADATA, **changes})
+    response = submit({**METADATA, **changes})
 
     verdict = checkpoint_verdict(response)
     assert response.status_code == 200
@@ -833,12 +890,10 @@ def test_each_failure_keeps_its_rejection_and_shows_in_checks(
     assert failed["reason"] == message
 
 
-def test_duplicate_failure_shows_in_checks(real_checks_client: TestClient) -> None:
-    post_challenge(real_checks_client, image=PHOTO)
+def test_duplicate_failure_shows_in_checks(submit: Submit) -> None:
+    submit(image=PHOTO)
 
-    response = post_challenge(
-        real_checks_client, {**METADATA, "participant": OTHER_PARTICIPANT}, image=PHOTO
-    )
+    response = submit({**METADATA, "participant": OTHER_PARTICIPANT}, image=PHOTO)
 
     assert codes(response) == ["duplicate_photo"]
     assert outcomes(response)["photo_unique"] == "failed"
@@ -851,11 +906,13 @@ def test_checks_complete_and_ordered_when_several_fail(
     clock_now[0] = datetime(2026, 10, 3, 12, 30, tzinfo=UTC)  # after the stop
     metadata = {**METADATA, "location": FAR_AWAY}  # capture-time 09:29Z: stale as well
 
+    # Arrive is refused once the session has stopped: the photo has no check-in either.
     response = post_challenge(real_checks_client, metadata)
 
     verdict = checkpoint_verdict(response)
     assert [c["check"] for c in verdict["checks"]] == REGISTRY_ORDER
     assert [c["outcome"] for c in verdict["checks"]] == [
+        "failed",
         "failed",
         "failed",
         "failed",
@@ -867,6 +924,7 @@ def test_checks_complete_and_ordered_when_several_fail(
     ]
     assert [r["code"] for r in verdict["rejections"]] == [
         "session_stopped",
+        "not_checked_in",
         "outside_window",
         "stale_capture",
         "out_of_range",

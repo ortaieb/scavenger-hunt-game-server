@@ -253,6 +253,7 @@ def test_other_failed_photos_are_not_recorded(
 ) -> None:
     fox = join(client)
     moderate(client, "start")
+    arrive(client, fox)
 
     far = photograph(client, fox, DURING, location={"lat": LAT + 0.1, "long": LONG})
 
@@ -265,10 +266,9 @@ def test_a_photo_from_a_participant_that_never_joined_is_not_recorded(
 ) -> None:
     response = photograph(client, str(uuid4()), DURING)
 
-    assert (
-        response.json()["verdict"]["checkpoint"]["rejections"][0]["code"] == "session_not_started"
-    )
+    assert (response.status_code, response.json()) == (404, {"detail": "unknown participant"})
     assert blocked_rows(db) == []
+    assert db.execute("SELECT * FROM submissions").fetchall() == []
 
 
 def test_only_the_newest_blocked_attempts_are_kept(

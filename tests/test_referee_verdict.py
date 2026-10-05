@@ -4,7 +4,7 @@ import json
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
@@ -36,9 +36,10 @@ SCENE_REASON = "SENTINEL-SCENE-REASON granite fountain ring behind the player"
 POSE_REASON = "SENTINEL-POSE-REASON facing left in profile"
 CHALLENGE = {"scene": "A granite fountain in open lawn", "pose": "Side profile"}
 
+PARTICIPANT = "7c860ccc-9adf-4e22-b54f-3ff158f5d600"
 METADATA: dict[str, Any] = {
     "session": SESSION,
-    "participant": "7c860ccc-9adf-4e22-b54f-3ff158f5d600",
+    "participant": PARTICIPANT,
     "checkpoint": 1,  # has a challenge; checkpoint 2 doesn't
     "location": {"lat": 51.5001, "long": -0.1},
     "capture-time": "2026-10-03T10:29:30Z",
@@ -116,6 +117,7 @@ def client(tmp_path: Path, referee: FakeReferee, store: SubmissionStore) -> Iter
                         {**checkpoint, "sequence": 1, "proximity": 40, "challenge": CHALLENGE},
                         {**checkpoint, "sequence": 2, "proximity": 40},
                     ],
+                    "teams": [{"name": "Red Foxes", "join-code": "FOX-7Q2K", "order": [1, 2]}],
                 }
             ]
         )
@@ -128,6 +130,29 @@ def client(tmp_path: Path, referee: FakeReferee, store: SubmissionStore) -> Iter
     app.dependency_overrides[get_referee] = lambda: referee
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture(autouse=True)
+def arrived(isolated_storage: None, db: Db, store: SubmissionStore) -> None:
+    """The team has joined and checked in at checkpoint 1, so photos there are judged."""
+    db.execute(
+        "INSERT INTO participants (id, session, team, joined_at, consented_at)"
+        " VALUES (%s, %s, 'Red Foxes', %s, %s)",
+        (PARTICIPANT, SESSION, NOW, NOW),
+    )
+    check_in(store, 1, CHALLENGE["pose"])
+
+
+def check_in(store: SubmissionStore, checkpoint: int, pose: str | None) -> None:
+    store.arrive(
+        UUID(SESSION),
+        UUID(PARTICIPANT),
+        checkpoint,
+        pose=pose,
+        now=NOW,
+        ttl=timedelta(minutes=10),
+        new_code=lambda: "1234",
+    )
 
 
 def submit(client: TestClient, **changes: Any) -> Response:
@@ -163,7 +188,7 @@ def test_everything_passing_awards_pass(client: TestClient, referee: FakeReferee
     assert response.status_code == 200
     assert verdict["verdict"] == "pass"
     assert verdict["rejections"] == []
-    assert len(verdict["checks"]) == 8
+    assert len(verdict["checks"]) == 9
     assert set(outcomes(response).values()) == {"passed"}
     by_name = {c["check"]: c for c in verdict["checks"]}
     assert by_name["scene_matches"]["confidence"] == 0.95
@@ -261,6 +286,7 @@ def test_a_photo_after_the_stop_is_stored_failed_without_the_referee(
     client: TestClient, referee: FakeReferee, store: SubmissionStore, db: Db
 ) -> None:
     store.stop_run(UUID(SESSION), datetime(2026, 10, 3, 10, 15, tzinfo=UTC))
+    db.execute("DELETE FROM arrivals")  # arrive is refused once the session has stopped
 
     response = submit(client)
 
@@ -283,6 +309,7 @@ def test_a_photo_before_the_start_is_stored_failed_without_the_referee(
     client: TestClient, referee: FakeReferee, db: Db
 ) -> None:
     db.execute("TRUNCATE session_runs")  # the moderator hasn't started the session
+    db.execute("DELETE FROM arrivals")  # so arrive is refused
 
     response = submit(client)
 
@@ -312,7 +339,11 @@ def test_lock_probe_detects_a_held_transaction(store: SubmissionStore, db: Db) -
     assert write_lock_is_free(db) is True
 
 
-def test_no_challenge_skips_the_referee(client: TestClient, referee: FakeReferee) -> None:
+def test_no_challenge_skips_the_referee(
+    client: TestClient, referee: FakeReferee, store: SubmissionStore
+) -> None:
+    check_in(store, 2, None)
+
     response = submit(client, checkpoint=2)
 
     assert response.status_code == 202

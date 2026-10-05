@@ -200,3 +200,87 @@ def test_stores_share_the_pool(database: Database) -> None:
     SubmissionStore(database).record(SUBMISSION)
 
     assert SubmissionStore(database).record(SUBMISSION).attempt == 2
+
+
+# --- the latest arrival, and the photo that uses it ------------------------------------
+
+ISSUED = datetime(2026, 10, 3, 9, 20, tzinfo=UTC)
+
+
+def arrive(store: SubmissionStore, at: datetime = ISSUED, checkpoint: int = 1) -> int:
+    outcome = store.arrive(
+        SESSION,
+        PARTICIPANT,
+        checkpoint,
+        pose="Wave",
+        now=at,
+        ttl=timedelta(minutes=10),
+        new_code=lambda: "1234",
+    )
+    return outcome.arrival.id
+
+
+def test_latest_arrival_is_none_before_any_check_in(store: SubmissionStore) -> None:
+    assert store.latest_arrival(SESSION, PARTICIPANT, 1, ISSUED) is None
+
+
+def test_latest_arrival_is_the_newest_issued_by_then(store: SubmissionStore) -> None:
+    first = arrive(store)
+    second = arrive(store, ISSUED + timedelta(minutes=10))  # the first has expired
+
+    at_first = store.latest_arrival(SESSION, PARTICIPANT, 1, ISSUED + timedelta(minutes=5))
+    at_second = store.latest_arrival(SESSION, PARTICIPANT, 1, ISSUED + timedelta(minutes=10))
+
+    assert at_first is not None
+    assert (at_first.arrival.id, at_first.used) == (first, False)
+    assert at_second is not None
+    assert (at_second.arrival.id, at_second.used) == (second, False)
+    assert at_second.arrival.code == "1234"
+    assert at_second.arrival.pose == "Wave"
+
+
+def test_a_photo_recording_the_arrival_uses_it(
+    store: SubmissionStore, db: psycopg.Connection[DictRow]
+) -> None:
+    arrival_id = arrive(store)
+
+    store.record(replace(SUBMISSION, received_at=ISSUED, arrival_id=arrival_id))  # same instant
+
+    latest = store.latest_arrival(SESSION, PARTICIPANT, 1, ISSUED)
+    assert latest is not None
+    assert latest.used is True
+    [row] = rows(db)
+    assert row["arrival_id"] == arrival_id
+
+
+@pytest.mark.parametrize(
+    ("received_at", "checkpoint", "used"),
+    [
+        (ISSUED + timedelta(seconds=1), 1, True),  # sent there after the check-in
+        (ISSUED, 1, False),  # not after it, and it didn't record it
+        (ISSUED - timedelta(minutes=1), 1, False),
+        (ISSUED + timedelta(seconds=1), 2, False),  # another checkpoint
+    ],
+)
+def test_a_later_photo_at_the_checkpoint_uses_the_arrival(
+    store: SubmissionStore, received_at: datetime, checkpoint: int, used: bool
+) -> None:
+    arrive(store)
+
+    store.record(replace(SUBMISSION, received_at=received_at, checkpoint=checkpoint))
+
+    latest = store.latest_arrival(SESSION, PARTICIPANT, 1, ISSUED + timedelta(minutes=1))
+    assert latest is not None
+    assert latest.used is used
+
+
+def test_a_used_arrival_is_replaced_by_a_fresh_one(store: SubmissionStore) -> None:
+    first = arrive(store)
+    store.record(replace(SUBMISSION, received_at=ISSUED, arrival_id=first))
+
+    second = arrive(store)  # the same instant: the photo used the first arrival, not this one
+
+    latest = store.latest_arrival(SESSION, PARTICIPANT, 1, ISSUED)
+    assert second != first
+    assert latest is not None
+    assert (latest.arrival.id, latest.used) == (second, False)

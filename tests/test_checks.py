@@ -19,6 +19,7 @@ from game_server.checks import (
     run_checks,
 )
 from game_server.checks.base import AcceptedPhoto
+from game_server.checks.checked_in import CheckedInCheck
 from game_server.checks.duplicate_photo import DuplicatePhotoCheck
 from game_server.checks.geofence import GeofenceCheck
 from game_server.checks.session_running import SessionRunningCheck
@@ -153,8 +154,8 @@ def test_verdict_is_never_pass_without_rejections() -> None:
 def test_registered_checks() -> None:
     settings = Settings(max_capture_age_seconds=60, max_clock_skew_seconds=5, phash_max_distance=4)
 
-    session_running, *time_rules, geofence, duplicate, scene_check, pose_check = get_checks(
-        settings
+    session_running, checked_in, *time_rules, geofence, duplicate, scene_check, pose_check = (
+        get_checks(settings)
     )
 
     methods = [cast(MethodType, rule) for rule in time_rules]
@@ -167,6 +168,7 @@ def test_registered_checks() -> None:
         TimeWindowCheck(timedelta(seconds=60), timedelta(seconds=5))
     }
     assert session_running == SessionRunningCheck()
+    assert checked_in == CheckedInCheck()
     assert geofence == GeofenceCheck()
     assert duplicate == DuplicatePhotoCheck(max_distance=4)
     assert scene_check == SceneMatchesCheck(min_confidence=0.8)

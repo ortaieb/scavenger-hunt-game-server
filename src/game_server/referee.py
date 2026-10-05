@@ -4,6 +4,9 @@ The deterministic checks can only rule a submission out. The referee looks at th
 itself and answers, for each visual check, pass / fail / unsure with a confidence and a
 reason. `judge` never raises: every failure becomes a report with `status="error"`.
 
+The whole step, retries included, ends by a deadline, so a slow model can't keep a player
+waiting: past it, the report is an error and the verdict goes to a moderator.
+
 All Anthropic SDK use goes through `_create_structured_message`; tests mock that.
 """
 
@@ -11,13 +14,13 @@ import base64
 import hashlib
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from functools import cache, lru_cache
 from importlib.resources import files
 from io import BytesIO
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol, Self
 
 import anthropic
 from anthropic.types import ImageBlockParam, JSONOutputFormatParam, TextBlockParam
@@ -25,7 +28,14 @@ from fastapi import Depends
 from PIL import Image
 from pydantic import BaseModel, Field, ValidationError
 
-from game_server.config import Settings, get_settings
+from game_server.clock import Timer
+from game_server.config import (
+    DEFAULT_REFEREE_DEADLINE_SECONDS,
+    DEFAULT_REFEREE_MAX_RETRIES,
+    DEFAULT_REFEREE_TIMEOUT_SECONDS,
+    Settings,
+    get_settings,
+)
 from game_server.imaging import UndecodableImageError, open_upright
 from game_server.pricing import cost_usd
 from game_server.sessions import VisualChallenge
@@ -40,6 +50,13 @@ REFERENCE_LABEL = (
     "Reference photo {number} of {count}: the checkpoint, photographed by the organiser"
 )
 PLAYER_LABEL = "The player's photo"
+# No retry starts with less time than this left before the deadline: it couldn't answer.
+MIN_RETRY_SECONDS = 1.0
+# The pause before each retry doubles from the first, up to the longest.
+FIRST_BACKOFF_SECONDS = 0.5
+MAX_BACKOFF_SECONDS = 2.0
+
+Sleep = Callable[[float], None]
 
 
 class VisualCheckJudgement(BaseModel):
@@ -70,8 +87,29 @@ class RefereeJudgement(BaseModel):
 
 RefereeStatus = Literal["ok", "disabled", "error"]
 RefereeErrorCode = Literal[
-    "timeout", "api_error", "refusal", "max_tokens", "invalid_output", "invalid_image"
+    "deadline", "timeout", "api_error", "refusal", "max_tokens", "invalid_output", "invalid_image"
 ]
+
+
+@dataclass(frozen=True)
+class CallLimits:
+    """How long the referee may take: the whole step, each attempt, and how many retries."""
+
+    deadline_seconds: float = DEFAULT_REFEREE_DEADLINE_SECONDS
+    timeout_seconds: float = DEFAULT_REFEREE_TIMEOUT_SECONDS
+    max_retries: int = DEFAULT_REFEREE_MAX_RETRIES
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> Self:
+        """The configured limits, as production and the evals both use them."""
+        return cls(
+            settings.referee_deadline_seconds,
+            settings.referee_timeout_seconds,
+            settings.referee_max_retries,
+        )
+
+
+DEFAULT_LIMITS = CallLimits()
 
 
 @dataclass(frozen=True)
@@ -105,7 +143,7 @@ class RefereeCall:
 
     system_prompt: str = field(repr=False)
     user_text: str = field(repr=False)
-    # None when the photo couldn't be prepared, so nothing was sent.
+    # None when nothing was sent: the photo couldn't be prepared, or the deadline came first.
     image: SentImage | None = None
     # The checkpoint's reference photos sent before it, in order; () when none were sent.
     references: tuple[SentReference, ...] = ()
@@ -215,12 +253,15 @@ def _create_structured_message(
     model: str,
     system: str,
     content: list[ImageBlockParam | TextBlockParam],
+    timeout: float,
 ) -> ModelReply:
     """The one call into the Anthropic SDK: a Messages request constrained to our schema.
 
     Uses `messages.create` with the same `output_config.format` that `messages.parse`
     sends, so the stop reason can be checked before the output is validated (`parse`
     validates first, which would hide a refusal or truncation behind a parse error).
+    `timeout` bounds this one attempt: the client makes no retries of its own, since it
+    can't see the deadline, so `ClaudeReferee` retries instead.
     """
     message = client.messages.create(
         model=model,
@@ -228,6 +269,7 @@ def _create_structured_message(
         system=system,
         messages=[{"role": "user", "content": content}],
         output_config={"format": _output_format()},
+        timeout=timeout,
     )
     return ModelReply(
         stop_reason=message.stop_reason,
@@ -308,13 +350,46 @@ def build_content(
     return [*content, _text_block(PLAYER_LABEL), _image_block(prepared_jpeg), _text_block(text)]
 
 
-class ClaudeReferee:
-    """Judges with a Claude model, via structured outputs."""
+def _retryable(error: anthropic.APIError) -> bool:
+    """Connection errors (timeouts included), 429 and 5xx: another attempt may succeed."""
+    if isinstance(error, anthropic.APIConnectionError):
+        return True
+    return isinstance(error, anthropic.APIStatusError) and (
+        error.status_code == 429 or error.status_code >= 500
+    )
 
-    def __init__(self, client: anthropic.Anthropic, model: str, max_image_edge: int) -> None:
+
+def _error_code(error: anthropic.APIError) -> RefereeErrorCode:
+    # APITimeoutError is a subclass of APIConnectionError: it gets its own code.
+    return "timeout" if isinstance(error, anthropic.APITimeoutError) else "api_error"
+
+
+def _backoff_seconds(retry: int) -> float:
+    """The pause before retry number `retry` (from 0): short, since the deadline is near."""
+    return min(FIRST_BACKOFF_SECONDS * 2.0**retry, MAX_BACKOFF_SECONDS)
+
+
+class ClaudeReferee:
+    """Judges with a Claude model, via structured outputs, within `limits`.
+
+    `timer` and `sleep` measure and wait out the deadline; tests pass a fake clock.
+    """
+
+    def __init__(
+        self,
+        client: anthropic.Anthropic,
+        model: str,
+        max_image_edge: int,
+        limits: CallLimits = DEFAULT_LIMITS,
+        timer: Timer = time.monotonic,
+        sleep: Sleep = time.sleep,
+    ) -> None:
         self._client = client
         self.model = model
         self.max_image_edge = max_image_edge
+        self.limits = limits
+        self._timer = timer
+        self._sleep = sleep
 
     def judge(
         self,
@@ -326,7 +401,7 @@ class ClaudeReferee:
 
         `references` are sent as given, before the photo: the caller picks and prepares them.
         """
-        started = time.monotonic()
+        started = self._timer()
         report = self._judge(image, challenge, references, started)
         _log(report)
         return report
@@ -343,20 +418,52 @@ class ClaudeReferee:
             prepared = prepare_image(image, self.max_image_edge)
         except UndecodableImageError:  # nothing is sent, the references included
             return self._error("invalid_image", started, RefereeCall(system, text))
+        deadline = started + self.limits.deadline_seconds
+        if self._timer() >= deadline:  # preparing the photo took all the time: nothing is sent
+            return self._error("deadline", started, RefereeCall(system, text))
         sent = tuple(reference.sent() for reference in references)
         call = RefereeCall(system, text, prepared.sent(), sent)
-        try:
-            reply = _create_structured_message(
-                self._client,
-                model=self.model,
-                system=system,
-                content=build_content(prepared.jpeg, text, references),
-            )
-        except anthropic.APITimeoutError:  # a subclass of APIConnectionError: check it first
-            return self._error("timeout", started, call)
-        except anthropic.APIError:  # status errors and connection errors, after SDK retries
-            return self._error("api_error", started, call)
+        content = build_content(prepared.jpeg, text, references)
+        reply = self._ask(system, content, deadline)
+        if isinstance(reply, str):  # no reply: why not
+            return self._error(reply, started, call)
         return self._interpret(reply, started, call)
+
+    def _ask(
+        self, system: str, content: list[ImageBlockParam | TextBlockParam], deadline: float
+    ) -> ModelReply | RefereeErrorCode:
+        """The model's reply, retrying while there's time; or why there's no reply.
+
+        Each attempt waits at most the timeout, or the time left if that's less. A
+        retryable error is retried after a short pause, unless that would leave less than
+        `MIN_RETRY_SECONDS`. A reply is always used, even one that arrives late.
+        """
+        retry = 0
+        while True:
+            left = deadline - self._timer()
+            if left <= 0:
+                return "deadline"
+            try:
+                return _create_structured_message(
+                    self._client,
+                    model=self.model,
+                    system=system,
+                    content=content,
+                    timeout=min(self.limits.timeout_seconds, left),
+                )
+            except anthropic.APIError as error:
+                if not _retryable(error):
+                    return _error_code(error)
+                if self._timer() >= deadline:  # e.g. the attempt waited out the time left
+                    return "deadline"
+                if retry == self.limits.max_retries:
+                    return _error_code(error)
+                pause = _backoff_seconds(retry)
+                if deadline - self._timer() - pause < MIN_RETRY_SECONDS:
+                    return "deadline"
+                retry += 1
+                self._log_retry(retry, error, deadline)
+                self._sleep(pause)
 
     def _interpret(self, reply: ModelReply, started: float, call: RefereeCall) -> RefereeReport:
         def report(
@@ -372,7 +479,7 @@ class ClaudeReferee:
                 request_id=reply.request_id,
                 input_tokens=reply.input_tokens,
                 output_tokens=reply.output_tokens,
-                latency_ms=_elapsed_ms(started),
+                latency_ms=self._elapsed_ms(started),
                 cost_usd=_cost_usd(reply),
                 call=replace(call, stop_reason=reply.stop_reason, response_text=reply.text),
             )
@@ -393,13 +500,25 @@ class ClaudeReferee:
             status="error",
             error_code=code,
             model=self.model,
-            latency_ms=_elapsed_ms(started),
+            latency_ms=self._elapsed_ms(started),
             call=call,
         )
 
+    def _elapsed_ms(self, started: float) -> int:
+        return round((self._timer() - started) * 1000)
 
-def _elapsed_ms(started: float) -> int:
-    return round((time.monotonic() - started) * 1000)
+    def _log_retry(self, retry: int, error: anthropic.APIError, deadline: float) -> None:
+        """One line per retry: what failed, and how much time is left. Never the request."""
+        status = error.status_code if isinstance(error, anthropic.APIStatusError) else "-"
+        logger.info(
+            "referee model=%s retry=%d/%d after error=%s status=%s left_ms=%d",
+            self.model,
+            retry,
+            self.limits.max_retries,
+            _error_code(error),
+            status,
+            round((deadline - self._timer()) * 1000),
+        )
 
 
 def _cost_usd(reply: ModelReply) -> Decimal | None:
@@ -431,14 +550,15 @@ def _log(report: RefereeReport) -> None:
 
 
 @lru_cache
-def build_referee(
-    api_key: str | None, model: str, timeout_seconds: float, max_retries: int, max_edge: int
-) -> Referee:
-    """The process-wide referee for this configuration. No key: `DisabledReferee`."""
+def build_referee(api_key: str | None, model: str, max_edge: int, limits: CallLimits) -> Referee:
+    """The process-wide referee for this configuration. No key: `DisabledReferee`.
+
+    The client makes no retries of its own: the referee retries, within its deadline.
+    """
     if not api_key:
         return DisabledReferee()
-    client = anthropic.Anthropic(api_key=api_key, timeout=timeout_seconds, max_retries=max_retries)
-    return ClaudeReferee(client, model, max_edge)
+    client = anthropic.Anthropic(api_key=api_key, timeout=limits.timeout_seconds, max_retries=0)
+    return ClaudeReferee(client, model, max_edge, limits)
 
 
 def get_referee(settings: Annotated[Settings, Depends(get_settings)]) -> Referee:
@@ -447,7 +567,6 @@ def get_referee(settings: Annotated[Settings, Depends(get_settings)]) -> Referee
     return build_referee(
         key.get_secret_value() if key else None,
         settings.referee_model,
-        settings.referee_timeout_seconds,
-        settings.referee_max_retries,
         settings.referee_max_image_edge,
+        CallLimits.from_settings(settings),
     )

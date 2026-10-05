@@ -11,6 +11,11 @@ LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
 # libpq's sslmode: https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-PROTECTION
 SslMode = Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
 DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+# The referee's time limits, shared with `referee.CallLimits`. docs/api.md (Referee) has the
+# latency figures behind them.
+DEFAULT_REFEREE_DEADLINE_SECONDS = 8.0
+DEFAULT_REFEREE_TIMEOUT_SECONDS = 8.0
+DEFAULT_REFEREE_MAX_RETRIES = 2
 
 
 class Settings(BaseSettings):
@@ -71,8 +76,11 @@ class Settings(BaseSettings):
     # Unset: the referee is disabled and never calls the API.
     anthropic_api_key: SecretStr | None = None
     referee_model: str = "claude-haiku-4-5"
-    referee_timeout_seconds: float = Field(default=20, gt=0)
-    referee_max_retries: int = Field(default=2, ge=0)
+    # The whole referee step, retries included, ends by the deadline; each attempt waits at
+    # most the timeout, or the time left if that's less.
+    referee_deadline_seconds: float = Field(default=DEFAULT_REFEREE_DEADLINE_SECONDS, gt=0)
+    referee_timeout_seconds: float = Field(default=DEFAULT_REFEREE_TIMEOUT_SECONDS, gt=0)
+    referee_max_retries: int = Field(default=DEFAULT_REFEREE_MAX_RETRIES, ge=0)
     referee_max_image_edge: int = Field(default=1568, gt=0)
     # A checkpoint's reference photos sent with each photo, in the sessions file's order
     # (0: none), and their long edge: they only need to show the place.

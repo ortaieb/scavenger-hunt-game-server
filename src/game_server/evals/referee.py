@@ -28,6 +28,7 @@ from game_server.evals.manifest import (
 )
 from game_server.evals.report import CaseRun, RunInfo, privacy_leaks, render
 from game_server.referee import (
+    CallLimits,
     PreparedReference,
     Referee,
     build_referee,
@@ -178,9 +179,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     referee = build_referee(
         key.get_secret_value(),
         args.model,
-        settings.referee_timeout_seconds,
-        settings.referee_max_retries,
         settings.referee_max_image_edge,
+        CallLimits.from_settings(settings),  # production's deadline, timeout and retries
     )
     info = RunInfo(
         requested_model=args.model,

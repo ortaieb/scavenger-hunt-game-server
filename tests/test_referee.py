@@ -2,9 +2,11 @@ import base64
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from decimal import Decimal
 from io import BytesIO
 from typing import Any
+from unittest.mock import MagicMock
 
 import anthropic
 import httpx2
@@ -16,9 +18,11 @@ from pytest_mock import MockerFixture
 from game_server import referee
 from game_server.config import Settings
 from game_server.referee import (
+    DEFAULT_LIMITS,
     MAX_TOKENS,
     PLAYER_LABEL,
     REFERENCE_LABEL,
+    CallLimits,
     ClaudeReferee,
     DisabledReferee,
     ModelReply,
@@ -56,6 +60,21 @@ REFERENCES = tuple(
 )
 
 
+class FakeClock:
+    """The referee's monotonic clock: time passes only when a test or a pause moves it."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.pauses: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.pauses.append(seconds)
+        self.now += seconds
+
+
 def reply(text: str = GOOD_OUTPUT, stop_reason: str = "end_turn", model: str = MODEL) -> ModelReply:
     return ModelReply(
         stop_reason=stop_reason,
@@ -68,10 +87,20 @@ def reply(text: str = GOOD_OUTPUT, stop_reason: str = "end_turn", model: str = M
 
 
 @pytest.fixture
-def claude() -> ClaudeReferee:
-    # A real client object is never used: every test mocks the wrapper around it.
+def clock() -> FakeClock:
+    return FakeClock()
+
+
+def limited(clock: FakeClock, limits: CallLimits = DEFAULT_LIMITS) -> ClaudeReferee:
+    """A referee on `clock`, within `limits`. Its client is never used: tests mock the wrapper."""
     client = anthropic.Anthropic(api_key="test-key-not-used")
-    return ClaudeReferee(client, MODEL, max_image_edge=1568)
+    return ClaudeReferee(client, MODEL, 1568, limits, timer=clock, sleep=clock.sleep)
+
+
+@pytest.fixture
+def claude(clock: FakeClock) -> ClaudeReferee:
+    """The referee with the default limits: an 8 s deadline, an 8 s timeout, 2 retries."""
+    return limited(clock)
 
 
 # --- successful judgement ----------------------------------------------------
@@ -331,6 +360,235 @@ def test_undecodable_image_sends_no_references_either(
     assert report.call.references == ()
 
 
+# --- the deadline (#66) ---------------------------------------------------------
+
+Attempt = tuple[float | None, ModelReply | Exception]
+Wrapper = Callable[..., ModelReply]
+
+
+def scripted(clock: FakeClock, *attempts: Attempt) -> Wrapper:
+    """Stands in for the SDK wrapper: each attempt takes its time on `clock`, then answers.
+
+    An attempt is (seconds it takes, the reply or the error raised); None seconds: it
+    waits out the whole timeout it was given.
+    """
+    queue = list(attempts)
+
+    def attempt(*args: object, timeout: float, **kwargs: object) -> ModelReply:
+        seconds, outcome = queue.pop(0)
+        clock.now += timeout if seconds is None else seconds
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    return attempt
+
+
+def never_answers(clock: FakeClock) -> Wrapper:
+    """The API never answers: every attempt waits out its timeout, then the SDK gives up."""
+
+    def attempt(*args: object, timeout: float, **kwargs: object) -> ModelReply:
+        clock.now += timeout
+        raise anthropic.APITimeoutError(request=REQUEST)
+
+    return attempt
+
+
+def status_error(status: int) -> anthropic.APIStatusError:
+    return anthropic.APIStatusError(
+        f"status {status}", response=httpx2.Response(status, request=REQUEST), body=None
+    )
+
+
+def timeouts(wrapper: MagicMock) -> list[float]:
+    """The timeout each attempt was given, in order."""
+    return [call.kwargs["timeout"] for call in wrapper.call_args_list]
+
+
+@pytest.mark.parametrize("max_retries", [0, 2])
+def test_a_call_that_never_answers_ends_at_the_deadline(
+    clock: FakeClock, mocker: MockerFixture, max_retries: int
+) -> None:
+    wrapper = mocker.patch(WRAPPER, side_effect=never_answers(clock))
+
+    report = limited(clock, CallLimits(max_retries=max_retries)).judge(PHOTO, CHALLENGE)
+
+    assert (report.status, report.error_code, report.judgement) == ("error", "deadline", None)
+    assert report.latency_ms == 8000
+    assert timeouts(wrapper) == [8.0]  # the first attempt had all the time there was
+    assert report.model == MODEL
+    assert report.call is not None
+    assert report.call.image is not None  # it was sent
+    assert (report.call.stop_reason, report.call.response_text) == (None, None)
+
+
+def test_each_attempt_waits_at_most_the_timeout_or_the_time_left(
+    clock: FakeClock, mocker: MockerFixture
+) -> None:
+    wrapper = mocker.patch(WRAPPER, side_effect=never_answers(clock))
+    limits = CallLimits(deadline_seconds=6, timeout_seconds=3, max_retries=2)
+
+    report = limited(clock, limits).judge(PHOTO, CHALLENGE)
+
+    # 0-3 s, a 0.5 s pause, then 3.5-6 s: the second attempt only gets the 2.5 s left.
+    assert timeouts(wrapper) == [3.0, 2.5]
+    assert clock.pauses == [0.5]
+    assert (report.error_code, report.latency_ms) == ("deadline", 6000)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(anthropic.APIConnectionError(request=REQUEST), id="connection"),
+        pytest.param(anthropic.APITimeoutError(request=REQUEST), id="timeout"),
+        pytest.param(status_error(429), id="429"),
+        pytest.param(status_error(500), id="500"),
+        pytest.param(status_error(503), id="503"),
+        pytest.param(status_error(529), id="529-overloaded"),
+    ],
+)
+def test_a_retryable_error_early_on_is_retried(
+    claude: ClaudeReferee, clock: FakeClock, mocker: MockerFixture, error: Exception
+) -> None:
+    wrapper = mocker.patch(WRAPPER, side_effect=scripted(clock, (0.25, error), (2.0, reply())))
+
+    report = claude.judge(PHOTO, CHALLENGE)
+
+    assert (report.status, report.error_code) == ("ok", None)
+    assert clock.pauses == [0.5]
+    assert timeouts(wrapper) == [8.0, 7.25]  # the retry gets the time left
+    assert report.latency_ms == 2750
+
+
+def test_near_the_deadline_no_retry_starts(
+    claude: ClaudeReferee, clock: FakeClock, mocker: MockerFixture
+) -> None:
+    # Failing at 6.75 s, a retry would start at 7.25 s: with 0.75 s left, under a second.
+    wrapper = mocker.patch(WRAPPER, side_effect=scripted(clock, (6.75, status_error(500))))
+
+    report = claude.judge(PHOTO, CHALLENGE)
+
+    assert (report.status, report.error_code) == ("error", "deadline")
+    assert wrapper.call_count == 1
+    assert clock.pauses == []
+    assert report.latency_ms == 6750
+
+
+def test_a_retry_with_a_second_left_still_starts(
+    claude: ClaudeReferee, clock: FakeClock, mocker: MockerFixture
+) -> None:
+    # Failing at 6.5 s, the retry starts at 7 s with exactly a second left.
+    wrapper = mocker.patch(
+        WRAPPER, side_effect=scripted(clock, (6.5, status_error(500)), (0.5, reply()))
+    )
+
+    report = claude.judge(PHOTO, CHALLENGE)
+
+    assert report.status == "ok"
+    assert timeouts(wrapper) == [8.0, 1.0]
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 408, 409, 413, 422])
+def test_other_client_errors_are_not_retried(
+    claude: ClaudeReferee, clock: FakeClock, mocker: MockerFixture, status: int
+) -> None:
+    wrapper = mocker.patch(WRAPPER, side_effect=status_error(status))
+
+    report = claude.judge(PHOTO, CHALLENGE)
+
+    assert (report.status, report.error_code) == ("error", "api_error")
+    assert wrapper.call_count == 1
+    assert clock.pauses == []
+
+
+def test_retries_stop_at_max_retries_with_the_last_errors_code(
+    claude: ClaudeReferee, clock: FakeClock, mocker: MockerFixture
+) -> None:
+    wrapper = mocker.patch(WRAPPER, side_effect=status_error(529))
+
+    report = claude.judge(PHOTO, CHALLENGE)
+
+    assert (report.status, report.error_code) == ("error", "api_error")
+    assert wrapper.call_count == 3  # the attempt and its 2 retries
+    assert clock.pauses == [0.5, 1.0]
+
+
+def test_zero_retries_makes_a_single_attempt(clock: FakeClock, mocker: MockerFixture) -> None:
+    wrapper = mocker.patch(WRAPPER, side_effect=status_error(500))
+
+    report = limited(clock, CallLimits(max_retries=0)).judge(PHOTO, CHALLENGE)
+
+    assert (report.error_code, wrapper.call_count, clock.pauses) == ("api_error", 1, [])
+
+
+def test_the_pause_before_a_retry_doubles_up_to_two_seconds(
+    clock: FakeClock, mocker: MockerFixture
+) -> None:
+    mocker.patch(WRAPPER, side_effect=status_error(500))
+    limits = CallLimits(deadline_seconds=60, timeout_seconds=8, max_retries=5)
+
+    limited(clock, limits).judge(PHOTO, CHALLENGE)
+
+    assert clock.pauses == [0.5, 1.0, 2.0, 2.0, 2.0]
+
+
+def test_a_reply_that_arrives_late_is_still_used(
+    claude: ClaudeReferee, clock: FakeClock, mocker: MockerFixture
+) -> None:
+    # The time is spent either way: a judgement beats a deadline error.
+    mocker.patch(WRAPPER, side_effect=scripted(clock, (8.25, reply())))
+
+    report = claude.judge(PHOTO, CHALLENGE)
+
+    assert (report.status, report.latency_ms) == ("ok", 8250)
+
+
+def test_no_time_left_after_preparing_the_photo_sends_nothing(
+    claude: ClaudeReferee, clock: FakeClock, mocker: MockerFixture
+) -> None:
+    def slow(image: bytes, max_edge: int) -> referee.PreparedImage:
+        clock.now += 8
+        return prepare_image(image, max_edge)
+
+    mocker.patch("game_server.referee.prepare_image", side_effect=slow)
+    wrapper = mocker.patch(WRAPPER)
+
+    report = claude.judge(PHOTO, CHALLENGE, REFERENCES)
+
+    wrapper.assert_not_called()
+    assert (report.status, report.error_code, report.latency_ms) == ("error", "deadline", 8000)
+    assert report.call is not None
+    assert (report.call.image, report.call.references) == (None, ())  # nothing was sent
+
+
+def test_each_retry_logs_what_failed_and_the_time_left(
+    claude: ClaudeReferee,
+    clock: FakeClock,
+    mocker: MockerFixture,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mocker.patch(WRAPPER, side_effect=scripted(clock, (0.25, status_error(529)), (1.0, reply())))
+    caplog.set_level(logging.INFO, logger="game_server.referee")
+
+    claude.judge(PHOTO, CHALLENGE)
+
+    retry, done = caplog.messages
+    assert retry == f"referee model={MODEL} retry=1/2 after error=api_error status=529 left_ms=7750"
+    assert done.startswith(f"referee model={MODEL} status=ok ")
+
+
+def test_a_deadline_error_log_line_names_the_code(
+    claude: ClaudeReferee, clock: FakeClock, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    mocker.patch(WRAPPER, side_effect=never_answers(clock))
+    caplog.set_level(logging.INFO, logger="game_server.referee")
+
+    claude.judge(PHOTO, CHALLENGE)
+
+    assert "status=error references=0 latency_ms=8000 " in caplog.text
+    assert "error=deadline" in caplog.text
+
+
 # --- disabled ------------------------------------------------------------------
 
 
@@ -358,13 +616,14 @@ def test_disabled_referee_ignores_the_references() -> None:
 
 
 def test_empty_key_counts_as_no_key() -> None:
-    assert isinstance(build_referee("", MODEL, 20, 2, 1568), DisabledReferee)
+    assert isinstance(build_referee("", MODEL, 1568, CallLimits()), DisabledReferee)
 
 
 def test_key_gives_configured_claude_referee() -> None:
     settings = Settings(
         anthropic_api_key="sk-test",
         referee_model="claude-sonnet-5",
+        referee_deadline_seconds=9.5,
         referee_timeout_seconds=7.5,
         referee_max_retries=4,
         referee_max_image_edge=800,
@@ -374,9 +633,22 @@ def test_key_gives_configured_claude_referee() -> None:
 
     assert isinstance(chosen, ClaudeReferee)
     assert (chosen.model, chosen.max_image_edge) == ("claude-sonnet-5", 800)
+    assert chosen.limits == CallLimits(deadline_seconds=9.5, timeout_seconds=7.5, max_retries=4)
     assert chosen._client.timeout == 7.5
-    assert chosen._client.max_retries == 4
     assert chosen._client.api_key == "sk-test"
+
+
+def test_the_client_never_retries_on_its_own() -> None:
+    # The SDK's retries can't see the deadline: the referee makes them instead.
+    chosen = get_referee(Settings(anthropic_api_key="sk-test", referee_max_retries=4))
+
+    assert isinstance(chosen, ClaudeReferee)
+    assert chosen._client.max_retries == 0
+
+
+def test_default_limits_are_the_settings_defaults() -> None:
+    assert CallLimits() == CallLimits.from_settings(Settings())
+    assert CallLimits() == CallLimits(deadline_seconds=8, timeout_seconds=8, max_retries=2)
 
 
 def test_referee_is_built_once_per_configuration() -> None:
@@ -603,10 +875,11 @@ def test_wrapper_sends_structured_output_request_and_maps_reply() -> None:
     client: Any = type("Client", (), {"messages": messages})()
 
     result = referee._create_structured_message(
-        client, model=MODEL, system="SYSTEM", content=[{"type": "text", "text": "hi"}]
+        client, model=MODEL, system="SYSTEM", content=[{"type": "text", "text": "hi"}], timeout=4.5
     )
 
     assert messages.kwargs["max_tokens"] == MAX_TOKENS
+    assert messages.kwargs["timeout"] == 4.5  # this attempt's, never the client's default
     assert messages.kwargs["system"] == "SYSTEM"
     assert messages.kwargs["messages"] == [
         {"role": "user", "content": [{"type": "text", "text": "hi"}]}

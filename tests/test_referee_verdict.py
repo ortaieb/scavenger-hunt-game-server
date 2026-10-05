@@ -22,6 +22,7 @@ from images import jpeg, scene
 from psycopg.rows import DictRow
 from pytest_mock import MockerFixture
 
+from game_server import challenge
 from game_server.app import create_app
 from game_server.clock import get_clock, get_timer
 from game_server.config import Settings, get_settings
@@ -108,12 +109,16 @@ def write_lock_is_free(db: Db) -> bool:
 
 @dataclass
 class FakeTimer:
-    """A monotonic clock that only moves when the fake referee takes its time."""
+    """A monotonic clock that only moves when the referee takes its time."""
 
     now: float = 100.0
 
     def __call__(self) -> float:
         return self.now
+
+    def sleep(self, seconds: float) -> None:
+        """The referee's pause before a retry."""
+        self.now += seconds
 
 
 @dataclass
@@ -123,6 +128,7 @@ class FakeReferee:
     timer: FakeTimer
     calls: list[VisualChallenge] = field(default_factory=list)
     lock_free_during_call: list[bool] = field(default_factory=list)
+    seconds: float = REFEREE_SECONDS  # how long each call takes
 
     def judge(
         self,
@@ -132,7 +138,7 @@ class FakeReferee:
     ) -> RefereeReport:
         self.calls.append(challenge)
         self.lock_free_during_call.append(write_lock_is_free(self.db))
-        self.timer.now += REFEREE_SECONDS
+        self.timer.now += self.seconds
         return self.report
 
 
@@ -521,6 +527,90 @@ def test_a_submission_without_the_referee_records_its_processing_time(
     assert traces(db) == []
 
 
+# --- the verdict within 10 seconds (#66) ---------------------------------------------
+
+
+def test_a_verdict_over_ten_seconds_logs_a_warning(
+    client: TestClient, referee: FakeReferee, db: Db, caplog: pytest.LogCaptureFixture
+) -> None:
+    referee.seconds = 10.25
+    caplog.set_level(logging.WARNING, logger="game_server")
+
+    submit(client)
+
+    [row] = rows(db)
+    assert row["processing_ms"] == 10250
+    assert caplog.messages == [
+        f"Slow verdict for {SESSION}[{PARTICIPANT}] checkpoint 1: processing_ms 10250 is over "
+        "the 10000 ms target (referee latency_ms 1234)"
+    ]
+
+
+def test_a_verdict_in_ten_seconds_logs_no_warning(
+    client: TestClient, referee: FakeReferee, db: Db, caplog: pytest.LogCaptureFixture
+) -> None:
+    referee.seconds = 10.0
+    caplog.set_level(logging.WARNING, logger="game_server")
+
+    submit(client)
+
+    [row] = rows(db)
+    assert row["processing_ms"] == 10000
+    assert caplog.messages == []
+
+
+def test_a_slow_verdict_without_the_referee_names_no_referee_time(
+    client: TestClient,
+    referee: FakeReferee,
+    timer: FakeTimer,
+    mocker: MockerFixture,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    real_hash = challenge.hash_image
+
+    def slow_hash(image: bytes) -> int:
+        timer.now += 11
+        return real_hash(image)
+
+    mocker.patch("game_server.challenge.hash_image", side_effect=slow_hash)
+    caplog.set_level(logging.WARNING, logger="game_server")
+
+    submit(client, location={"lat": 51.51, "long": -0.1})  # out of range: not consulted
+
+    assert referee.calls == []
+    [warning] = caplog.messages
+    assert warning.endswith(
+        "processing_ms 11000 is over the 10000 ms target (referee latency_ms -)"
+    )
+
+
+@pytest.mark.usefixtures("claude")
+def test_a_referee_that_never_answers_leaves_the_verdict_pending_at_the_deadline(
+    client: TestClient, mocker: MockerFixture, db: Db, timer: FakeTimer
+) -> None:
+    def never_answers(*args: object, timeout: float, **kwargs: object) -> ModelReply:
+        timer.now += timeout
+        raise anthropic.APITimeoutError(request=REQUEST)
+
+    wrapper = mocker.patch(WRAPPER, side_effect=never_answers)
+
+    response = submit(client)
+
+    assert response.status_code == 202
+    assert checkpoint_verdict(response)["verdict"] == "pending"
+    assert outcomes(response)["scene_matches"] == "uncertain"
+    assert outcomes(response)["pose_correct"] == "uncertain"
+    assert wrapper.call_count == 1
+    [row] = rows(db)
+    assert row["processing_ms"] == 8000  # the deadline, and nothing more
+    [trace] = traces(db)
+    assert (trace["status"], trace["error_code"], trace["latency_ms"]) == (
+        "error",
+        "deadline",
+        8000,
+    )
+
+
 def test_a_failure_after_the_referee_call_records_neither(
     client: TestClient, referee: FakeReferee, db: Db, mocker: MockerFixture
 ) -> None:
@@ -564,10 +654,15 @@ def model_reply(
 
 
 @pytest.fixture
-def claude(client: TestClient) -> ClaudeReferee:
-    """The real referee judges the photos sent to `client`; each test mocks its SDK call."""
+def claude(client: TestClient, timer: FakeTimer) -> ClaudeReferee:
+    """The real referee judges the photos sent to `client`; each test mocks its SDK call.
+
+    It runs on the request's fake clock, with the default limits: an 8 s deadline.
+    """
     client_ = anthropic.Anthropic(api_key="test-key-not-used")
-    real = ClaudeReferee(client_, "claude-haiku-4-5", max_image_edge=MAX_EDGE)
+    real = ClaudeReferee(
+        client_, "claude-haiku-4-5", max_image_edge=MAX_EDGE, timer=timer, sleep=timer.sleep
+    )
     client.app.dependency_overrides[get_referee] = lambda: real  # type: ignore[attr-defined]  # FastAPI app
     return real
 

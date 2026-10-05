@@ -38,6 +38,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS",
         "GAME_SERVER_ANTHROPIC_API_KEY",
         "GAME_SERVER_REFEREE_MODEL",
+        "GAME_SERVER_REFEREE_DEADLINE_SECONDS",
         "GAME_SERVER_REFEREE_TIMEOUT_SECONDS",
         "GAME_SERVER_REFEREE_MAX_RETRIES",
         "GAME_SERVER_REFEREE_MAX_IMAGE_EDGE",
@@ -294,7 +295,8 @@ def test_referee_defaults() -> None:
 
     assert settings.anthropic_api_key is None
     assert settings.referee_model == "claude-haiku-4-5"
-    assert settings.referee_timeout_seconds == 20
+    assert settings.referee_deadline_seconds == 8
+    assert settings.referee_timeout_seconds == 8
     assert settings.referee_max_retries == 2
     assert settings.referee_max_image_edge == 1568
     assert settings.referee_max_references == 2
@@ -324,6 +326,9 @@ def test_api_key_is_read_but_never_shown(monkeypatch: pytest.MonkeyPatch) -> Non
 @pytest.mark.parametrize(
     ("name", "value"),
     [
+        ("GAME_SERVER_REFEREE_DEADLINE_SECONDS", "0"),
+        ("GAME_SERVER_REFEREE_DEADLINE_SECONDS", "-8"),
+        ("GAME_SERVER_REFEREE_DEADLINE_SECONDS", "soon"),
         ("GAME_SERVER_REFEREE_TIMEOUT_SECONDS", "0"),
         ("GAME_SERVER_REFEREE_MAX_RETRIES", "-1"),
         ("GAME_SERVER_REFEREE_MAX_IMAGE_EDGE", "0"),
@@ -339,6 +344,25 @@ def test_referee_limits_are_validated(
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+@pytest.mark.parametrize("value", ["0.5", "8", "30"])
+def test_referee_deadline_accepts_any_positive_number(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("GAME_SERVER_REFEREE_DEADLINE_SECONDS", value)
+
+    assert Settings().referee_deadline_seconds == float(value)
+
+
+def test_the_timeout_may_exceed_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Each attempt waits the smaller of the two, so neither bounds the other.
+    monkeypatch.setenv("GAME_SERVER_REFEREE_DEADLINE_SECONDS", "5")
+    monkeypatch.setenv("GAME_SERVER_REFEREE_TIMEOUT_SECONDS", "20")
+
+    settings = Settings()
+
+    assert (settings.referee_deadline_seconds, settings.referee_timeout_seconds) == (5, 20)
 
 
 def test_zero_retries_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -111,7 +111,7 @@ CREATE TABLE referee_traces (
     cache_creation_input_tokens INTEGER,
     -- At list price (game_server/pricing.py); NULL without a reply, or for an unknown model.
     cost_usd                    NUMERIC,
-    -- The model call, SDK retries included.
+    -- The referee step: preparing the photo, every attempt and the pauses between them.
     latency_ms                  INTEGER     NOT NULL
 );
 CREATE INDEX referee_traces_by_session ON referee_traces (session);

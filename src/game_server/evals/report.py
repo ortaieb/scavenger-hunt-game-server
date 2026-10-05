@@ -331,7 +331,7 @@ def _cost_and_latency(case_runs: Sequence[CaseRun]) -> str:
             f"(per photo: {input_tokens // calls} in / {output_tokens // calls} out)",
             f"- Reference photos sent: {references} ({references / calls:.1f} per photo)",
             f"- Estimated cost: {total}, from recorded tokens and list prices",
-            f"- Latency: p50 {p50:.0f} ms, p95 {p95:.0f} ms (includes SDK retries)"
+            f"- Latency: p50 {p50:.0f} ms, p95 {p95:.0f} ms (includes retries)"
             if p50 is not None and p95 is not None
             else "- Latency: n/a",
         ]

@@ -23,7 +23,7 @@ from game_server.database import Database, get_database
 from game_server.models import VerdictStatus
 from game_server.phash import from_hex, to_hex
 from game_server.referee import RefereeReport
-from game_server.referee_traces import record_trace
+from game_server.referee_traces import TracePage, read_traces, record_trace
 from game_server.scoring import SessionResults
 from game_server.session_runs import RunChange, SessionRun, session_phase
 
@@ -269,6 +269,15 @@ class SubmissionStore:
                 (session, limit),
             ).fetchall()
         return [BlockedAttempt(*row) for row in rows]
+
+    def traces(self, session: UUID, limit: int, before: int | None) -> TracePage:
+        """A page of the session's submissions with their referee traces, and its summary.
+
+        Read in one read-only snapshot, so the summary and the page agree.
+        """
+        with self._database.transaction() as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            return read_traces(conn, session, limit, before)
 
     def find_participant(self, session: UUID, participant: UUID) -> ParticipantRecord | None:
         """The participant's row, if it joined this session."""

@@ -230,8 +230,15 @@ MODERATOR = {"Authorization": f"Bearer {MODERATOR_CODE}"}
 START = ("POST", "/sessions/{session}/start")
 STOP = ("POST", "/sessions/{session}/stop")
 OVERVIEW = ("GET", "/sessions/{session}/overview")
+TRACES = ("GET", "/sessions/{session}/traces")
 # Routes only the moderator can call, which name checkpoints on purpose.
 NAMES_CHECKPOINTS = {OVERVIEW}
+# Routes only the moderator can call, whose 200 shows the scene and the model's reasons on
+# purpose (the referee's traces).
+SHOWS_JUDGING = {TRACES}
+# Routes that name the traces' `references` field (the reference photos the referee was sent),
+# which says nothing about any checkpoint's photos: the traces, and the schema documenting them.
+NAMES_REFERENCES_FIELD = {TRACES, ("GET", "/openapi.json")}
 
 
 def session_opening_responses(client: TestClient) -> dict[tuple[str, str], list[Response]]:
@@ -263,7 +270,18 @@ def session_closing_responses(client: TestClient) -> dict[tuple[str, str], list[
         overview(headers={"Authorization": f"Bearer {JOIN_CODE}"}),  # 401: not a moderator
         overview(UNKNOWN, headers=MODERATOR),  # 404
     ]
-    return {START: [start_late], STOP: [stop, stop_again], OVERVIEW: overviews}
+
+    def traces(session: str = SESSION, **kwargs: Any) -> Response:
+        return client.get(f"/sessions/{session}/traces", **kwargs)
+
+    traced = [
+        traces(headers=MODERATOR),  # 200, with the referee's calls
+        traces(),  # 401
+        traces(headers={"Authorization": f"Bearer {JOIN_CODE}"}),  # 401: not a moderator
+        traces(UNKNOWN, headers=MODERATOR),  # 404
+        traces(headers=MODERATOR, params={"limit": 0}),  # 422
+    ]
+    return {START: [start_late], STOP: [stop, stop_again], OVERVIEW: overviews, TRACES: traced}
 
 
 def app_routes(client: TestClient) -> set[tuple[str, str]]:
@@ -296,15 +314,19 @@ def test_no_route_ever_returns_the_scene(
     assert set(responses) == app_routes(client), "a route is missing from this test"
     for route, route_responses in responses.items():
         for response in route_responses:
-            assert SENTINEL not in response.text, f"{route} leaked the scene"
+            if not (route in SHOWS_JUDGING and response.status_code == 200):
+                assert SENTINEL not in response.text, f"{route} leaked the scene"
+                assert REASON not in response.text, f"{route} leaked the model's description"
             assert JOIN_CODE not in response.text, f"{route} leaked a join code"
             if route not in NAMES_CHECKPOINTS:
                 assert NAME not in response.text, f"{route} leaked a checkpoint name"
             assert LATER_CLUE not in response.text, f"{route} leaked a later clue"
             assert PHOTO_NAME not in response.text, f"{route} leaked a reference photo"
-            assert "reference" not in response.text.lower(), f"{route} mentions reference photos"
+            text = response.text.lower()
+            if route in NAMES_REFERENCES_FIELD:
+                text = text.replace('"references"', "")
+            assert "reference" not in text, f"{route} mentions reference photos"
             assert MODERATOR_CODE not in response.text, f"{route} leaked the moderator code"
-            assert REASON not in response.text, f"{route} leaked the model's description"
     for secret in (MODERATOR_CODE, JOIN_CODE):
         assert secret not in caplog.text.upper(), "a credential reached the logs"
     assert SENTINEL not in caplog.text, "the scene reached the logs"
@@ -330,6 +352,7 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
     assert statuses[("POST", "/sessions/{session}/start")] == [200, 201, 401, 404, 409]
     assert statuses[("POST", "/sessions/{session}/stop")] == [200, 201, 409]
     assert statuses[OVERVIEW] == [200, 401, 404]
+    assert statuses[TRACES] == [200, 401, 404, 422]
     assert statuses[("POST", "/sessions/{session}/participants/{participant}/arrive")] == [
         200,
         201,
@@ -435,3 +458,28 @@ def test_the_overview_reveals_no_coordinates_clues_or_scenes(client: TestClient)
         assert leak not in shown.text
     for secret in (JOIN_CODE, MODERATOR_CODE, testers["participant"]):
         assert secret not in shown.text
+
+
+def test_only_the_moderator_sees_the_judging(client: TestClient) -> None:
+    """The traces show the scene and the model's reasons, but no place, code or participant."""
+    client.post(f"/sessions/{SESSION}/start", headers=MODERATOR)
+    testers = client.post("/join", json={"code": JOIN_CODE, "consent": True}).json()
+    client.post(
+        f"/sessions/{SESSION}/participants/{testers['participant']}/arrive", json={"checkpoint": 1}
+    )
+    submit(client, metadata(participant=testers["participant"]))  # judged by the referee
+    url = f"/sessions/{SESSION}/traces"
+
+    shown = client.get(url, headers=MODERATOR)
+    refused = [client.get(url), client.get(url, headers={"Authorization": f"Bearer {JOIN_CODE}"})]
+
+    assert SENTINEL in shown.text  # the scene, in the call's user text
+    assert REASON in shown.text  # the model's reasons, in the judgement and the checks' detail
+    for leak in ("51.5", "51.6", "-0.1", "-0.2", "proximity", "Find it", LATER_CLUE, NAME):
+        assert leak not in shown.text
+    for secret in (JOIN_CODE, MODERATOR_CODE, PHOTO_NAME, testers["participant"]):
+        assert secret not in shown.text
+    for response in refused:
+        assert response.status_code == 401
+        assert SENTINEL not in response.text
+        assert REASON not in response.text

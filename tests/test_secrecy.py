@@ -24,7 +24,7 @@ from game_server.app import create_app
 from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
 from game_server.models import VerdictStatus
-from game_server.referee import ClaudeReferee, ModelReply, get_referee
+from game_server.referee import ClaudeReferee, ModelReply, get_referee, system_prompt
 from game_server.sessions import get_session_repository, parse_sessions
 from game_server.submissions import NewSubmission, SubmissionStore
 
@@ -323,6 +323,11 @@ def test_no_route_ever_returns_the_scene(
             assert LATER_CLUE not in response.text, f"{route} leaked a later clue"
             assert PHOTO_NAME not in response.text, f"{route} leaked a reference photo"
             text = response.text.lower()
+            if route in SHOWS_JUDGING and response.status_code == 200:
+                # The referee's prompt explains reference photos in general, not a checkpoint's.
+                body = response.json()
+                assert set(body.pop("prompts").values()) == {system_prompt()}
+                text = json.dumps(body).lower()
             if route in NAMES_REFERENCES_FIELD:
                 text = text.replace('"references"', "")
             assert "reference" not in text, f"{route} mentions reference photos"

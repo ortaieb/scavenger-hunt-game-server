@@ -1,4 +1,23 @@
 {
+  "places": {
+    "diana-fountain": {
+      "reference_photos": [
+        "reference/diana-fountain-north.jpg",
+        "reference/diana-fountain-south.jpg"
+      ]
+    },
+    "peter-pan-statue": {
+      "reference_photos": [
+        "reference/peter-pan-statue-front.jpg"
+      ]
+    },
+    "speakers-corner": {
+      "reference_photos": [
+        "reference/speakers-corner-railings.jpg",
+        "reference/speakers-corner-wall.jpg"
+      ]
+    }
+  },
   "cases": [
     {
       "id": "fountain-right-01",
@@ -66,6 +85,20 @@
       "notes": "Pointing at the railings"
     },
     {
+      "id": "corner-right-no-references-01",
+      "image": "photos/corner-right-01.jpg",
+      "place": "speakers-corner",
+      "category": "right-place-right-pose",
+      "scene": "Speakers' Corner: a wide paved area at the north-east corner of Hyde Park, near Marble Arch, with iron railings and a low stone wall.",
+      "pose": "Point at the landmark behind you with your right hand.",
+      "expected": {
+        "scene_matches": "pass",
+        "pose_correct": "pass"
+      },
+      "notes": "Same photo as corner-right-01, judged from the scene alone",
+      "reference_photos": []
+    },
+    {
       "id": "fountain-on-laptop-01",
       "image": "photos/fountain-on-laptop-01.jpg",
       "place": "diana-fountain",
@@ -90,6 +123,19 @@
         "pose_correct": "pass"
       },
       "notes": "A4 printout of the statue behind the player"
+    },
+    {
+      "id": "fountain-reference-on-phone-01",
+      "image": "photos/fountain-reference-on-phone-01.jpg",
+      "place": "diana-fountain",
+      "category": "screen-or-print",
+      "scene": "The Diana Memorial Fountain: a wide oval ring of pale granite with shallow water running through it, set in open lawn with trees behind.",
+      "pose": "Side profile, looking to your left, with the landmark behind you.",
+      "expected": {
+        "scene_matches": "fail",
+        "pose_correct": "pass"
+      },
+      "notes": "One of the reference photos shown on a phone held up behind the player"
     },
     {
       "id": "corner-nobody-01",

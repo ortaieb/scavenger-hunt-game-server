@@ -57,6 +57,24 @@
           "default": "",
           "title": "Notes",
           "type": "string"
+        },
+        "reference_photos": {
+          "anyOf": [
+            {
+              "items": {
+                "format": "path",
+                "type": "string"
+              },
+              "maxItems": 5,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Instead of its place's reference photos; [] sends none",
+          "title": "Reference Photos"
         }
       },
       "required": [
@@ -100,11 +118,38 @@
       ],
       "title": "ExpectedChecks",
       "type": "object"
+    },
+    "Place": {
+      "additionalProperties": false,
+      "description": "What the cases at one real place share.",
+      "properties": {
+        "reference_photos": {
+          "default": [],
+          "description": "The organiser's photos of the place, sent with each of its cases",
+          "items": {
+            "format": "path",
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Reference Photos",
+          "type": "array"
+        }
+      },
+      "title": "Place",
+      "type": "object"
     }
   },
   "additionalProperties": false,
   "description": "The whole eval set.",
   "properties": {
+    "places": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Place"
+      },
+      "description": "By the cases' `place`: what its cases share",
+      "title": "Places",
+      "type": "object"
+    },
     "cases": {
       "items": {
         "$ref": "#/$defs/EvalCase"

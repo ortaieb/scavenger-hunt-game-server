@@ -125,7 +125,8 @@ Processing:
    - **Outside the write lock:** the session, check-in, time and geofence checks.
    - **The [referee](#referee-visual-challenge)** is then asked to judge the photo, but only
      if none of those checks failed *and* there's a challenge to judge: the checkpoint's
-     `challenge.scene`, with the **pose issued at check-in**. If the sessions file changed
+     `challenge.scene` and its [reference photos](#reference-photos), with the **pose issued
+     at check-in**. If the sessions file changed
      between arriving and sending, the arrival's pose wins: it's what the player was shown.
      A model call takes seconds, so it happens before the write transaction opens; otherwise
      it would queue every submission in the game behind it. Skipping it for an already-failed
@@ -417,7 +418,7 @@ submission row is the whole record.
 | `submission_id`                | The submission it judged (one trace per submission); deleted with it |
 | `image_id`                     | The stored player photo: the submission's own file, never a second copy |
 | `image_sha256`, `image_width`, `image_height` | The exact JPEG the model saw: upright, resized and stripped of EXIF. Empty for `invalid_image`, when nothing was sent |
-| `reference_photos`             | `JSONB` list of the reference photos sent: `[]` until they are |
+| `reference_photos`             | `JSONB` list of the checkpoint's [reference photos](#reference-photos) sent, in order: `{position, sha256}`, its index in the checkpoint's `reference-photos` (from 0) and the SHA-256 of the prepared JPEG the model saw. **Never the path**, which can describe the place. `[]` when none were sent, including for `invalid_image` |
 | `prompt_sha256`                | SHA-256 of the system prompt ([`referee_prompt.md`](../src/game_server/referee_prompt.md)). Its text is stored once in `referee_prompts (sha256, text, first_used_at)`, so a verdict stays explainable after the prompt changes |
 | `user_text`                    | The text part of the user turn: the `<scene>` and the `<pose>` judged |
 | `model`, `request_id`          | The model that served the call (the configured one when no reply came back), and the API's request id |
@@ -776,7 +777,7 @@ The first page of two (`?limit=2`):
     "verdicts": { "pass": 8, "pending": 2, "failed": 4 },
     "referee-calls": 11,
     "referee-errors": 1,
-    "cost-usd": "0.0342",
+    "cost-usd": "0.0381",
     "processing-ms": { "p50": 2810, "p95": 6120, "max": 9400 }
   },
   "prompts": { "3f2a…": "You are the referee for a scavenger-hunt game…" },
@@ -801,11 +802,11 @@ The first page of two (`?limit=2`):
         "request-id": "req_…",
         "prompt-sha256": "3f2a…",
         "user-text": "<scene>…</scene> <pose>…</pose> …",
-        "references": [],
+        "references": [{ "position": 0, "sha256": "9c1e…" }, { "position": 1, "sha256": "e04b…" }],
         "judgement": { "scene_matches": { "reason": "…", "verdict": "pass", "confidence": 0.93 }, "pose_correct": { "reason": "…", "verdict": "unsure", "confidence": 0.62 } },
-        "input-tokens": 1712,
+        "input-tokens": 2890,
         "output-tokens": 143,
-        "cost-usd": "0.0024",
+        "cost-usd": "0.003605",
         "latency-ms": 2650
       }
     },
@@ -823,7 +824,7 @@ The first page of two (`?limit=2`):
 | `team` | The team's name |
 | `checks` | Every check that ran, as [stored](#submission-records): `reason` is what the player was told, `detail` is why (for the visual checks the model's reason, or why the referee wasn't asked) |
 | `image-id` | The stored photo's id. The photo itself isn't served |
-| `trace` | The [referee call](#referee-traces): what it was sent (`prompt-sha256`, `user-text`, `references`), what came back (`judgement`, `null` unless the output was valid), its `error-code` when `status` is `error`, and its tokens, cost and latency. `null` when the referee wasn't consulted or is disabled; the visual checks' `detail` says why |
+| `trace` | The [referee call](#referee-traces): what it was sent (`prompt-sha256`, `user-text`, and the `references` by position and hash), what came back (`judgement`, `null` unless the output was valid), its `error-code` when `status` is `error`, and its tokens, cost and latency. `null` when the referee wasn't consulted or is disabled; the visual checks' `detail` says why |
 | `next` | Pass it as `before` for the next page; `null` on the last page |
 
 Costs are decimal strings (`"0.0021"`), exactly the stored `NUMERIC`; a trace's `cost-usd` is
@@ -980,7 +981,7 @@ check it answers `pass`, `fail` or `unsure`, with a confidence (0–1) and a sho
 
 | Check           | Passes when |
 |-----------------|-------------|
-| `scene_matches` | The background is the checkpoint described in its `challenge.scene`, photographed for real (not a screen, print or another photo of it) |
+| `scene_matches` | The background is the checkpoint described in its `challenge.scene`, photographed for real (not a screen, print or another photo of it). When the checkpoint has [reference photos](#reference-photos), the photo must also have been taken at the same place as them |
 | `pose_correct`  | Exactly one clearly visible person is in the photo, striking the pose issued when the team checked in (the checkpoint's `challenge.pose` at the time) |
 
 The referee's report feeds the two [visual checks](#submission-checks), which decide whether
@@ -1003,6 +1004,9 @@ a submission can `pass`.
   scaled so its long edge is at most `GAME_SERVER_REFEREE_MAX_IMAGE_EDGE` px, and re-encoded
   as JPEG. This **strips all EXIF, including GPS**: the provider receives pixels only, and the
   smaller image costs fewer tokens.
+- **Reference photos.** A written scene fits many places, so the referee also compares the
+  photo with the moderator's own photos of the checkpoint. See
+  [Reference photos](#reference-photos) below.
 - **Failures never break a submission.** Every call yields a report with `status` `ok`,
   `disabled` or `error`. Errors are timeouts and API errors (after
   `GAME_SERVER_REFEREE_MAX_RETRIES` SDK retries), a refusal, hitting the token limit, output
@@ -1013,11 +1017,71 @@ a submission can `pass`.
   it makes no network call and reports `disabled`. Local development and CI never need a key.
   Other Anthropic credentials in the environment (`ANTHROPIC_API_KEY`, `ant auth` profiles)
   are deliberately ignored: only the game server's own setting enables the referee.
-- **Logging.** One line per call: model, status or error code, latency, tokens, `cost_usd`,
-  `request_id`, and each check's verdict and confidence. The `POST /challenge` line adds the
+- **Logging.** One line per call: model, status or error code, how many reference photos
+  were sent, latency, tokens, `cost_usd`, `request_id`, and each check's verdict and
+  confidence. The `POST /challenge` line adds the
   submission's `processing_ms`. **Never the image, the scene or the reasons**, which describe
   the photo. They're stored in the call's [trace](#referee-traces) and the visual checks'
   `detail`, and deleted with the session's other data when it closes.
+
+### Reference photos
+
+A checkpoint's [`reference-photos`](sessions-file.md#game-sessions-and-checkpoints) are the
+moderator's own photos of the place. The referee sends them with every photo judged at that
+checkpoint, so `scene_matches` is judged against the place itself, not only its description.
+
+- **The user turn.** Each reference photo comes after a text block naming it, then the
+  player's photo after its own, then the `<scene>` and `<pose>`, so the model can tell which
+  image is which:
+  1. "Reference photo 1 of 2: the checkpoint, photographed by the organiser", then the photo
+     (and so on for each one);
+  2. "The player's photo", then the photo;
+  3. `<scene>` and `<pose>`, ending "Judge scene_matches and pose_correct for the player's
+     photo."
+- **How many.** At most `GAME_SERVER_REFEREE_MAX_REFERENCES` (default `2`, range 0–5), the
+  first ones in the sessions file's order. `0` turns references off.
+- **The prompt's rules.** `scene_matches` passes when the player's photo was taken **at the
+  same place** as the reference photos and matches `<scene>`. A different angle, light,
+  weather, season, passers-by, or how near or far it was taken from don't matter. The
+  reference photos are for comparison, never the player's photo: a player's photo that shows
+  one (on a screen or a print) fails, like any screen or print. `pose_correct` is judged on
+  the player's photo only; nobody is expected in the reference photos.
+- **Preparation.** Like a player's photo (upright, EXIF stripped, re-encoded), but with a
+  smaller long edge, `GAME_SERVER_REFEREE_REFERENCE_MAX_EDGE` px (default `768`): they only
+  need to show the place. Each checkpoint's are prepared **once**, the first time a photo
+  there is judged, and kept in memory: later judgements don't read the files again.
+- **If preparing fails.** Startup already checks every reference photo, so this happens
+  during play only if a file changed on disk since. The referee then logs a warning naming
+  the photo by position, never by path (`referee: session <id> checkpoint 1
+  reference-photos[0]: doesn't decode; sending no reference photos`), and judges that
+  checkpoint without references until the server restarts.
+- **Without references** (none listed, or `GAME_SERVER_REFEREE_MAX_REFERENCES=0`), the user
+  turn is exactly what it was before reference photos: the photo, then the text ending "for
+  this photo."
+- **Traces.** The [trace](#referee-traces) records each reference sent by its position in the
+  checkpoint's list and the SHA-256 of its prepared JPEG, never its path.
+- **Privacy.** They're the organisers' photos, with nobody in shot, so the players' privacy
+  notice doesn't cover them and doesn't need to. Like the player's photo, they are **sent to
+  the model provider** (Anthropic) with each judgement.
+
+**Cost.** References add input tokens to every call: an image costs about
+(width × height) / 750 tokens, so a 768 × 576 reference adds about 590. The system prompt and a
+checkpoint's references are the same for every photo there, so **prompt caching** on that
+prefix (a `cache_control` breakpoint after the last reference) was evaluated, and **not
+adopted for now**:
+
+- On the default model, `claude-haiku-4-5`, a prompt shorter than 4096 tokens is never cached.
+  The system prompt and even five references at 768 px come to about 3,500, so a breakpoint
+  would do nothing.
+- On models with a lower minimum (1,024 tokens on Sonnet 5 and 4.6), the prefix qualifies.
+  But a cache write costs 1.25× the input price and only pays off when another photo at the
+  same checkpoint arrives within the cache's 5 minutes. Teams visit the checkpoints in
+  different orders precisely so they don't arrive together, so most calls would pay the
+  write premium without a read.
+
+Caching is adopted only if an eval run shows a saving. Until then the traces'
+`cache_read_input_tokens` and `cache_creation_input_tokens` stay empty, and the price table has
+no cache prices.
 
 ## Referee evals
 
@@ -1035,6 +1099,7 @@ verify their own checkpoint. Keep the set in a private directory **outside the r
 ~/scavenger-evals/
   cases.json      # the manifest
   photos/         # the test photos
+  reference/      # optional: your reference photos of each place
   reports/        # written by the harness
 ```
 
@@ -1045,6 +1110,11 @@ at no real photos):
 
 ```json
 {
+  "places": {
+    "diana-fountain": {
+      "reference_photos": ["reference/diana-fountain-north.jpg", "reference/diana-fountain-south.jpg"]
+    }
+  },
   "cases": [
     {
       "id": "fountain-on-laptop-01",
@@ -1061,6 +1131,17 @@ at no real photos):
 ```
 
 - `image` is relative to `cases.json`. Every image must exist before anything is sent.
+- **Reference photos** are optional, like a checkpoint's in the sessions file: your own photos
+  of the place, with nobody in shot, relative to `cases.json`, at most 5 per list.
+  - `places` gives them per `place`, shared by that place's cases. A place listed there must
+    have cases (a typo would otherwise silently send none).
+  - A case's own `reference_photos` replace its place's; `[]` sends none, e.g. to judge the
+    same photo from the scene alone.
+  - The harness sends them **as production does**: the first
+    `GAME_SERVER_REFEREE_MAX_REFERENCES`, prepared at
+    `GAME_SERVER_REFEREE_REFERENCE_MAX_EDGE`, labelled before the case's photo. They're all
+    read and prepared before the first call, so a missing or broken one stops the run (exit
+    `2`) without spending anything.
 - `scene` and `pose` are what a checkpoint's `challenge` would hold, with the same length
   limits.
 - `expected`, per check:
@@ -1091,8 +1172,14 @@ make eval-referee EVAL_DIR=~/scavenger-evals                                # de
 make eval-referee EVAL_DIR=~/scavenger-evals MODEL=claude-sonnet-5 RUNS=3   # compare, repeat
 ```
 
-It calls the **production referee**: same prompt, image preparation, timeout and retries,
-with only the model overridable. Each run writes `EVAL_DIR/reports/<timestamp>-<model>.md`
+It calls the **production referee**: same prompt, image preparation, reference photos,
+timeout and retries, with only the model overridable. To compare a run with references
+against one without, run it again with them off:
+
+```bash
+GAME_SERVER_REFEREE_MAX_REFERENCES=0 make eval-referee EVAL_DIR=~/scavenger-evals
+```
+ Each run writes `EVAL_DIR/reports/<timestamp>-<model>.md`
 (the report) and `.jsonl` (raw results, including the model's reasons, for tracing a
 surprising answer). The exit status is:
 
@@ -1100,7 +1187,8 @@ surprising answer). The exit status is:
 - `1` when a screen/print or injection case got a **false pass** (a failed run);
 - `2` for a setup problem (no key, invalid manifest, missing photos).
 
-About 30 cases on Haiku 4.5 cost a few cents per run.
+About 30 cases on Haiku 4.5 cost a few cents per run; two reference photos per case add
+roughly 1,200 input tokens to each call.
 
 ### 3. Read the report
 
@@ -1121,9 +1209,12 @@ About 30 cases on Haiku 4.5 cost a few cents per run.
   run.
 - **Stability** (with `RUNS>1`): (case, check) pairs whose outcome changed between runs. Treat
   differences smaller than this churn as noise.
-- **Cost and latency**: tokens as reported by the API, cost at list prices (the same
-  [`pricing.py`](../src/game_server/pricing.py) table the referee's traces use), p50/p95
-  latency, and a warning if the serving model differs from the one requested.
+- **Cost and latency**: tokens as reported by the API, in total and **per photo**, cost at
+  list prices (the same [`pricing.py`](../src/game_server/pricing.py) table the referee's
+  traces use), in total and **per photo**, the reference photos sent, p50/p95 latency, and a
+  warning if the serving model differs from the one requested. The header says whether
+  references were on (how many, and at what size), and the per-case table how many each case
+  sent, so runs with and without them can be compared side by side.
 
 To tune: run each candidate model with `RUNS=3`. Pick the cheapest model with no critical
 false pass and acceptably few false fails and deferrals. Then set
@@ -1140,7 +1231,8 @@ harness end to end, but it's too small to tune on.
 
 - **Decision: keep the defaults**, `claude-haiku-4-5` and
   `GAME_SERVER_REFEREE_MIN_CONFIDENCE=0.8`, until the full set has been run
-  ([#30](https://github.com/ortaieb/scavenger-hunt-game-server/issues/30)).
+  ([#30](https://github.com/ortaieb/scavenger-hunt-game-server/issues/30)). That run uses
+  [reference photos](#reference-photos), as production now does. The smoke test predates them.
 - **Cost and latency:** Haiku ≈ $0.003 per photo, p50 2.4 s. Sonnet ≈ $0.0086 per photo
   (~2.8×), p50 3.5 s, and ~43% more input tokens for the same image.
 - **Open finding: privacy.** The referee's reasons described people's apparent age, gender

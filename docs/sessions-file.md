@@ -56,7 +56,7 @@ The file is a JSON list of sessions. Abridged from [`sessions.example.json`](../
 | `checkpoints[].challenge`  | Optional visual challenge for the referee, see below. Without one, the referee's visual checks for the checkpoint are `skipped` |
 | `challenge.scene`          | 1–1 000 characters. **Server-only**: what should be visible in the photo's background, written for the referee, not the player |
 | `challenge.pose`           | 1–200 characters. **Player-facing**: the pose or action the player must show in the photo |
-| `checkpoints[].reference-photos` | Optional, default empty, at most 5. **Server-only**: the moderator's own photos of the place, see below |
+| `checkpoints[].reference-photos` | Optional, default empty, at most 5. **Server-only**: the moderator's own photos of the place, which the referee compares the photo with; see below |
 | `teams`                    | Optional, default empty. Without teams, nobody can join the session |
 | `teams[].name`             | 1–40 characters, unique within the session ignoring case. Shown to the team |
 | `teams[].join-code`        | 6–32 letters, digits or `-`; surrounding spaces are trimmed. Unique **across the whole file**, ignoring case, because joining finds the session by the code alone. A credential (see *Secrecy*) |
@@ -83,8 +83,9 @@ Writing a good challenge:
   that away. Otherwise write "with the landmark behind you".
 
 **Reference photos.** The moderator's own photos of each checkpoint, taken while setting up
-the hunt. Nothing uses them yet; they'll let the referee compare a player's background with
-real photos of the place, and the moderator see them beside a `pending` photo:
+the hunt. The [referee](api.md#reference-photos) compares each player's photo with them, so
+`scene_matches` is judged against the place itself, not only its written `scene` (a later
+change will also show them to the moderator beside a `pending` photo):
 
 ```json
 "reference-photos": ["reference/fountain-north.jpg", "reference/fountain-south.jpg"]
@@ -97,7 +98,13 @@ real photos of the place, and the moderator see them beside a `pending` photo:
   server refuses to start**, so a broken seed fails before the game, not during it.
 - Errors give the entry's **position, never its path**, because a file name can describe the
   place: `[0].checkpoints[1].reference-photos[0]: file not found`.
-- Only the resolved paths are kept in memory, not the images.
+- At startup only the resolved paths are kept, not the images. The referee prepares a
+  checkpoint's photos (upright, EXIF stripped, smaller) the first time a photo there is
+  judged, and keeps them in memory after that.
+- **Order matters.** The referee sends the first `GAME_SERVER_REFEREE_MAX_REFERENCES` (default
+  `2`) with each photo, in the order listed. `0` turns references off.
+- **They're sent to the model provider** (Anthropic) with every photo judged at the
+  checkpoint, like the player's photo.
 
 `sessions.example.json` leaves them out: it can't ship real photos, and a listed photo that's
 missing stops the server.
@@ -105,7 +112,11 @@ missing stops the server.
 Guidance for moderators:
 
 - **Take them yourself, with nobody in shot.** They're the organisers' photos, not players', so
-  the player-photo purge doesn't apply to them.
+  the player-photo purge doesn't apply to them, and the players' privacy notice doesn't need
+  to cover them.
+- **Show what a player's camera will see behind them**: the landmark from where a player
+  would stand, in daylight. Put the clearest ones first. Different angles help; the referee
+  doesn't expect the same angle, light or season.
 - **Keep them out of version control**, like `sessions.json`: they show the answer to each clue.
 
 **Teams.** Each team gets its own join code (the "hunt code") and visits the checkpoints in
@@ -190,9 +201,11 @@ header's value included). The every-route secrecy test checks that a sentinel mo
 appears in no response and no log line.
 
 **Reference photos** show what the place looks like, so they're secret like `challenge.scene`.
-No endpoint returns a reference photo, its path, or how many a checkpoint has, and startup
-errors name an entry by its position, never its path. The every-route secrecy test gives a
-reference photo a sentinel file name and checks no response mentions it.
+No endpoint returns a reference photo or its path, and no participant endpoint says how many a
+checkpoint has. Only the moderator's [traces](api.md#get-sessionssessiontraces) list the ones
+sent with each photo, by position and hash. Startup errors and the referee's warnings name an
+entry by its position, never its path. The every-route secrecy test gives a reference photo a
+sentinel file name and checks no response mentions it.
 
 FastAPI also serves interactive API docs at `/docs` (Swagger UI) and `/redoc`, and the OpenAPI
 schema at `/openapi.json`.

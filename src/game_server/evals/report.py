@@ -31,6 +31,8 @@ class CaseRun:
     case: EvalCase
     rep: int
     report: RefereeReport
+    # How many reference photos were sent with the photo.
+    references: int = 0
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,9 @@ class RunInfo:
     started_at: datetime
     prompt_digest: str
     max_image_edge: int
+    # GAME_SERVER_REFEREE_MAX_REFERENCES and GAME_SERVER_REFEREE_REFERENCE_MAX_EDGE.
+    max_references: int
+    reference_max_edge: int
 
 
 def observations(case_runs: Sequence[CaseRun]) -> list[Observation]:
@@ -101,6 +106,7 @@ def _header(case_runs: Sequence[CaseRun], info: RunInfo, failures: list[Observat
         f"- Cases: {len(cases)}, runs per case: {info.runs}, calls: {len(case_runs)}",
         f"- Threshold (`GAME_SERVER_REFEREE_MIN_CONFIDENCE`): {info.threshold:.2f}",
         f"- Prompt digest: `{info.prompt_digest}`, max image edge: {info.max_image_edge} px",
+        _references_line(case_runs, info),
         f"- Served by: {', '.join(served) or 'n/a'}",
     ]
     if mismatched:
@@ -118,6 +124,17 @@ def _header(case_runs: Sequence[CaseRun], info: RunInfo, failures: list[Observat
         verdict = "**OK**: no false pass on screen/print or injection cases."
     lines += ["", f"Result: {verdict}"]
     return "\n".join(lines)
+
+
+def _references_line(case_runs: Sequence[CaseRun], info: RunInfo) -> str:
+    if info.max_references == 0:
+        return "- Reference photos: off (`GAME_SERVER_REFEREE_MAX_REFERENCES=0`)"
+    cases = {run.case.id for run in case_runs}
+    with_references = {run.case.id for run in case_runs if run.references}
+    return (
+        f"- Reference photos: up to {info.max_references} per photo, long edge "
+        f"{info.reference_max_edge} px; sent with {len(with_references)} of {len(cases)} cases"
+    )
 
 
 def _errors(case_runs: Sequence[CaseRun]) -> str:
@@ -220,16 +237,22 @@ def _cost_and_latency(case_runs: Sequence[CaseRun]) -> str:
         if run.report.model
     ]
     known = [c for c in costs if c is not None]
-    total = f"${sum(known):.4f}" if known and len(known) == len(costs) else "n/a (unknown price)"
+    calls = max(len(case_runs), 1)
+    total = (
+        f"${sum(known):.4f} (${sum(known) / calls:.4f} per photo)"
+        if known and len(known) == len(costs)
+        else "n/a (unknown price)"
+    )
     latencies = [float(run.report.latency_ms) for run in case_runs if run.report.latency_ms]
     p50, p95 = percentile(latencies, 50), percentile(latencies, 95)
-    calls = max(len(case_runs), 1)
+    references = sum(run.references for run in case_runs)
     return "\n".join(
         [
             "## Cost and latency",
             "",
             f"- Tokens: {input_tokens} in / {output_tokens} out "
-            f"(per call: {input_tokens // calls} in / {output_tokens // calls} out)",
+            f"(per photo: {input_tokens // calls} in / {output_tokens // calls} out)",
+            f"- Reference photos sent: {references} ({references / calls:.1f} per photo)",
             f"- Estimated cost: {total}, from recorded tokens and list prices",
             f"- Latency: p50 {p50:.0f} ms, p95 {p95:.0f} ms (includes SDK retries)"
             if p50 is not None and p95 is not None
@@ -243,8 +266,9 @@ def _per_case(case_runs: Sequence[CaseRun], obs: Sequence[Observation], threshol
     lines = [
         "## Per case",
         "",
-        "| case | place | category | run | scene_matches | pose_correct | tokens in/out | ms |",
-        "|---|---|---|---|---|---|---|---|",
+        "| case | place | category | refs | run | scene_matches | pose_correct "
+        "| tokens in/out | ms |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for run in case_runs:
         cells = []
@@ -254,8 +278,8 @@ def _per_case(case_runs: Sequence[CaseRun], obs: Sequence[Observation], threshol
             cells.append(f"{o.expected} → {outcome} ({grade(o.expected, outcome)})")
         report = run.report
         lines.append(
-            f"| {run.case.id} | {run.case.place} | {run.case.category} | {run.rep} "
-            f"| {cells[0]} | {cells[1]} | {report.input_tokens}/{report.output_tokens} "
-            f"| {report.latency_ms} |"
+            f"| {run.case.id} | {run.case.place} | {run.case.category} | {run.references} "
+            f"| {run.rep} | {cells[0]} | {cells[1]} "
+            f"| {report.input_tokens}/{report.output_tokens} | {report.latency_ms} |"
         )
     return "\n".join(lines)

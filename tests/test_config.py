@@ -297,6 +297,17 @@ def test_referee_defaults() -> None:
     assert settings.referee_timeout_seconds == 20
     assert settings.referee_max_retries == 2
     assert settings.referee_max_image_edge == 1568
+    assert settings.referee_max_references == 2
+    assert settings.referee_reference_max_edge == 768
+
+
+@pytest.mark.parametrize("value", ["0", "5"])
+def test_referee_max_references_accepts_zero_to_five(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("GAME_SERVER_REFEREE_MAX_REFERENCES", value)
+
+    assert Settings().referee_max_references == int(value)
 
 
 def test_api_key_is_read_but_never_shown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -316,6 +327,9 @@ def test_api_key_is_read_but_never_shown(monkeypatch: pytest.MonkeyPatch) -> Non
         ("GAME_SERVER_REFEREE_TIMEOUT_SECONDS", "0"),
         ("GAME_SERVER_REFEREE_MAX_RETRIES", "-1"),
         ("GAME_SERVER_REFEREE_MAX_IMAGE_EDGE", "0"),
+        ("GAME_SERVER_REFEREE_MAX_REFERENCES", "-1"),
+        ("GAME_SERVER_REFEREE_MAX_REFERENCES", "6"),
+        ("GAME_SERVER_REFEREE_REFERENCE_MAX_EDGE", "0"),
     ],
 )
 def test_referee_limits_are_validated(

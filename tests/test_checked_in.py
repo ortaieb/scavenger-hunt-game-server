@@ -4,7 +4,7 @@ judging the pose issued at arrival. Fixed clock, fake referee."""
 import json
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -33,6 +33,7 @@ from game_server.config import Settings, get_settings
 from game_server.models import ChallengeMetadata, Location
 from game_server.phash import perceptual_hash
 from game_server.referee import (
+    PreparedReference,
     RefereeJudgement,
     RefereeReport,
     VisualCheckJudgement,
@@ -111,7 +112,12 @@ def passing() -> RefereeReport:
 class FakeReferee:
     calls: list[VisualChallenge] = field(default_factory=list)
 
-    def judge(self, image: bytes, challenge: VisualChallenge) -> RefereeReport:
+    def judge(
+        self,
+        image: bytes,
+        challenge: VisualChallenge,
+        references: Sequence[PreparedReference] = (),
+    ) -> RefereeReport:
         self.calls.append(challenge)
         return passing()
 

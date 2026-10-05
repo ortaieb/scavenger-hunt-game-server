@@ -88,7 +88,9 @@ CREATE TABLE referee_traces (
     image_sha256                TEXT,
     image_width                 INTEGER,
     image_height                INTEGER,
-    -- The reference photos sent with it: [] until they are. (Not `references`: a reserved word.)
+    -- The checkpoint's reference photos sent with it, as [{position, sha256}]: each one's index
+    -- in the checkpoint's list and the hash of its prepared JPEG, never its path; [] for none.
+    -- (Not `references`: a reserved word.)
     reference_photos            JSONB       NOT NULL,
     prompt_sha256               TEXT        NOT NULL REFERENCES referee_prompts (sha256),
     -- The text part of the user turn: the scene and the pose.

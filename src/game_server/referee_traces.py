@@ -123,7 +123,10 @@ def record_trace(
         "image_sha256": image.sha256 if image else None,
         "image_width": image.width if image else None,
         "image_height": image.height if image else None,
-        "reference_photos": Jsonb([]),  # the reference photos sent: none yet
+        # By position and hash, never by path: a file name can describe the place.
+        "reference_photos": Jsonb(
+            [{"position": sent.position, "sha256": sent.sha256} for sent in call.references]
+        ),
         "prompt_sha256": call.prompt_sha256,
         "user_text": call.user_text,
         "model": report.model,

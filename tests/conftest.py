@@ -11,6 +11,7 @@ from game_server.database import Database, close_databases, database_config, ope
 from game_server.db_reset import reset_schema
 from game_server.proximity import hint_rate_limiter
 from game_server.referee import build_referee
+from game_server.referee_references import build_reference_photos
 from game_server.submissions import SubmissionStore
 
 # The suite needs a PostgreSQL database it may wipe: `make db-up` starts one in Docker.
@@ -77,7 +78,7 @@ def isolated_storage(
         "TRUNCATE referee_traces, referee_prompts, blocked_attempts, session_runs, arrivals,"
         " participants, submissions RESTART IDENTITY"
     )
-    caches = (get_settings, hint_rate_limiter, build_referee)
+    caches = (get_settings, hint_rate_limiter, build_referee, build_reference_photos)
     for cache in caches:
         cache.cache_clear()
     yield

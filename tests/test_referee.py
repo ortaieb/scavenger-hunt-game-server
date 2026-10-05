@@ -9,7 +9,7 @@ from typing import Any
 import anthropic
 import httpx2
 import pytest
-from images import EXIF_ORIENTATION, jpeg, scene
+from images import GPS_IFD, jpeg, photo_with_metadata, scene
 from PIL import Image
 from pytest_mock import MockerFixture
 
@@ -17,10 +17,14 @@ from game_server import referee
 from game_server.config import Settings
 from game_server.referee import (
     MAX_TOKENS,
+    PLAYER_LABEL,
+    REFERENCE_LABEL,
     ClaudeReferee,
     DisabledReferee,
     ModelReply,
+    PreparedReference,
     RefereeJudgement,
+    SentReference,
     build_referee,
     get_referee,
     prepare_image,
@@ -45,6 +49,11 @@ GOOD_OUTPUT = json.dumps(
     }
 )
 REQUEST = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+# A checkpoint's reference photos, prepared as `referee_references` prepares them.
+REFERENCES = tuple(
+    PreparedReference(position, prepare_image(jpeg(scene(30 + position)), 768))
+    for position in range(2)
+)
 
 
 def reply(text: str = GOOD_OUTPUT, stop_reason: str = "end_turn", model: str = MODEL) -> ModelReply:
@@ -172,6 +181,31 @@ def test_report_repr_leaves_out_the_scene_reasons_and_response(
     assert "req_123" in shown
 
 
+def test_report_keeps_the_references_sent_by_position_and_hash(
+    claude: ClaudeReferee, mocker: MockerFixture
+) -> None:
+    mocker.patch(WRAPPER, return_value=reply())
+
+    report = claude.judge(PHOTO, CHALLENGE, REFERENCES)
+
+    assert report.call is not None
+    assert report.call.references == tuple(
+        SentReference(reference.position, hashlib.sha256(reference.image.jpeg).hexdigest())
+        for reference in REFERENCES
+    )
+
+
+def test_without_references_the_report_records_none(
+    claude: ClaudeReferee, mocker: MockerFixture
+) -> None:
+    mocker.patch(WRAPPER, return_value=reply())
+
+    report = claude.judge(PHOTO, CHALLENGE)
+
+    assert report.call is not None
+    assert report.call.references == ()
+
+
 # --- failures never raise ------------------------------------------------------
 
 
@@ -285,6 +319,18 @@ def test_undecodable_image_is_an_error_without_a_network_call(
     assert report.call.user_text == user_text(CHALLENGE)
 
 
+def test_undecodable_image_sends_no_references_either(
+    claude: ClaudeReferee, mocker: MockerFixture
+) -> None:
+    wrapper = mocker.patch(WRAPPER)
+
+    report = claude.judge(b"", CHALLENGE, REFERENCES)
+
+    wrapper.assert_not_called()
+    assert report.call is not None
+    assert report.call.references == ()
+
+
 # --- disabled ------------------------------------------------------------------
 
 
@@ -303,6 +349,12 @@ def test_no_key_gives_disabled_referee_that_never_calls_the_api(
     assert (report.call, report.cost_usd) == (None, None)  # no call: nothing to trace
     client_class.assert_not_called()
     wrapper.assert_not_called()
+
+
+def test_disabled_referee_ignores_the_references() -> None:
+    report = DisabledReferee().judge(PHOTO, CHALLENGE, REFERENCES)
+
+    assert (report.status, report.call) == ("disabled", None)
 
 
 def test_empty_key_counts_as_no_key() -> None:
@@ -362,6 +414,67 @@ def test_request_has_image_block_then_tagged_scene_and_pose(sent: dict[str, Any]
     assert f"<pose>\n{CHALLENGE.pose}\n</pose>" in text_block["text"]
 
 
+def judged_content(
+    claude: ClaudeReferee, mocker: MockerFixture, references: tuple[PreparedReference, ...]
+) -> list[dict[str, Any]]:
+    """The user turn the referee sent for `PHOTO` with these references."""
+    wrapper = mocker.patch(WRAPPER, return_value=reply())
+    claude.judge(PHOTO, CHALLENGE, references)
+    content: list[dict[str, Any]] = wrapper.call_args.kwargs["content"]
+    return content
+
+
+def image_bytes(block: dict[str, Any]) -> bytes:
+    assert block["type"] == "image"
+    assert block["source"]["media_type"] == "image/jpeg"
+    return base64.b64decode(block["source"]["data"])
+
+
+def test_request_with_references_labels_them_before_the_players_photo(
+    claude: ClaudeReferee, mocker: MockerFixture
+) -> None:
+    content = judged_content(claude, mocker, REFERENCES)
+
+    labels = [block["text"] for block in content[0:6:2]]
+    assert labels == [
+        "Reference photo 1 of 2: the checkpoint, photographed by the organiser",
+        "Reference photo 2 of 2: the checkpoint, photographed by the organiser",
+        "The player's photo",
+    ]
+    assert [image_bytes(block) for block in content[1:4:2]] == [r.image.jpeg for r in REFERENCES]
+    assert image_bytes(content[5]) == prepare_image(PHOTO, 1568).jpeg
+    assert content[6] == {"type": "text", "text": user_text(CHALLENGE, with_references=True)}
+    assert len(content) == 7
+
+
+def test_request_with_references_names_the_photo_to_judge() -> None:
+    text = user_text(CHALLENGE, with_references=True)
+
+    assert f"<scene>\n{CHALLENGE.scene}\n</scene>" in text
+    assert f"<pose>\n{CHALLENGE.pose}\n</pose>" in text
+    assert text.endswith("Judge scene_matches and pose_correct for the player's photo.")
+
+
+def test_request_without_references_is_the_same_as_before(
+    claude: ClaudeReferee, mocker: MockerFixture
+) -> None:
+    content = judged_content(claude, mocker, ())
+
+    image_block, text_block = content
+    assert image_bytes(image_block) == prepare_image(PHOTO, 1568).jpeg
+    assert text_block == {
+        "type": "text",
+        "text": f"<scene>\n{CHALLENGE.scene}\n</scene>\n\n<pose>\n{CHALLENGE.pose}\n</pose>\n\n"
+        "Judge scene_matches and pose_correct for this photo.",
+    }
+
+
+def test_prompt_quotes_the_labels_the_request_uses(sent: dict[str, Any]) -> None:
+    assert REFERENCE_LABEL.format(number=1, count=2).startswith("Reference photo 1 of 2:")
+    assert '"Reference photo 1 of 2"' in sent["system"]
+    assert f'"{PLAYER_LABEL}"' in sent["system"]
+
+
 @pytest.mark.parametrize(
     "rule",
     [
@@ -382,6 +495,30 @@ def test_request_has_image_block_then_tagged_scene_and_pose(sent: dict[str, Any]
         pytest.param("one or two short sentences", id="brevity"),
         pytest.param("<scene>", id="scene-tag"),
         pytest.param("<pose>", id="pose-tag"),
+        pytest.param(
+            "it passes only when the player's photo was taken at the same place as the "
+            "reference photos and matches <scene>",
+            id="same-place",
+        ),
+        pytest.param(
+            "A different angle, light, weather, season or passers-by doesn't matter, nor how "
+            "near or far it was taken from",
+            id="same-place-tolerance",
+        ),
+        pytest.param(
+            "The reference photos are for comparison, never the player's photo",
+            id="references-are-not-the-photo",
+        ),
+        pytest.param(
+            "A player's photo that shows a reference photo, on a screen or a print, fails "
+            "scene_matches like any screen or print",
+            id="reference-recapture",
+        ),
+        pytest.param(
+            "Judge pose_correct on the player's photo only: nobody is expected in the "
+            "reference photos",
+            id="pose-on-the-players-photo",
+        ),
     ],
 )
 def test_system_prompt_states_every_rule(sent: dict[str, Any], rule: str) -> None:
@@ -442,22 +579,6 @@ def test_wrapper_sends_structured_output_request_and_maps_reply() -> None:
 
 # --- image preparation -----------------------------------------------------------
 
-GPS_IFD = 0x8825
-
-
-def photo_with_metadata(image: Image.Image, orientation: int | None = None) -> bytes:
-    """A JPEG carrying GPS coordinates (and optionally an orientation) in its EXIF."""
-    exif = Image.Exif()
-    exif[0x010F] = "PhoneMaker"  # camera make
-    gps = exif.get_ifd(GPS_IFD)
-    gps[1], gps[2] = "N", (51.0, 30.0, 17.5)
-    gps[3], gps[4] = "W", (0.0, 7.0, 39.0)
-    if orientation is not None:
-        exif[EXIF_ORIENTATION] = orientation
-    buffer = BytesIO()
-    image.save(buffer, "JPEG", exif=exif)
-    return buffer.getvalue()
-
 
 def test_prepared_image_has_no_exif_or_gps() -> None:
     original = photo_with_metadata(scene(4))
@@ -517,6 +638,17 @@ def test_log_line_has_verdicts_but_no_reasons_or_image(
     assert "SCENE-TEXT" not in caplog.text
     assert "POSE-TEXT" not in caplog.text
     assert base64.standard_b64encode(PHOTO)[:40].decode() not in caplog.text
+
+
+def test_log_line_counts_the_references_sent(
+    claude: ClaudeReferee, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    mocker.patch(WRAPPER, return_value=reply())
+    caplog.set_level(logging.INFO)
+
+    claude.judge(PHOTO, CHALLENGE, REFERENCES)
+
+    assert f"referee model={MODEL} status=ok references=2 " in caplog.text
 
 
 def test_error_log_line_names_the_code(

@@ -16,6 +16,7 @@ from game_server.referee import (
     RefereeJudgement,
     RefereeReport,
     SentImage,
+    SentReference,
     VisualCheckJudgement,
 )
 from game_server.submissions import NewSubmission, SubmissionStore
@@ -104,6 +105,20 @@ def test_an_ok_call_records_every_column(store: SubmissionStore, db: Db) -> None
         "cost_usd": Decimal("0.0021"),
         "latency_ms": 950,
     }
+
+
+def test_the_references_sent_are_recorded_by_position_and_hash(
+    store: SubmissionStore, db: Db
+) -> None:
+    sent = (SentReference(0, "cd" * 32), SentReference(1, "ef" * 32))
+
+    store.record(replace(SUBMISSION, referee=replace(OK, call=replace(ANSWERED, references=sent))))
+
+    [trace] = traces(db)
+    assert trace["reference_photos"] == [
+        {"position": 0, "sha256": "cd" * 32},
+        {"position": 1, "sha256": "ef" * 32},
+    ]
 
 
 @pytest.mark.parametrize(

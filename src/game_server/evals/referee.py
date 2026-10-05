@@ -1,17 +1,18 @@
 """Run the referee eval: `uv run python -m game_server.evals.referee --eval-dir DIR`.
 
 Calls the real referee (same prompt, image preparation and settings as production) on
-every labelled test photo, then writes a Markdown report and the raw results to
-`DIR/reports/`. Needs `GAME_SERVER_ANTHROPIC_API_KEY`; costs money; never run in CI.
+every labelled test photo, with its reference photos prepared and capped as production
+does, then writes a Markdown report and the raw results to `DIR/reports/`. Needs
+`GAME_SERVER_ANTHROPIC_API_KEY`; costs money; never run in CI.
 
 Exit status: 0 when the run is fine, 1 when a screen/print or injection case got a false
-pass, 2 for a setup problem (no key, bad manifest, missing photos).
+pass, 2 for a setup problem (no key, bad manifest, missing or broken photos).
 """
 
 import argparse
 import json
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,7 +25,14 @@ from game_server.evals.manifest import (
     load_manifest,
 )
 from game_server.evals.report import CaseRun, RunInfo, render
-from game_server.referee import Referee, build_referee, prompt_sha256, system_prompt
+from game_server.referee import (
+    PreparedReference,
+    Referee,
+    build_referee,
+    prompt_sha256,
+    system_prompt,
+)
+from game_server.referee_references import ReferencePhotoError, prepare_references
 
 
 @dataclass(frozen=True)
@@ -36,22 +44,50 @@ class EvalResult:
     failed: bool
 
 
+def prepare_case_references(
+    manifest: Manifest, base: Path, max_references: int, max_edge: int
+) -> dict[str, tuple[PreparedReference, ...]]:
+    """Each case's reference photos as production sends them: the first `max_references`.
+
+    Prepared once per distinct list, before any call, so a bad photo costs nothing.
+    Raises `ManifestError` naming the case.
+    """
+    prepared: dict[tuple[Path, ...], tuple[PreparedReference, ...]] = {}
+    by_case = {}
+    for case in manifest.cases:
+        paths = manifest.reference_photos(case)
+        if paths not in prepared:
+            try:
+                prepared[paths] = prepare_references(
+                    [base / path for path in paths], max_references, max_edge
+                )
+            except ReferencePhotoError as exc:
+                raise ManifestError(f"case {case.id}: {exc}") from None
+        by_case[case.id] = prepared[paths]
+    return by_case
+
+
 def run_cases(
     referee: Referee,
     manifest: Manifest,
     base: Path,
     runs: int,
     progress: Callable[[str], None] = lambda _: None,
+    references: Mapping[str, Sequence[PreparedReference]] | None = None,
 ) -> list[CaseRun]:
-    """Judge every case `runs` times, in rounds, so repeats aren't back to back."""
+    """Judge every case `runs` times, in rounds, so repeats aren't back to back.
+
+    `references` are each case's prepared reference photos, by case id.
+    """
     case_runs = []
     for rep in range(1, runs + 1):
         for index, case in enumerate(manifest.cases, start=1):
-            report = referee.judge((base / case.image).read_bytes(), case.challenge)
+            sent = (references or {}).get(case.id, ())
+            report = referee.judge((base / case.image).read_bytes(), case.challenge, sent)
             progress(
                 f"run {rep}/{runs} case {index}/{len(manifest.cases)} {case.id}: {report.status}"
             )
-            case_runs.append(CaseRun(case, rep, report))
+            case_runs.append(CaseRun(case, rep, report, len(sent)))
     return case_runs
 
 
@@ -73,6 +109,7 @@ def write_results(case_runs: Sequence[CaseRun], path: Path) -> None:
                 "input_tokens": report.input_tokens,
                 "output_tokens": report.output_tokens,
                 "latency_ms": report.latency_ms,
+                "references": run.references,
                 "judgement": report.judgement.model_dump() if report.judgement else None,
             }
             file.write(json.dumps(record) + "\n")
@@ -88,7 +125,10 @@ def run_eval(
     manifest, base = load_manifest(manifest_path)
     for warning in coverage_warnings(manifest):
         progress(f"warning: {warning}")
-    case_runs = run_cases(referee, manifest, base, info.runs, progress)
+    references = prepare_case_references(
+        manifest, base, info.max_references, info.reference_max_edge
+    )
+    case_runs = run_cases(referee, manifest, base, info.runs, progress, references)
     reports = base / "reports"
     reports.mkdir(exist_ok=True)
     stem = f"{info.started_at.strftime('%Y%m%dT%H%M%SZ')}-{info.requested_model}"
@@ -145,6 +185,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         started_at=datetime.now(UTC),
         prompt_digest=prompt_sha256(system_prompt())[:12],  # as in referee_traces
         max_image_edge=settings.referee_max_image_edge,
+        max_references=settings.referee_max_references,
+        reference_max_edge=settings.referee_reference_max_edge,
     )
 
     def progress(message: str) -> None:

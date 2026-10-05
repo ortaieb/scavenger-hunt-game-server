@@ -14,6 +14,7 @@ src/game_server/
     base.py          # Check protocol, SubmissionContext, Rejection, verdict decision
     registry.py      # get_checks: the checks every submission goes through
     session_running.py  # session_not_started, session_stopped
+    checked_in.py    # not_checked_in, check_in_expired (the team's active arrival)
     time_window.py   # outside_window, stale_capture, capture_in_future
     geofence.py      # out_of_range
     duplicate_photo.py  # duplicate_photo
@@ -37,6 +38,7 @@ src/game_server/
   game_state.py      # team state: team_state() rules and the `…/state` endpoint
   scoring.py         # points by order of arrival: team_points(), places()
   arrive.py          # `…/arrive`: check in, pose and one-time code
+  arrivals.py        # Arrival, LatestArrival: when a check-in still holds for a photo
   lookup.py          # find_checkpoint: shared session/checkpoint lookup (404s)
   imaging.py         # safe image decoding: pixel cap, EXIF orientation, decode errors
   referee.py         # visual-challenge referee on the Claude API

@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import Depends
 
 from game_server.checks.base import Check
+from game_server.checks.checked_in import CheckedInCheck
 from game_server.checks.duplicate_photo import DuplicatePhotoCheck
 from game_server.checks.geofence import GeofenceCheck
 from game_server.checks.session_running import SessionRunningCheck
@@ -22,6 +23,7 @@ def get_checks(settings: Annotated[Settings, Depends(get_settings)]) -> Sequence
     """
     return (
         SessionRunningCheck(),
+        CheckedInCheck(),
         *TimeWindowCheck.from_settings(settings).rules(),
         GeofenceCheck(),
         DuplicatePhotoCheck(max_distance=settings.phash_max_distance),

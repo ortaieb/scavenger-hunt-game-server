@@ -1,5 +1,6 @@
 """No endpoint may reveal a checkpoint's scene description (the answer to its clue)."""
 
+import functools
 import json
 import logging
 from collections.abc import Iterator
@@ -128,15 +129,33 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
     joined = client.post("/join", json={"code": JOIN_CODE, "consent": True})  # 201, scheduled
     participant = joined.json()["participant"]
     opening = session_opening_responses(client)  # the session runs from here on
+    states = [  # while on its first checkpoint: before the photos complete it
+        client.get(f"/sessions/{SESSION}/participants/{participant}/state"),
+        client.get(f"/sessions/{SESSION}/participants/{UNKNOWN}/state"),  # 404
+        client.get(f"/sessions/{UNKNOWN}/participants/{participant}/state"),  # 404
+        client.get(f"/sessions/{SESSION}/participants/not-a-uuid/state"),  # 422
+    ]
+    arrivals = [  # the check-in comes before the photo
+        client.post(f"/sessions/{SESSION}/participants/{participant}/arrive", json=body)
+        for body in (
+            {"checkpoint": 1},  # 201
+            {"checkpoint": 1},  # 200: the active arrival
+            {"checkpoint": 9},  # 404 unknown checkpoint
+            {"checkpoint": 2},  # 409 not the team's current checkpoint
+            {"checkpoint": "1"},  # 422
+        )
+    ]
+    photo = functools.partial(metadata, participant=participant)
     responses = {
         ("GET", "/"): [client.get("/")],
         ("POST", "/challenge"): [
-            submit(client, metadata()),  # pending
-            submit(client, metadata(location={"lat": 51.51, "long": -0.1})),  # failed checks
-            submit(client, metadata(), image=PHOTO),  # duplicate
-            submit(client, metadata(checkpoint=9)),  # 404
-            submit(client, metadata(extra=True)),  # 422
-            submit(client, metadata(), image=b"\xff\xd8\xffjunk"),  # 422 undecodable
+            submit(client, photo()),  # pending
+            submit(client, photo(location={"lat": 51.51, "long": -0.1})),  # failed checks
+            submit(client, photo(), image=PHOTO),  # duplicate
+            submit(client, photo(checkpoint=9)),  # 404
+            submit(client, metadata(participant=UNKNOWN)),  # 404 unknown participant
+            submit(client, photo(extra=True)),  # 422
+            submit(client, photo(), image=b"\xff\xd8\xffjunk"),  # 422 undecodable
         ],
         ("POST", "/checkpoint/proximity"): [
             hint(client),  # 200
@@ -158,22 +177,8 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
             client.post("/join", json={"code": JOIN_CODE, "consent": "true"}),  # 422
             client.post("/join", json={"code": JOIN_CODE, "consent": True, "x": 1}),  # 422
         ],
-        ("GET", state): [
-            client.get(f"/sessions/{SESSION}/participants/{participant}/state"),  # on its 1st
-            client.get(f"/sessions/{SESSION}/participants/{UNKNOWN}/state"),  # 404
-            client.get(f"/sessions/{UNKNOWN}/participants/{participant}/state"),  # 404
-            client.get(f"/sessions/{SESSION}/participants/not-a-uuid/state"),  # 422
-        ],
-        ("POST", arrive): [
-            client.post(f"/sessions/{SESSION}/participants/{participant}/arrive", json=body)
-            for body in (
-                {"checkpoint": 1},  # 201
-                {"checkpoint": 1},  # 200: the active arrival
-                {"checkpoint": 9},  # 404 unknown checkpoint
-                {"checkpoint": 2},  # 409 not the team's current checkpoint
-                {"checkpoint": "1"},  # 422
-            )
-        ],
+        ("GET", state): states,
+        ("POST", arrive): arrivals,
         ("GET", "/openapi.json"): [client.get("/openapi.json")],
         ("GET", "/docs"): [client.get("/docs")],
         ("GET", "/docs/oauth2-redirect"): [client.get("/docs/oauth2-redirect")],
@@ -188,7 +193,7 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
                 f"/sessions/{SESSION}/participants/{participant}/arrive", json={"checkpoint": 1}
             )
         ],
-        ("POST", "/challenge"): [submit(client, metadata(), image=jpeg(scene(5)))],
+        ("POST", "/challenge"): [submit(client, photo(), image=jpeg(scene(5)))],
         ("POST", "/checkpoint/proximity"): [hint(client, participant=str(UNKNOWN))],
     }
     for route, route_responses in (*opening.items(), *closing.items(), *after_stop.items()):
@@ -386,6 +391,9 @@ def test_state_reveals_only_the_teams_own_score(client: TestClient, store: Submi
 def test_the_overview_reveals_no_coordinates_clues_or_scenes(client: TestClient) -> None:
     client.post(f"/sessions/{SESSION}/start", headers=MODERATOR)
     testers = client.post("/join", json={"code": JOIN_CODE, "consent": True}).json()
+    client.post(
+        f"/sessions/{SESSION}/participants/{testers['participant']}/arrive", json={"checkpoint": 1}
+    )
     submit(client, metadata(participant=testers["participant"]))  # pending at checkpoint 1
 
     shown = client.get(f"/sessions/{SESSION}/overview", headers=MODERATOR)

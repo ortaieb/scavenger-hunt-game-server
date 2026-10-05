@@ -15,6 +15,7 @@ from psycopg import Connection
 from psycopg.rows import TupleRow
 from psycopg.types.json import Jsonb
 
+from game_server.arrivals import Arrival, LatestArrival
 from game_server.checks import CheckResult, Rejection
 from game_server.checks import rejections as rejections_of
 from game_server.checks.base import AcceptedPhoto
@@ -47,6 +48,8 @@ class NewSubmission:
     phash: int
     phash_match_id: int | None = None
     referee: RefereeReport | None = None
+    # The active arrival the photo used; None when there was none.
+    arrival_id: int | None = None
 
     @property
     def rejections(self) -> list[Rejection]:
@@ -71,17 +74,6 @@ class ParticipantRecord:
     team: str
     joined_at: datetime
     consented_at: datetime
-
-
-@dataclass(frozen=True)
-class Arrival:
-    """A check-in at a checkpoint, with the one-time code to hold up in the photo."""
-
-    checkpoint: int
-    code: str
-    pose: str | None
-    issued_at: datetime
-    expires_at: datetime
 
 
 @dataclass(frozen=True)
@@ -190,14 +182,20 @@ class SubmissionStore:
     ) -> ArrivalOutcome:
         """Return the team's active arrival at the checkpoint, or issue a fresh one.
 
-        An arrival is active until it expires or the team submits a photo for that
-        checkpoint after it was issued. One session-locked transaction, so two taps at once
-        can't issue two codes.
+        An arrival is active until it expires or a photo uses it (see `LatestArrival`).
+        One session-locked transaction, so two taps at once can't issue two codes.
         """
         with self.transaction(session) as transaction:
             return transaction.arrive(
                 session, participant, checkpoint, pose=pose, now=now, ttl=ttl, new_code=new_code
             )
+
+    def latest_arrival(
+        self, session: UUID, participant: UUID, checkpoint: int, at: datetime
+    ) -> LatestArrival | None:
+        """The team's latest arrival at the checkpoint issued by `at`, if it ever arrived."""
+        with self._database.connection() as conn:
+            return _latest_arrival(conn, (session, participant, checkpoint), at)
 
     def completed_checkpoints(self, session: UUID, participant: UUID) -> frozenset[int]:
         """Checkpoints the participant has an accepted submission for (`pass` or `pending`).
@@ -315,34 +313,25 @@ class SubmissionTransaction:
     ) -> ArrivalOutcome:
         """See `SubmissionStore.arrive`."""
         key = (session, participant, checkpoint)
-        active = self._active_arrival(key, now)
-        if active is not None:
-            return ArrivalOutcome(active, new=False)
-        arrival = Arrival(checkpoint, new_code(), pose, issued_at=now, expires_at=now + ttl)
-        self._conn.execute(
+        latest = _latest_arrival(self._conn, key, now)
+        if latest is not None and latest.active_at(now):
+            return ArrivalOutcome(latest.arrival, new=False)
+        code, expires_at = new_code(), now + ttl
+        inserted = self._conn.execute(
             "INSERT INTO arrivals (session, participant, checkpoint, code, pose, issued_at,"
-            " expires_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (*key, arrival.code, pose, now, arrival.expires_at),
-        )
+            " expires_at) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (*key, code, pose, now, expires_at),
+        ).fetchone()
+        if inserted is None:  # pragma: no cover - INSERT ... RETURNING always returns the row
+            raise RuntimeError("the database did not return the inserted row id")
+        arrival = Arrival(inserted[0], checkpoint, code, pose, issued_at=now, expires_at=expires_at)
         return ArrivalOutcome(arrival, new=True)
 
-    def _active_arrival(self, key: tuple[UUID, UUID, int], now: datetime) -> Arrival | None:
-        """The latest arrival, if unexpired and not yet followed by a submission there."""
-        row = self._conn.execute(
-            "SELECT checkpoint, code, pose, issued_at, expires_at FROM arrivals AS arrival"
-            " WHERE session = %s AND participant = %s AND checkpoint = %s"
-            " AND NOT EXISTS (SELECT 1 FROM submissions AS submission"
-            "   WHERE submission.session = arrival.session"
-            "   AND submission.participant = arrival.participant"
-            "   AND submission.checkpoint = arrival.checkpoint"
-            "   AND submission.received_at >= arrival.issued_at)"
-            " ORDER BY id DESC LIMIT 1",
-            key,
-        ).fetchone()
-        if row is None:
-            return None
-        arrival = Arrival(*row)
-        return arrival if now < arrival.expires_at else None
+    def latest_arrival(
+        self, session: UUID, participant: UUID, checkpoint: int, at: datetime
+    ) -> LatestArrival | None:
+        """See `SubmissionStore.latest_arrival`: read under the lock, so it can't go stale."""
+        return _latest_arrival(self._conn, (session, participant, checkpoint), at)
 
     def start_run(self, session: UUID, now: datetime) -> RunChange:
         """See `SubmissionStore.start_run`."""
@@ -433,9 +422,9 @@ class SubmissionTransaction:
             " received_at, capture_time, lat, long, image_id, verdict, rejections,"
             " distance_m, phash, phash_match_id, checks, referee_status, referee_model,"
             " referee_error, referee_judgement, referee_input_tokens, referee_output_tokens,"
-            " referee_latency_ms)"
+            " referee_latency_ms, arrival_id)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,"
-            " %s, %s, %s, %s)"
+            " %s, %s, %s, %s, %s)"
             " RETURNING id",
             (
                 *key,
@@ -452,6 +441,7 @@ class SubmissionTransaction:
                 submission.phash_match_id,
                 Jsonb([_check_record(result) for result in submission.checks]),
                 *_referee_columns(submission.referee),
+                submission.arrival_id,
             ),
         ).fetchone()
         if inserted is None:  # pragma: no cover - INSERT ... RETURNING always returns the row
@@ -464,6 +454,32 @@ def _session_run(conn: Connection[TupleRow], session: UUID) -> SessionRun | None
         "SELECT started_at, stopped_at FROM session_runs WHERE session = %s", (session,)
     ).fetchone()
     return None if row is None else SessionRun(started_at=row[0], stopped_at=row[1])
+
+
+def _latest_arrival(
+    conn: Connection[TupleRow], key: tuple[UUID, UUID, int], at: datetime
+) -> LatestArrival | None:
+    """The latest arrival for (session, participant, checkpoint) issued by `at`.
+
+    Used if a photo recorded it, or the team sent a photo there after it was issued.
+    """
+    row = conn.execute(
+        "SELECT id, checkpoint, code, pose, issued_at, expires_at,"
+        " EXISTS (SELECT 1 FROM submissions AS submission"
+        "   WHERE submission.arrival_id = arrival.id"
+        "   OR (submission.session = arrival.session"
+        "   AND submission.participant = arrival.participant"
+        "   AND submission.checkpoint = arrival.checkpoint"
+        "   AND submission.received_at > arrival.issued_at))"
+        " FROM arrivals AS arrival"
+        " WHERE session = %s AND participant = %s AND checkpoint = %s AND issued_at <= %s"
+        " ORDER BY id DESC LIMIT 1",
+        (*key, at),
+    ).fetchone()
+    if row is None:
+        return None
+    *fields, used = row
+    return LatestArrival(Arrival(*fields), used=used)
 
 
 def _lock_key(session: UUID) -> int:

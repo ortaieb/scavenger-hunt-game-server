@@ -25,6 +25,7 @@ from game_server.checks import (
 from game_server.checks.duplicate_photo import DuplicatePhotoRejection
 from game_server.clock import Clock, get_clock
 from game_server.config import Settings, get_settings
+from game_server.join import find_participant
 from game_server.lookup import find_checkpoint
 from game_server.models import (
     ChallengeMetadata,
@@ -42,6 +43,7 @@ from game_server.submissions import (
     NewSubmission,
     PhaseCode,
     SubmissionStore,
+    SubmissionTransaction,
     get_submission_store,
 )
 
@@ -122,6 +124,7 @@ def new_submission(
         distance_m=ctx.distance_m,
         phash=ctx.phash,
         referee=ctx.referee_report,
+        arrival_id=ctx.active_arrival.id if ctx.active_arrival else None,
         phash_match_id=next(
             (
                 r.matched_submission_id
@@ -145,12 +148,14 @@ def consult_referee(
 ) -> RefereeReport | None:
     """Ask the referee about the photo, unless there's no point.
 
-    Not consulted when the checkpoint has no visual challenge, or when an earlier check
-    already failed: that saves the cost, and the photo of a submission that has already
-    failed isn't sent to a third party. Called outside the write transaction, because a
-    model call takes seconds and would otherwise queue every submission behind it.
+    It judges the checkpoint's scene and the pose issued when the team checked in. Not
+    consulted when there's no such challenge (no visual challenge, no active check-in, or no
+    pose issued with it), or when an earlier check already failed: that saves the cost, and
+    the photo of a submission that has already failed isn't sent to a third party. Called
+    outside the write transaction, because a model call takes seconds and would otherwise
+    queue every submission behind it.
     """
-    challenge = ctx.checkpoint.challenge
+    challenge = ctx.challenge
     if challenge is None or any(result.outcome == "failed" for result in earlier):
         return None
     return referee.judge(ctx.image, challenge)
@@ -166,26 +171,44 @@ def blocked_by_phase(submission: NewSubmission) -> PhaseCode | None:
     return None
 
 
+def confirm_arrival(
+    ctx: SubmissionContext, transaction: SubmissionTransaction
+) -> SubmissionContext:
+    """The context with the team's arrival read again, under the session's write lock."""
+    metadata = ctx.metadata
+    arrival = transaction.latest_arrival(
+        metadata.session, metadata.participant, metadata.checkpoint, ctx.received_at
+    )
+    return replace(ctx, arrival=arrival)
+
+
 def judge_and_record(
     ctx: SubmissionContext,
-    checks: Sequence[Check],
+    before: Sequence[Check],
+    earlier: Sequence[CheckResult],
+    during: Sequence[Check],
     images: ImageStore,
     submissions: SubmissionStore,
-    earlier: Sequence[CheckResult] = (),
 ) -> tuple[NewSubmission, int, Path]:
     """Run the in-transaction checks and record the result, in one write transaction.
 
-    `earlier` are the results of the checks already run outside the lock; they come first
-    in the verdict. The accepted-photo snapshot, these checks and the insert are serialised
-    against the session's other submissions, so two uploads of the same photo can't both be
-    accepted.
+    `earlier` are the results of the `before` checks, already run outside the lock; they
+    come first in the verdict. The team's arrival is read again inside the transaction: if
+    another photo used it meanwhile, the `before` checks run again on what's confirmed, so
+    two photos can't share one check-in. The accepted-photo snapshot, the `during` checks
+    and the insert are serialised against the session's other submissions, so two uploads
+    of the same photo can't both be accepted.
     If anything fails after the image is saved, the image is removed.
     """
     saved: Path | None = None
     try:
         with submissions.transaction(ctx.metadata.session) as transaction:
-            ctx = replace(ctx, accepted_photos=transaction.accepted_photos(ctx.metadata.session))
-            results = [*earlier, *run_checks(checks, ctx)]
+            confirmed = confirm_arrival(ctx, transaction)
+            if confirmed.arrival != ctx.arrival:  # e.g. another photo used the check-in
+                earlier = run_checks(before, confirmed)
+            accepted = transaction.accepted_photos(ctx.metadata.session)
+            ctx = replace(confirmed, accepted_photos=accepted)
+            results = [*earlier, *run_checks(during, ctx)]
             image_id, image_path = images.save(ctx.image)
             saved = image_path
             submission = new_submission(ctx, image_id, results)
@@ -206,6 +229,7 @@ def describe(submission: NewSubmission, attempt: int, image_path: Path) -> str:
     """Build the log line announcing a received challenge and its verdict.
 
     Includes the distance for moderator review: server logs only, never the response.
+    Names the arrival the photo used, never its code.
     """
     codes = ",".join(rejection.code for rejection in submission.rejections) or "-"
     checks = ",".join(f"{result.check}:{result.outcome}" for result in submission.checks)
@@ -224,6 +248,7 @@ def describe(submission: NewSubmission, attempt: int, image_path: Path) -> str:
         f"arrived at {submission.capture_time.isoformat()} "
         f"from ({submission.lat},{submission.long}), image stored in: {image_path}; "
         f"checkpoint {submission.checkpoint} attempt {attempt} "
+        f"arrival {submission.arrival_id if submission.arrival_id is not None else 'none'} "
         f"distance {submission.distance_m:.1f}m "
         f"{referee} verdict {submission.verdict} checks [{checks}] rejections [{codes}]"
     )
@@ -266,7 +291,7 @@ def to_response(submission: NewSubmission, attempt: int) -> ChallengeVerdict:
     responses={
         200: {"model": ChallengeVerdict, "description": "Recorded; verdict `failed` or `pass`"},
         202: {"description": "Recorded; verdict `pending` (moderator review)"},
-        404: {"description": "Unknown session, or unknown checkpoint in the session"},
+        404: {"description": "Unknown session, checkpoint, or participant in the session"},
         413: {"description": "Image larger than the configured limit"},
         415: {"description": "Image part is not image/jpeg"},
         422: {"description": "Invalid metadata, or the image can't be decoded"},
@@ -293,20 +318,31 @@ def submit_challenge(
 ) -> ChallengeVerdict:
     """Check the submission, record it as the next attempt, and return the verdict.
 
-    Everything is validated, decoded and looked up before anything is written, so a
-    rejected request (4xx) stores neither an image nor a row.
+    The photo is held to the team's check-in at the checkpoint (`checked_in`), and the
+    referee judges the pose issued then. Everything is validated, decoded and looked up
+    before anything is written, so a rejected request (4xx) stores neither an image nor a
+    row.
     """
     received_at = clock().astimezone(UTC)
     parsed = parse_metadata(metadata)
     image = read_jpeg(challenge_image, settings.max_image_bytes)
     phash = hash_image(image)  # decoded outside the write lock: it's the slow part
     session, checkpoint = find_checkpoint(sessions, parsed.session, parsed.checkpoint)
+    if find_participant(submissions, sessions, session.id, parsed.participant) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown participant")
     run = submissions.session_run(session.id)
-    ctx = SubmissionContext(parsed, received_at, session, checkpoint, image, phash, run=run)
+    arrival = submissions.latest_arrival(
+        session.id, parsed.participant, checkpoint.sequence, received_at
+    )
+    ctx = SubmissionContext(
+        parsed, received_at, session, checkpoint, image, phash, run=run, arrival=arrival
+    )
     before, during = split_stages(checks)
     earlier = run_checks(before, ctx)
     ctx = replace(ctx, referee_report=consult_referee(referee, ctx, earlier))
-    submission, attempt, image_path = judge_and_record(ctx, during, images, submissions, earlier)
+    submission, attempt, image_path = judge_and_record(
+        ctx, before, earlier, during, images, submissions
+    )
     logger.info(describe(submission, attempt, image_path))
     if submission.verdict != "pending":  # a final verdict: failed or pass
         response.status_code = status.HTTP_200_OK

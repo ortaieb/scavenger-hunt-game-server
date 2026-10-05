@@ -31,6 +31,14 @@ def classify(
     return "uncertain"
 
 
+def _not_consulted(ctx: SubmissionContext) -> str:
+    """Why the referee wasn't asked about a checkpoint that has a visual challenge."""
+    arrival = ctx.active_arrival
+    if arrival is not None and arrival.pose is None:
+        return "no pose was issued at check-in"
+    return "an earlier check failed"
+
+
 @dataclass(frozen=True)
 class _VisualCheck(InTransaction):
     """One of the referee's checks. The model's verdict counts only at `min_confidence`."""
@@ -46,7 +54,7 @@ class _VisualCheck(InTransaction):
         if ctx.checkpoint.challenge is None:
             return self._skipped("no visual challenge configured")
         if report is None:
-            return self._skipped("referee not consulted: an earlier check failed")
+            return self._skipped(f"referee not consulted: {_not_consulted(ctx)}")
         if report.status == "disabled":
             return self._skipped("referee disabled: no API key")
         if report.status == "error" or report.judgement is None:
@@ -101,7 +109,7 @@ class SceneMatchesCheck(_VisualCheck):
 
 @dataclass(frozen=True)
 class PoseCorrectCheck(_VisualCheck):
-    """One person is in the photo, posing as `challenge.pose` asks."""
+    """One person is in the photo, striking the pose issued when the team checked in."""
 
     name: ClassVar[str] = "pose_correct"
     passed_reason: ClassVar[str] = "Your pose matches the challenge."

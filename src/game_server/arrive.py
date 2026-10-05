@@ -17,6 +17,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from game_server.arrivals import Arrival
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.config import Settings, get_settings
 from game_server.errors import ApiError
@@ -24,7 +25,7 @@ from game_server.game_state import team_state
 from game_server.join import find_participant
 from game_server.session_runs import session_phase
 from game_server.sessions import SessionRepository, get_session_repository
-from game_server.submissions import Arrival, SubmissionStore, get_submission_store
+from game_server.submissions import SubmissionStore, get_submission_store
 
 logger = logging.getLogger(__name__)
 

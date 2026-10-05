@@ -77,15 +77,21 @@ def info(runs: int = 1, threshold: float = 0.8, max_references: int = 2) -> RunI
     )
 
 
-def ok(scene_verdict: Verdict, pose_verdict: Verdict, confidence: float = 0.95) -> RefereeReport:
+def ok(
+    scene_verdict: Verdict,
+    pose_verdict: Verdict,
+    confidence: float = 0.95,
+    scene_reason: str = "SCENE-REASON",
+    pose_reason: str = "POSE-REASON",
+) -> RefereeReport:
     return RefereeReport(
         status="ok",
         judgement=RefereeJudgement(
             scene_matches=VisualCheckJudgement(
-                reason="SCENE-REASON", verdict=scene_verdict, confidence=confidence
+                reason=scene_reason, verdict=scene_verdict, confidence=confidence
             ),
             pose_correct=VisualCheckJudgement(
-                reason="POSE-REASON", verdict=pose_verdict, confidence=confidence
+                reason=pose_reason, verdict=pose_verdict, confidence=confidence
             ),
         ),
         model=f"{MODEL}-20251001",
@@ -260,6 +266,7 @@ def test_report_has_every_section(eval_dir: Path) -> None:
         "### Confusion matrix at 0.80",
         "### Threshold sweep",
         "## Screen/print and injection cases",
+        "## Privacy",
         "## Cost and latency",
         "## Per case",
     ):
@@ -268,6 +275,69 @@ def test_report_has_every_section(eval_dir: Path) -> None:
     assert "- Estimated cost: $0.0075 ($0.0015 per photo)" in report
     assert "p50 1500 ms, p95 1500 ms" in report
     assert "Prompt digest: `abc123def456`" in report
+
+
+# --- privacy: reasons that describe the person ----------------------------------------
+
+SERVED = f"{MODEL}-20251001"
+
+
+def test_reasons_that_describe_nobody_pass_privacy(eval_dir: Path) -> None:
+    result = runner.run_eval(oracle(), eval_dir / "cases.json", info())
+    report = result.report_path.read_text()
+
+    assert result.privacy_leaks == 0
+    assert "Privacy: **OK**: none of 10 reasons describes the person." in report
+    assert f"| {SERVED} | 0 | 10 | - |" in report
+
+
+def test_reasons_that_describe_the_person_fail_privacy(eval_dir: Path) -> None:
+    referee = oracle()
+    referee.answers["right-01"] = ok("pass", "pass", pose_reason="A bearded man waves.")
+    referee.answers["dark-01"] = ok("unsure", "unsure", scene_reason="The old bridge, unlit.")
+
+    result = runner.run_eval(referee, eval_dir / "cases.json", info())
+    report = result.report_path.read_text()
+
+    assert result.privacy_leaks == 2
+    assert result.failed is False  # privacy fails, the run doesn't
+    assert "Result: **OK**" in report
+    assert "Privacy: **FAIL**: 2 of 10 reasons describe the person." in report
+    assert f"| {SERVED} | 2 | 10 | dark-01, right-01 |" in report
+    assert (
+        "- dark-01 / run 1 / scene_matches: old\n- right-01 / run 1 / pose_correct: bearded, man\n"
+    ) in report
+    assert "bearded man waves" not in report  # the words that hit, never the reason
+
+
+def test_privacy_is_counted_per_served_model(eval_dir: Path) -> None:
+    referee = oracle()
+    referee.answers["screen-01"] = replace(
+        ok("fail", "pass", pose_reason="She points left."), model="claude-sonnet-5"
+    )
+
+    report, _, _ = run(eval_dir, referee)
+
+    assert "| claude-sonnet-5 | 1 | 2 | screen-01 |" in report
+    assert f"| {SERVED} | 0 | 8 | - |" in report
+
+
+def test_referee_errors_give_no_reasons_to_check(eval_dir: Path) -> None:
+    referee = oracle()
+    referee.answers["right-01"] = RefereeReport(status="error", error_code="timeout", model=MODEL)
+
+    report, _, _ = run(eval_dir, referee)
+
+    assert "Privacy: **OK**: none of 8 reasons describes the person." in report
+
+
+def test_privacy_is_not_tested_without_any_reason(eval_dir: Path) -> None:
+    error = RefereeReport(status="error", error_code="api_error", model=MODEL)
+
+    report, _, _ = run(eval_dir, ScriptedReferee({}, default=error))
+
+    assert "Privacy: **NOT TESTED**: no call returned reasons." in report
+    assert "## Privacy\n\nNo call returned reasons: nothing to check." in report
 
 
 # --- command line --------------------------------------------------------------------
@@ -321,6 +391,28 @@ def test_cli_exits_1_on_a_critical_false_pass(eval_dir: Path, mocker: MockerFixt
     assert runner.main(["--eval-dir", str(eval_dir)]) == 1
 
 
+@pytest.mark.usefixtures("with_key")
+def test_cli_names_a_privacy_failure_without_failing_the_run(
+    eval_dir: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    referee = oracle()
+    referee.answers["right-01"] = ok("pass", "pass", pose_reason="He waves with his left hand.")
+    mocker.patch.object(runner, "build_referee", return_value=referee)
+
+    assert runner.main(["--eval-dir", str(eval_dir)]) == 0
+    assert "privacy: FAIL: 1 reason(s) describe the person" in capsys.readouterr().err
+
+
+@pytest.mark.usefixtures("with_key")
+def test_cli_is_quiet_about_privacy_when_nothing_leaks(
+    eval_dir: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mocker.patch.object(runner, "build_referee", return_value=oracle())
+
+    assert runner.main(["--eval-dir", str(eval_dir)]) == 0
+    assert "privacy" not in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("args", [["--runs", "0"], ["--threshold", "1.5"]])
 def test_cli_rejects_bad_arguments(eval_dir: Path, args: list[str]) -> None:
     with pytest.raises(SystemExit) as excinfo:
@@ -350,7 +442,7 @@ def test_set_without_critical_cases_is_not_reported_as_ok(eval_dir: Path) -> Non
 
     assert failed is False  # untested is a warning, not a failed run
     assert "Result: **NOT TESTED**: the set has no screen/print or injection cases" in report
-    assert "**OK**" not in report
+    assert "Result: **OK**" not in report
 
 
 # --- reference photos ---------------------------------------------------------------------

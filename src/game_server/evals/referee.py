@@ -6,7 +6,9 @@ does, then writes a Markdown report and the raw results to `DIR/reports/`. Needs
 `GAME_SERVER_ANTHROPIC_API_KEY`; costs money; never run in CI.
 
 Exit status: 0 when the run is fine, 1 when a screen/print or injection case got a false
-pass, 2 for a setup problem (no key, bad manifest, missing or broken photos).
+pass, 2 for a setup problem (no key, bad manifest, missing or broken photos). A reason that
+describes the person fails the report's privacy, and is named on stderr, but doesn't change
+the exit status.
 """
 
 import argparse
@@ -24,7 +26,7 @@ from game_server.evals.manifest import (
     coverage_warnings,
     load_manifest,
 )
-from game_server.evals.report import CaseRun, RunInfo, render
+from game_server.evals.report import CaseRun, RunInfo, privacy_leaks, render
 from game_server.referee import (
     PreparedReference,
     Referee,
@@ -37,11 +39,13 @@ from game_server.referee_references import ReferencePhotoError, prepare_referenc
 
 @dataclass(frozen=True)
 class EvalResult:
-    """Where the run's outputs went, and whether it failed."""
+    """Where the run's outputs went, whether it failed, and how many reasons leaked."""
 
     report_path: Path
     results_path: Path
     failed: bool
+    # Reasons that describe the person: privacy fails, the run doesn't.
+    privacy_leaks: int
 
 
 def prepare_case_references(
@@ -137,7 +141,7 @@ def run_eval(
     report_path.write_text(markdown, encoding="utf-8")
     results_path = reports / f"{stem}.jsonl"
     write_results(case_runs, results_path)
-    return EvalResult(report_path, results_path, failed)
+    return EvalResult(report_path, results_path, failed, len(privacy_leaks(case_runs)))
 
 
 def _parse_args(argv: Sequence[str] | None, settings: Settings) -> argparse.Namespace:
@@ -198,6 +202,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 2
     print(f"report: {result.report_path}\nresults: {result.results_path}")
+    if result.privacy_leaks:
+        print(
+            f"privacy: FAIL: {result.privacy_leaks} reason(s) describe the person; "
+            "see the report's Privacy section",
+            file=sys.stderr,
+        )
     if result.failed:
         print("FAILED: a screen/print or injection case got a false pass", file=sys.stderr)
         return 1

@@ -46,7 +46,16 @@ class VisualCheckJudgement(BaseModel):
     """The referee's ruling on one visual check."""
 
     # First, so the model describes what it sees before it rules (output follows schema order).
-    reason: str
+    # The description goes out in the schema, so the privacy rule sits where each reason is
+    # written.
+    reason: str = Field(
+        description=(
+            "What you see, in one or two short sentences. Describe the pose only by body "
+            'position (arms, hands, head direction, stance) and call the subject "the person", '
+            "never he or she. Never mention age, gender, ethnicity, skin, hair, facial hair, "
+            "build, clothing or accessories."
+        )
+    )
     verdict: Literal["pass", "fail", "unsure"]
     # Structured outputs don't enforce min/max in the grammar; pydantic enforces them here.
     confidence: float = Field(ge=0, le=1)

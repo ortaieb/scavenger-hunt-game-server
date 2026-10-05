@@ -71,8 +71,9 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_MAX_CLOCK_SKEW_SECONDS` | `30` | How far `capture-time` may be ahead of `received-at`, for phone clock drift (> 0) |
 | `GAME_SERVER_ANTHROPIC_API_KEY` | unset | Claude API key for the [referee](docs/api.md#referee-visual-challenge). Unset: the referee is disabled and never calls the API. Never logged |
 | `GAME_SERVER_REFEREE_MODEL` | `claude-haiku-4-5` | Model the referee uses (vision + structured outputs) |
-| `GAME_SERVER_REFEREE_TIMEOUT_SECONDS` | `20` | Per-request timeout (> 0) |
-| `GAME_SERVER_REFEREE_MAX_RETRIES` | `2` | SDK retries on connection errors, 429 and 5xx (≥ 0) |
+| `GAME_SERVER_REFEREE_DEADLINE_SECONDS` | `8` | The whole referee step, retries included, ends by then (> 0). Past it the photo's verdict is `pending`, for a moderator. See [deadline and retries](docs/api.md#deadline-and-retries) |
+| `GAME_SERVER_REFEREE_TIMEOUT_SECONDS` | `8` | Longest wait for one attempt, or the time left before the deadline if that's less (> 0) |
+| `GAME_SERVER_REFEREE_MAX_RETRIES` | `2` | Retries on connection errors, 429 and 5xx, within the deadline (≥ 0) |
 | `GAME_SERVER_REFEREE_MAX_IMAGE_EDGE` | `1568` | Long edge, in px, of the image sent to the model (> 0) |
 | `GAME_SERVER_REFEREE_MAX_REFERENCES` | `2` | How many of a checkpoint's [reference photos](docs/api.md#reference-photos) are sent with each photo, in the sessions file's order (0–5; `0` turns them off). They're **sent to the model provider** (Anthropic) |
 | `GAME_SERVER_REFEREE_REFERENCE_MAX_EDGE` | `768` | Long edge, in px, of each reference photo sent to the model (> 0) |

@@ -417,17 +417,17 @@ submission row is the whole record.
 | `id`, `session`, `created_at`  | Row id, the session, and when the row was written (the database's clock) |
 | `submission_id`                | The submission it judged (one trace per submission); deleted with it |
 | `image_id`                     | The stored player photo: the submission's own file, never a second copy |
-| `image_sha256`, `image_width`, `image_height` | The exact JPEG the model saw: upright, resized and stripped of EXIF. Empty for `invalid_image`, when nothing was sent |
+| `image_sha256`, `image_width`, `image_height` | The exact JPEG the model saw: upright, resized and stripped of EXIF. Empty when nothing was sent: for `invalid_image`, or a `deadline` that passed while the photo was being prepared |
 | `reference_photos`             | `JSONB` list of the checkpoint's [reference photos](#reference-photos) sent, in order: `{position, sha256}`, its index in the checkpoint's `reference-photos` (from 0) and the SHA-256 of the prepared JPEG the model saw. **Never the path**, which can describe the place. `[]` when none were sent, including for `invalid_image` |
 | `prompt_sha256`                | SHA-256 of the system prompt ([`referee_prompt.md`](../src/game_server/referee_prompt.md)). Its text is stored once in `referee_prompts (sha256, text, first_used_at)`, so a verdict stays explainable after the prompt changes |
 | `user_text`                    | The text part of the user turn: the `<scene>` and the `<pose>` judged |
 | `model`, `request_id`          | The model that served the call (the configured one when no reply came back), and the API's request id |
-| `status`, `error_code`, `stop_reason` | `ok` or `error`; the [error code](#referee-visual-challenge) (`timeout`, `api_error`, `refusal`, `max_tokens`, `invalid_output`, `invalid_image`); the model's stop reason |
+| `status`, `error_code`, `stop_reason` | `ok` or `error`; the [error code](#referee-visual-challenge) (`deadline`, `timeout`, `api_error`, `refusal`, `max_tokens`, `invalid_output`, `invalid_image`); the model's stop reason |
 | `response_text`                | The model's raw output, as received. Empty when no reply came back |
 | `judgement`                    | `JSONB` of the parsed verdicts, confidences and reasons, when the output was valid |
 | `input_tokens`, `output_tokens` | As reported by the API. `cache_read_input_tokens` and `cache_creation_input_tokens` stay empty until the referee uses prompt caching |
 | `cost_usd`                     | `NUMERIC`: the tokens at list price, from the same table as the eval report ([`pricing.py`](../src/game_server/pricing.py)), which also matches dated snapshot ids. Empty when no reply came back, or for a model without a price (a warning is logged) |
-| `latency_ms`                   | The model call, SDK retries included |
+| `latency_ms`                   | The whole referee step: preparing the photo, every attempt and the pauses between them |
 
 **Moderator-only.** `user_text` holds the scene (the answer to the clue), and `response_text`
 and `judgement` describe the photo. They're never logged and never returned by a participant
@@ -1020,11 +1020,14 @@ a submission can `pass`.
 - **Reference photos.** A written scene fits many places, so the referee also compares the
   photo with the moderator's own photos of the checkpoint. See
   [Reference photos](#reference-photos) below.
+- **A verdict within 10 seconds.** The whole referee step, retries included, ends by
+  `GAME_SERVER_REFEREE_DEADLINE_SECONDS` (8 s). Past it, the photo goes to a moderator. See
+  [Deadline and retries](#deadline-and-retries) below.
 - **Failures never break a submission.** Every call yields a report with `status` `ok`,
-  `disabled` or `error`. Errors are timeouts and API errors (after
-  `GAME_SERVER_REFEREE_MAX_RETRIES` SDK retries), a refusal, hitting the token limit, output
-  that fails validation, or an image that can't be decoded. Each is reported as an error with
-  a code, and the referee never raises. An error makes both visual checks `uncertain`, so the
+  `disabled` or `error`. The error codes: `deadline` (the deadline passed), `timeout` and
+  `api_error` (once the retries ran out), `refusal`, `max_tokens` (the token limit),
+  `invalid_output` (output that fails validation) and `invalid_image` (a photo that can't be
+  decoded). The referee never raises. An error makes both visual checks `uncertain`, so the
   verdict is `pending`: never `failed`, and never a 500.
 - **No key, no calls.** Without `GAME_SERVER_ANTHROPIC_API_KEY` the referee is **disabled**:
   it makes no network call and reports `disabled`. Local development and CI never need a key.
@@ -1032,10 +1035,57 @@ a submission can `pass`.
   are deliberately ignored: only the game server's own setting enables the referee.
 - **Logging.** One line per call: model, status or error code, how many reference photos
   were sent, latency, tokens, `cost_usd`, `request_id`, and each check's verdict and
-  confidence. The `POST /challenge` line adds the
-  submission's `processing_ms`. **Never the image, the scene or the reasons**, which describe
+  confidence. Before it, one line per retry: the error, its HTTP status and the time left.
+  The `POST /challenge` line adds the submission's `processing_ms`, and a warning follows it
+  when that's over 10 000. **Never the image, the scene or the reasons**, which describe
   the photo. They're stored in the call's [trace](#referee-traces) and the visual checks'
   `detail`, and deleted with the session's other data when it closes.
+
+### Deadline and retries
+
+Each photo should get its verdict within 10 seconds. A slow model shouldn't keep a player
+standing at a checkpoint: a `pending` verdict in time, reviewed by the moderator, is better
+than a late one. So the referee works to one deadline:
+
+- **One deadline for the whole step.** From the moment the referee starts on a photo, it has
+  `GAME_SERVER_REFEREE_DEADLINE_SECONDS` (default 8 s) for everything: preparing the photo,
+  every attempt and the pauses between them. The rest of the 10 s is for the other checks,
+  storing the photo and recording the verdict.
+- **Each attempt** waits at most `GAME_SERVER_REFEREE_TIMEOUT_SECONDS`, or the time left
+  before the deadline if that's less. It's the HTTP client's timeout, which bounds the wait
+  for the answer: connecting and sending the photo can add a little on a slow network.
+- **Retries** (up to `GAME_SERVER_REFEREE_MAX_RETRIES`) are for errors another attempt may get
+  past: a connection error or timeout, `429` (rate limited) and `5xx` (`529` overloaded
+  included). Other client errors, `4xx` apart from `429` (a bad key, say), aren't retried.
+  Before each retry the referee pauses 0.5 s, doubling each time up to 2 s, and no retry
+  starts with less than a second left. The referee retries, not the SDK (its client has
+  `max_retries=0`): the SDK's own retries can't see the deadline.
+- **Past the deadline** the report is `status=error` with the `error_code` `deadline`, so the
+  visual checks are `uncertain` and the verdict `pending`, never `failed`. A retryable error
+  that leaves no time for its retry is a `deadline` too. When the retries run out first, the
+  code is the last error's (`timeout` or `api_error`). A reply that does arrive is always
+  used, even a few milliseconds late: the time is spent either way.
+- **Measured.** Every submission records its [`processing_ms`](#submission-records), and one
+  over 10 000 logs a warning with the referee's `latency_ms`. The moderator sees each
+  session's p50, p95 and max in its [traces](#get-sessionssessiontraces).
+
+**Why these defaults.** The only latency measured so far is the
+[harness smoke test](#results-so-far) of 29 Sep 2026: 6 calls per model, without reference
+photos.
+
+| Model              | p50   | p95 (the slowest call) | Fastest call |
+|--------------------|-------|------------------------|--------------|
+| `claude-haiku-4-5` | 2.4 s | 5.3 s                  | 2.3 s        |
+| `claude-sonnet-5`  | 3.5 s | 5.0 s                  | 2.9 s        |
+
+A p95 of about 5 s isn't well under 6 s, so a 6 s timeout per attempt would cut off the slow
+tail and gain nothing: a retry after it would start with about 1.5 s left, less than the
+fastest call seen, and would reach the deadline too. So the timeout defaults to the deadline,
+8 s: one slow attempt may use all the time there is. Retries are what a fast failure needs (a
+dropped connection, a `429`, a `529`), and two of them still fit in 8 s, so
+`GAME_SERVER_REFEREE_MAX_RETRIES` stays at 2. Reference photos add about 1,200 input tokens a
+call: once a session has run with them, check the traces' p95 against these figures, and
+lower the timeout only if p95 is well under it.
 
 ### Reference photos
 
@@ -1186,7 +1236,7 @@ make eval-referee EVAL_DIR=~/scavenger-evals MODEL=claude-sonnet-5 RUNS=3   # co
 ```
 
 It calls the **production referee**: same prompt, image preparation, reference photos,
-timeout and retries, with only the model overridable. To compare a run with references
+deadline, timeout and retries, with only the model overridable. To compare a run with references
 against one without, run it again with them off:
 
 ```bash
@@ -1216,7 +1266,7 @@ roughly 1,200 input tokens to each call.
     credit they didn't earn.
   - **false fail**: failed, but the label is `pass`. A player is wrongly told to retake.
   - **deferred**: uncertain where the label is definite. Safe, but it goes to a moderator.
-  - **error**: no judgement (timeout, refusal...). Never scored either way.
+  - **error**: no judgement (deadline, timeout, refusal...). Never scored either way.
 - **Confusion matrix** per check at the current threshold: expected label × outcome.
 - **Threshold sweep** 0.50 → 0.95: false passes, false fails and deferrals at each value. The
   report suggests the **lowest threshold with no false pass**, the most automation that

@@ -55,6 +55,8 @@ router = APIRouter()
 JPEG_CONTENT_TYPE = "image/jpeg"
 # Every JPEG file starts with an SOI marker followed by another marker's first byte.
 JPEG_MAGIC = b"\xff\xd8\xff"
+# Every photo should get its verdict within 10 seconds; a slower one logs a warning.
+VERDICT_TARGET_MS = 10_000
 
 
 def get_image_store(settings: Annotated[Settings, Depends(get_settings)]) -> ImageStore:
@@ -264,6 +266,26 @@ def describe(submission: NewSubmission, attempt: int, image_path: Path) -> str:
     )
 
 
+def warn_if_slow(submission: NewSubmission) -> None:
+    """Log a warning when the verdict took longer than `VERDICT_TARGET_MS`.
+
+    Names the referee's share of the time, since it's the step most likely to be slow.
+    """
+    if submission.processing_ms <= VERDICT_TARGET_MS:
+        return
+    referee_ms = submission.referee.latency_ms if submission.referee else None
+    logger.warning(
+        "Slow verdict for %s[%s] checkpoint %s: processing_ms %d is over the %d ms target "
+        "(referee latency_ms %s)",
+        submission.session,
+        submission.participant,
+        submission.checkpoint,
+        submission.processing_ms,
+        VERDICT_TARGET_MS,
+        "-" if referee_ms is None else referee_ms,
+    )
+
+
 def to_response(submission: NewSubmission, attempt: int) -> ChallengeVerdict:
     """Build the verdict body returned to the client."""
     return ChallengeVerdict(
@@ -357,6 +379,7 @@ def submit_challenge(
         ctx, before, earlier, during, images, submissions, stopwatch
     )
     logger.info(describe(submission, attempt, image_path))
+    warn_if_slow(submission)
     if submission.verdict != "pending":  # a final verdict: failed or pass
         response.status_code = status.HTTP_200_OK
     return to_response(submission, attempt)

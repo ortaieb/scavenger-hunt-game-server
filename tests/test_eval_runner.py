@@ -17,6 +17,7 @@ from game_server.evals import referee as runner
 from game_server.evals.manifest import ManifestError, load_manifest
 from game_server.evals.report import RunInfo
 from game_server.referee import (
+    CallLimits,
     ClaudeReferee,
     ModelReply,
     PreparedReference,
@@ -381,6 +382,21 @@ def test_cli_uses_the_production_referee_with_the_chosen_model(
     key, model, *_ = build.call_args.args
     assert (key, model) == ("sk-test", "claude-sonnet-5")
     assert len(list((eval_dir / "reports").glob("*-claude-sonnet-5.md"))) == 1
+
+
+@pytest.mark.usefixtures("with_key")
+def test_cli_judges_within_the_production_deadline_timeout_and_retries(
+    eval_dir: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GAME_SERVER_REFEREE_DEADLINE_SECONDS", "6.5")
+    monkeypatch.setenv("GAME_SERVER_REFEREE_TIMEOUT_SECONDS", "4")
+    monkeypatch.setenv("GAME_SERVER_REFEREE_MAX_RETRIES", "1")
+    build = mocker.patch.object(runner, "build_referee", return_value=oracle())
+
+    runner.main(["--eval-dir", str(eval_dir)])
+
+    *_, limits = build.call_args.args
+    assert limits == CallLimits(deadline_seconds=6.5, timeout_seconds=4, max_retries=1)
 
 
 @pytest.mark.usefixtures("with_key")

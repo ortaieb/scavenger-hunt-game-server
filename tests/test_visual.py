@@ -6,7 +6,12 @@ from uuid import UUID
 import pytest
 
 from game_server.arrivals import Arrival, LatestArrival
-from game_server.checks.base import CheckResult, InTransaction, SubmissionContext
+from game_server.checks.base import (
+    CheckResult,
+    InTransaction,
+    SubmissionContext,
+    decide_verdict,
+)
 from game_server.checks.visual import (
     SKIPPED_REASON,
     UNCERTAIN_REASON,
@@ -197,6 +202,18 @@ def every_result() -> list[CheckResult]:
         *(judged(v, c) for v in ("pass", "fail", "unsure") for c in (0.2, 0.95)),
     ]
     return [check(make_ctx(report)) for check in (SCENE, POSE) for report in reports]
+
+
+def test_a_referee_past_its_deadline_leaves_the_verdict_pending() -> None:
+    ctx = make_ctx(RefereeReport(status="error", error_code="deadline"))
+
+    results = [SCENE(ctx), POSE(ctx)]
+
+    assert [(result.outcome, result.detail) for result in results] == [
+        ("uncertain", "referee error: deadline"),
+        ("uncertain", "referee error: deadline"),
+    ]
+    assert decide_verdict(results) == "pending"
 
 
 def test_every_outcome_is_reachable() -> None:

@@ -132,7 +132,7 @@ Guidance for moderators:
   under its name.
 
 **Moderator code.** Each session can have a `moderator-code`, which the moderator presents
-to the moderator-only endpoints (start and stop the session, the overview) as
+to the moderator-only endpoints (start and stop the session, the overview, the traces) as
 `Authorization: Bearer <code>`. It's a stopgap until real accounts exist.
 
 - **Same format as a join code**: 6–32 letters, digits or `-`, surrounding spaces stripped,

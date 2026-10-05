@@ -23,7 +23,7 @@ src/game_server/
   schema.sql         # the tables: dropped and created from scratch (destructive)
   db_reset.py        # `python -m game_server.db_reset --yes`: runs schema.sql
   submissions.py     # SubmissionStore: submissions, attempts, participants, arrivals
-  referee_traces.py  # record_trace: one row per referee call, with its submission
+  referee_traces.py  # record_trace: one row per referee call, with its submission; read_traces
   clock.py           # injectable UTC clock, and the monotonic timer for processing_ms
   geo.py             # haversine distance_m
   phash.py           # perceptual_hash (Pillow + numpy), hamming_distance
@@ -36,6 +36,7 @@ src/game_server/
   session_runs.py    # SessionRun and session_phase (scheduled / running / stopped)
   session_control.py # moderator start and stop, and the session clock
   overview.py        # `…/overview`: the moderator's standings, progress and blocked attempts
+  traces.py          # `…/traces`: the moderator's verdicts with their referee traces and spend
   game_state.py      # team state: team_state() rules and the `…/state` endpoint
   scoring.py         # points by order of arrival: team_points(), places()
   arrive.py          # `…/arrive`: check in, pose and one-time code

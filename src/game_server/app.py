@@ -19,6 +19,7 @@ from game_server import (
     overview,
     proximity,
     session_control,
+    traces,
 )
 from game_server.config import get_settings
 from game_server.database import close_databases, database_config, open_database
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(arrive.router)
     app.include_router(session_control.router)
     app.include_router(overview.router)
+    app.include_router(traces.router)
 
     return app
 

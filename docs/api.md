@@ -205,7 +205,8 @@ Response body (`200` or `202`):
   existing clients keep working. Each has a stable snake_case `code` for clients to branch on,
   and a `message` that is safe to show the player.
 - No `reason` or `message` ever contains checkpoint coordinates, distances, bearings or window
-  times. Checks can also record moderator-only `detail`; it is stored, never returned.
+  times. Checks can also record moderator-only `detail`; it is stored, never returned to a
+  player. The moderator reads it in the session's [traces](#get-sessionssessiontraces).
 
 Responses:
 
@@ -359,7 +360,8 @@ calibrated, so #23 tunes it.
 
 **The player sees fixed text; the model's reason is for the moderator.** The model's reason
 describes the scene, which is the answer to the clue. So it goes into the check's `detail`,
-which is stored and never returned:
+which is stored and never returned to a player (only the moderator's
+[traces](#get-sessionssessiontraces) show it):
 
 | Check | Outcome | Code | Player-facing `reason` |
 |---|---|---|---|
@@ -390,7 +392,7 @@ Submissions are stored in [PostgreSQL](../README.md#database), in a `submissions
 | `distance_m`                | Metres from the claimed position to the checkpoint (server-side only) |
 | `phash`                     | The photo's 64-bit perceptual hash, 16 hex digits         |
 | `phash_match_id`            | On a `duplicate_photo` rejection, the `id` of the accepted submission it matched (server-side only) |
-| `checks`                    | `JSONB` list of every check that ran: `{check, outcome, confidence, reason, detail}`. `detail` is moderator-only and never returned; for the visual checks it holds the model's reason, or why the referee wasn't asked (e.g. `referee disabled: no API key`) |
+| `checks`                    | `JSONB` list of every check that ran: `{check, outcome, confidence, reason, detail}`. `detail` is moderator-only, returned only by the [traces](#get-sessionssessiontraces); for the visual checks it holds the model's reason, or why the referee wasn't asked (e.g. `referee disabled: no API key`) |
 | `arrival_id`                | The [arrival](#arrivals) the photo used: the team's active check-in at the checkpoint. Empty when there was none |
 | `processing_ms`             | Milliseconds from `received_at` until the verdict was recorded, on a monotonic clock: how long the player waited, referee call included. Recorded for every submission |
 
@@ -426,9 +428,10 @@ submission row is the whole record.
 | `cost_usd`                     | `NUMERIC`: the tokens at list price, from the same table as the eval report ([`pricing.py`](../src/game_server/pricing.py)), which also matches dated snapshot ids. Empty when no reply came back, or for a model without a price (a warning is logged) |
 | `latency_ms`                   | The model call, SDK retries included |
 
-**Server-only.** `user_text` holds the scene (the answer to the clue), and `response_text`
+**Moderator-only.** `user_text` holds the scene (the answer to the clue), and `response_text`
 and `judgement` describe the photo. They're never logged and never returned by a participant
-endpoint. Traces carry their `session` and are deleted with their submission, so the
+endpoint; the moderator reads them in the session's [traces](#get-sessionssessiontraces)
+(`response_text` stays server-side). Traces carry their `session` and are deleted with their submission, so the
 session-close purge removes them with the session's other data. Prompts aren't session
 data: they hold no player data.
 
@@ -751,6 +754,94 @@ in with a hint), and the teams that tried to play outside the session.
 
 Only the moderator can call it, so checkpoints are named. It never shows coordinates, clues,
 scenes, photos, join codes, participant ids or the moderator code.
+
+## `GET /sessions/{session}/traces`
+
+**Moderator only** (same authorisation as the [overview](#get-sessionssessionoverview)). Every
+submission in the session, **newest first**, each with the checks that ran and the
+[referee's trace](#referee-traces): why a photo got its verdict, the model's reasons beside
+what the player was told, and what the session costs and how long players wait.
+
+| Query    | Meaning |
+|----------|---------|
+| `limit`  | Submissions per page, 1–100; default 50 |
+| `before` | A submission id: the page starts below it. Pass the previous page's `next` |
+
+The first page of two (`?limit=2`):
+
+```json
+{
+  "summary": {
+    "submissions": 14,
+    "verdicts": { "pass": 8, "pending": 2, "failed": 4 },
+    "referee-calls": 11,
+    "referee-errors": 1,
+    "cost-usd": "0.0342",
+    "processing-ms": { "p50": 2810, "p95": 6120, "max": 9400 }
+  },
+  "prompts": { "3f2a…": "You are the referee for a scavenger-hunt game…" },
+  "items": [
+    {
+      "submission": 42,
+      "team": "Red Foxes",
+      "checkpoint": 2,
+      "attempt": 1,
+      "received-at": "2026-10-03T10:41:05Z",
+      "verdict": "pending",
+      "processing-ms": 3120,
+      "image-id": "fb5fb9c2-cdde-480f-8864-904829c53716",
+      "checks": [
+        { "check": "pose_correct", "outcome": "uncertain", "confidence": 0.62, "reason": "The referee couldn't decide on this. A moderator will review your photo.", "detail": "One arm raised, not both." }
+      ],
+      "trace": {
+        "model": "claude-haiku-4-5-20251001",
+        "status": "ok",
+        "error-code": null,
+        "stop-reason": "end_turn",
+        "request-id": "req_…",
+        "prompt-sha256": "3f2a…",
+        "user-text": "<scene>…</scene> <pose>…</pose> …",
+        "references": [],
+        "judgement": { "scene_matches": { "reason": "…", "verdict": "pass", "confidence": 0.93 }, "pose_correct": { "reason": "…", "verdict": "unsure", "confidence": 0.62 } },
+        "input-tokens": 1712,
+        "output-tokens": 143,
+        "cost-usd": "0.0024",
+        "latency-ms": 2650
+      }
+    },
+    { "submission": 41, "…": "…" }
+  ],
+  "next": 41
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `summary` | The **whole session**, whichever page this is. `submissions` and `verdicts` count every submission; `referee-calls` and `referee-errors` count the traces (`status` `ok` or `error`); `cost-usd` adds up their known costs (`"0"` without any); `processing-ms` is the nearest-rank p50 and p95, and the max, of every submission's [`processing_ms`](#submission-records), all `null` without submissions |
+| `prompts` | The text of each `prompt-sha256` on this page, once; `{}` if none |
+| `items` | Up to `limit` submissions, newest (highest id) first, below `before` |
+| `team` | The team's name |
+| `checks` | Every check that ran, as [stored](#submission-records): `reason` is what the player was told, `detail` is why (for the visual checks the model's reason, or why the referee wasn't asked) |
+| `image-id` | The stored photo's id. The photo itself isn't served |
+| `trace` | The [referee call](#referee-traces): what it was sent (`prompt-sha256`, `user-text`, `references`), what came back (`judgement`, `null` unless the output was valid), its `error-code` when `status` is `error`, and its tokens, cost and latency. `null` when the referee wasn't consulted or is disabled; the visual checks' `detail` says why |
+| `next` | Pass it as `before` for the next page; `null` on the last page |
+
+Costs are decimal strings (`"0.0021"`), exactly the stored `NUMERIC`; a trace's `cost-usd` is
+`null` without a reply or for a model without a price. Paging by `before` walks every
+submission exactly once: newer submissions only ever appear on a fresh first page. The summary,
+the page and its prompts are read in one snapshot, so they agree.
+
+| Status | When |
+|--------|------|
+| `200`  | As above |
+| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `404`  | Unknown session |
+| `422`  | `limit` outside 1–100, or `before` not a positive integer (up to 2⁶³−1) |
+
+Only the moderator can call it: it shows the scenes (the answers to the clues), the model's
+reasons and the checks' `detail`. It never shows coordinates, distances, clues, join codes,
+one-time codes, participant ids, the moderator code or the photos, nor the model's raw
+`response_text`.
 
 ## `POST /sessions/{session}/participants/{participant}/arrive`
 

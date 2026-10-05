@@ -232,6 +232,7 @@ def test_an_empty_session(client: TestClient, store: SubmissionStore) -> None:
         "summary": {
             "submissions": 0,
             "verdicts": {"pass": 0, "pending": 0, "failed": 0},
+            "rulings": {"approve": 0, "reject": 0},
             "referee-calls": 0,
             "referee-errors": 0,
             "cost-usd": "0",
@@ -259,6 +260,7 @@ def test_a_traced_submission(client: TestClient, store: SubmissionStore) -> None
         "summary": {
             "submissions": 1,
             "verdicts": {"pass": 0, "pending": 1, "failed": 0},
+            "rulings": {"approve": 0, "reject": 0},
             "referee-calls": 1,
             "referee-errors": 0,
             "cost-usd": "0.0021",
@@ -306,6 +308,7 @@ def test_a_traced_submission(client: TestClient, store: SubmissionStore) -> None
                     "cost-usd": "0.0021",
                     "latency-ms": 950,
                 },
+                "ruling": None,
             }
         ],
         "next": None,
@@ -384,6 +387,27 @@ def test_an_errored_call_has_its_error_code(client: TestClient, store: Submissio
     assert (body["summary"]["referee-calls"], body["summary"]["referee-errors"]) == (1, 1)
 
 
+def test_a_ruled_submission_shows_its_latest_ruling_beside_the_referees_verdict(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    ruled = record(store, verdict="pending", referee=OK)
+    record(store, verdict="pending")
+    store.rule(UUID(SESSION), ruled, "approve", "Looks right", DURING)
+    store.rule(UUID(SESSION), ruled, "reject", "Wrong fountain", DURING + timedelta(minutes=4))
+
+    unruled, item = traces(client)["items"]
+
+    assert item["submission"] == ruled
+    assert item["verdict"] == "pending"  # the referee's, unchanged
+    assert item["ruling"] == {
+        "ruling": "reject",
+        "note": "Wrong fountain",
+        "ruled-at": "2026-10-03T10:04:00Z",
+    }
+    assert item["trace"]["status"] == "ok"
+    assert unruled["ruling"] is None
+
+
 def test_a_submission_without_a_participant_row_is_still_listed(
     client: TestClient, store: SubmissionStore
 ) -> None:
@@ -417,6 +441,24 @@ def test_the_summary_counts_verdicts_calls_and_errors(
     assert summary["verdicts"] == {"pass": 2, "pending": 1, "failed": 3}
     assert (summary["referee-calls"], summary["referee-errors"]) == (4, 2)
     assert summary["cost-usd"] == "0.0063"  # a refusal is billed; a timeout isn't
+
+
+def test_the_summary_counts_latest_rulings_and_keeps_the_referees_verdicts(
+    client: TestClient, store: SubmissionStore
+) -> None:
+    approved, rejected, changed = (record(store, verdict="pending") for _ in range(3))
+    record(store, verdict="failed")
+    elsewhere = record(store, session=OTHER, verdict="pending")
+    store.rule(UUID(SESSION), approved, "approve", None, DURING)
+    store.rule(UUID(SESSION), rejected, "reject", None, DURING)
+    store.rule(UUID(SESSION), changed, "reject", None, DURING)
+    store.rule(UUID(SESSION), changed, "approve", None, DURING)
+    store.rule(UUID(OTHER), elsewhere, "reject", None, DURING)
+
+    summary = traces(client)["summary"]
+
+    assert summary["rulings"] == {"approve": 2, "reject": 1}
+    assert summary["verdicts"] == {"pass": 0, "pending": 3, "failed": 1}
 
 
 def test_costs_are_exact_decimal_strings(client: TestClient, store: SubmissionStore) -> None:

@@ -1,7 +1,8 @@
 """`GET /sessions/{session}/traces`: every verdict in a session, with its referee trace.
 
-For the moderator to see why a photo got its verdict, compare the model's reasons with what
-the player was told, and watch what the session costs and how long players wait. Moderator
+For the moderator to see why a photo got its verdict, and any ruling they made on it, compare
+the model's reasons with what the player was told, and watch what the session costs and how
+long players wait. Moderator
 only: it shows the scenes (the answers to the clues), the model's reasons and the checks'
 `detail`. It never shows coordinates, codes, participant ids or the photos themselves.
 """
@@ -18,6 +19,8 @@ from game_server.models import CheckOutcome, VerdictStatus
 from game_server.moderation import require_moderator
 from game_server.referee import RefereeErrorCode
 from game_server.referee_traces import JudgedSubmission, Trace, TraceStatus, TraceSummary
+from game_server.ruling import RulingOut
+from game_server.rulings import Ruling
 from game_server.sessions import GameSession
 from game_server.submissions import SubmissionStore, get_submission_store
 
@@ -45,10 +48,14 @@ class ProcessingOut(BaseModel):
 
 
 class SummaryOut(_KebabModel):
-    """The whole session, whichever page this is."""
+    """The whole session, whichever page this is.
+
+    `verdicts` are the referee's; `rulings` count submissions by their latest ruling.
+    """
 
     submissions: int
     verdicts: dict[VerdictStatus, int]
+    rulings: dict[Ruling, int]
     referee_calls: int
     referee_errors: int
     cost_usd: str
@@ -84,7 +91,8 @@ class TraceOut(_KebabModel):
 
 
 class SubmissionTraceOut(_KebabModel):
-    """A submission: its verdict, every check that ran, and the referee's trace if called."""
+    """A submission: the referee's verdict, every check that ran, the referee's trace if
+    called, and the moderator's latest ruling if there is one."""
 
     submission: int
     team: str | None
@@ -96,6 +104,7 @@ class SubmissionTraceOut(_KebabModel):
     image_id: UUID
     checks: list[StoredCheckOut]
     trace: TraceOut | None
+    ruling: RulingOut | None
 
 
 class TracesOut(_KebabModel):
@@ -117,6 +126,7 @@ def summary_out(summary: TraceSummary) -> SummaryOut:
     return SummaryOut(
         submissions=summary.submissions,
         verdicts=summary.verdicts,
+        rulings=summary.rulings,
         referee_calls=summary.referee_calls,
         referee_errors=summary.referee_errors,
         cost_usd=_decimal(summary.cost_usd),
@@ -169,6 +179,7 @@ def item_out(item: JudgedSubmission) -> SubmissionTraceOut:
             for check in item.checks
         ],
         trace=trace_out(item.trace) if item.trace is not None else None,
+        ruling=RulingOut.of(item.ruling) if item.ruling is not None else None,
     )
 
 

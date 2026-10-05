@@ -19,6 +19,7 @@ from pydantic import JsonValue
 
 from game_server.models import CheckOutcome, VerdictStatus
 from game_server.referee import RefereeErrorCode, RefereeReport
+from game_server.rulings import Ruling, StoredRuling
 
 TraceStatus = Literal["ok", "error"]
 
@@ -55,7 +56,8 @@ class Trace:
 
 @dataclass(frozen=True)
 class JudgedSubmission:
-    """A submission's verdict and checks, and the referee's trace if it made a call."""
+    """A submission's verdict and checks, the referee's trace if it made a call, and the
+    moderator's latest ruling if there is one. `verdict` is always the referee's."""
 
     id: int
     # None only if the participant's row is gone.
@@ -68,17 +70,20 @@ class JudgedSubmission:
     image_id: UUID
     checks: tuple[StoredCheck, ...]
     trace: Trace | None
+    ruling: StoredRuling | None
 
 
 @dataclass(frozen=True)
 class TraceSummary:
     """The whole session: its verdicts, the referee's calls and spend, how long players waited.
 
-    The `processing_ms` figures are nearest-rank, and None without submissions.
+    `verdicts` are the referee's; `rulings` count the submissions by their latest ruling. The
+    `processing_ms` figures are nearest-rank, and None without submissions.
     """
 
     submissions: int
     verdicts: dict[VerdictStatus, int]
+    rulings: dict[Ruling, int]
     referee_calls: int
     referee_errors: int
     cost_usd: Decimal
@@ -181,7 +186,20 @@ def read_traces(
 
 def _judged(row: TupleRow, traces: dict[int, Trace]) -> JudgedSubmission:
     """A row of `_submission_rows`, with its trace."""
-    id_, team, checkpoint, attempt, received_at, verdict, processing_ms, image_id, checks = row
+    (
+        id_,
+        team,
+        checkpoint,
+        attempt,
+        received_at,
+        verdict,
+        processing_ms,
+        image_id,
+        checks,
+        ruling,
+        note,
+        ruled_at,
+    ) = row
     return JudgedSubmission(
         id=id_,
         team=team,
@@ -193,17 +211,18 @@ def _judged(row: TupleRow, traces: dict[int, Trace]) -> JudgedSubmission:
         image_id=image_id,
         checks=tuple(StoredCheck(**check) for check in checks),
         trace=traces.get(id_),
+        ruling=StoredRuling(ruling, note, ruled_at) if ruling is not None else None,
     )
 
 
 def _submission_rows(
     conn: Connection[TupleRow], session: UUID, limit: int, before: int | None
 ) -> list[TupleRow]:
-    """The submissions' columns `_judged` reads, newest first."""
+    """The submissions' columns `_judged` reads, with their latest ruling, newest first."""
     return conn.execute(
         "SELECT s.id, p.team, s.checkpoint, s.attempt, s.received_at, s.verdict,"
-        " s.processing_ms, s.image_id, s.checks"
-        " FROM submissions s LEFT JOIN participants p"
+        " s.processing_ms, s.image_id, s.checks, s.ruling, s.note, s.ruled_at"
+        " FROM ruled_submissions s LEFT JOIN participants p"
         " ON p.session = s.session AND p.id = s.participant"
         " WHERE s.session = %(session)s"
         " AND (%(before)s::BIGINT IS NULL OR s.id < %(before)s::BIGINT)"
@@ -244,10 +263,12 @@ def _summary(conn: Connection[TupleRow], session: UUID) -> TraceSummary:
         " (SELECT COUNT(*), COUNT(*) FILTER (WHERE verdict = 'pass'),"
         "  COUNT(*) FILTER (WHERE verdict = 'pending'),"
         "  COUNT(*) FILTER (WHERE verdict = 'failed'),"
+        "  COUNT(*) FILTER (WHERE ruling = 'approve'),"
+        "  COUNT(*) FILTER (WHERE ruling = 'reject'),"
         "  percentile_disc(0.5) WITHIN GROUP (ORDER BY processing_ms),"
         "  percentile_disc(0.95) WITHIN GROUP (ORDER BY processing_ms),"
         "  MAX(processing_ms)"
-        "  FROM submissions WHERE session = %(session)s) AS submitted,"
+        "  FROM ruled_submissions WHERE session = %(session)s) AS submitted,"
         " (SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'error'),"
         "  COALESCE(SUM(cost_usd), 0)"
         "  FROM referee_traces WHERE session = %(session)s) AS called",
@@ -255,10 +276,24 @@ def _summary(conn: Connection[TupleRow], session: UUID) -> TraceSummary:
     ).fetchone()
     if row is None:  # pragma: no cover - aggregates without GROUP BY always return a row
         raise RuntimeError("the database returned no summary row")
-    submissions, passed, pending, failed, p50, p95, slowest, calls, errors, cost = row
+    (
+        submissions,
+        passed,
+        pending,
+        failed,
+        approved,
+        rejected,
+        p50,
+        p95,
+        slowest,
+        calls,
+        errors,
+        cost,
+    ) = row
     return TraceSummary(
         submissions=submissions,
         verdicts={"pass": passed, "pending": pending, "failed": failed},
+        rulings={"approve": approved, "reject": rejected},
         referee_calls=calls,
         referee_errors=errors,
         cost_usd=cost,

@@ -44,6 +44,12 @@ The rules in one place:
 - **The one-time code** is issued on arrival and expires after
   `GAME_SERVER_ARRIVAL_CODE_TTL_SECONDS`. It's recorded but not yet checked in the photo.
 - **`pending` completes a checkpoint**, so a hunt can be played through without the referee.
+- **The moderator has the last word.** A
+  [ruling](#post-sessionssessionsubmissionssubmissionruling) approves or rejects any photo,
+  whatever the referee decided, and [scoring](#scoring) follows it. It changes a team's score,
+  never sends it back: approving a `failed` photo completes its checkpoint, but rejecting a
+  photo doesn't undo one. Once the session stops, the results are final when every `pending`
+  photo has been ruled on.
 
 A walkthrough against [`sessions.example.json`](../sessions.example.json), with checkpoint 3's own
 window removed so the whole route can be played now. It uses `jq`; any photo will do (`photo.jpg`), and the referee is off without an
@@ -332,9 +338,11 @@ compares **perceptual hashes** (64-bit pHash).
   greyscale, resize to 32×32, take the 2-D DCT, keep the top-left 8×8 low frequencies, and set
   each bit where the coefficient is above their median. Re-encoded, resized and EXIF-rotated
   copies land within 2 bits of the original; unrelated images are typically 26+ bits apart.
-- **Accepted** means the verdict is not `failed` (today: `pending`). A photo from a rejected
-  attempt isn't compared against, so a player can resubmit after e.g. a timing rejection.
-  If a later check turns a `pending` submission into `failed`, it drops out automatically.
+- **Accepted** means the [effective verdict](#rulings) is not `failed`: the moderator's
+  ruling if there is one, else the referee's verdict. A photo from a rejected attempt isn't
+  compared against, so a player can resubmit after e.g. a timing rejection. A photo the
+  moderator rejects drops out, so the same photo can be used again; a `failed` one they
+  approve is compared against from then on.
 - **No race.** Reading the accepted photos, running the checks and inserting the row happen in
   one `BEGIN IMMEDIATE` transaction, so two simultaneous uploads of one photo can't both be
   accepted. The photo is decoded before that transaction, so the slow part doesn't hold the lock.
@@ -373,7 +381,8 @@ which is stored and never returned to a player (only the moderator's
 | either | uncertain | | "The referee couldn't decide on this. A moderator will review your photo." |
 | either | skipped | | "Not checked for this attempt." |
 
-A `pass` counts as accepted for the duplicate-photo check, like `pending`.
+A `pass` counts as accepted for the duplicate-photo check, like `pending`, unless the
+moderator rejects it.
 
 ### Submission records
 
@@ -388,7 +397,7 @@ Submissions are stored in [PostgreSQL](../README.md#database), in a `submissions
 | `capture_time`              | The client's claim, as an instant (`TIMESTAMPTZ`: the offset it was sent with isn't kept) |
 | `lat`, `long`               | The client's claimed position                             |
 | `image_id`                  | Stored image's file name (without `.jpeg`)                |
-| `verdict`                   | `failed`, `pending` (or later `pass`)                     |
+| `verdict`                   | `failed`, `pending` or `pass`: what the checks and the referee decided. Never changed afterwards: a moderator's [ruling](#rulings) is recorded beside it |
 | `rejections`                | `JSONB` list of `{code, message}`                         |
 | `distance_m`                | Metres from the claimed position to the checkpoint (server-side only) |
 | `phash`                     | The photo's 64-bit perceptual hash, 16 hex digits         |
@@ -435,6 +444,39 @@ endpoint; the moderator reads them in the session's [traces](#get-sessionssessio
 (`response_text` stays server-side). Traces carry their `session` and are deleted with their submission, so the
 session-close purge removes them with the session's other data. Prompts aren't session
 data: they hold no player data.
+
+### Rulings
+
+The moderator's [rulings](#post-sessionssessionsubmissionssubmissionruling) on photos, in a
+`rulings` table, one row per ruling:
+
+| Column          | Content |
+|-----------------|---------|
+| `id`            | Row id (`BIGINT` identity): the latest row per submission wins |
+| `session`       | The session UUID |
+| `submission_id` | The submission ruled on; deleted with it |
+| `ruling`        | `approve` or `reject` |
+| `note`          | The moderator's note, up to 500 characters, or empty. Moderator-only and never logged: it may describe the photo |
+| `ruled_at`      | Server time of the ruling (`TIMESTAMPTZ`) |
+
+A ruling is recorded beside the referee's verdict and **never changes the submission**: its
+`verdict`, `checks` and [trace](#referee-traces) keep what the referee decided, which the evals
+and the traces rely on. Posting again adds a row rather than updating one, so earlier rulings
+stay as the audit trail.
+
+What follows from a submission's latest ruling is defined once, by the `ruled_submissions`
+view in [`schema.sql`](../src/game_server/schema.sql), which scoring, progress, the
+duplicate-photo check, the overview and the traces all read:
+
+- **Effective verdict:** `approve` → `pass`, `reject` → `failed`, no ruling → the referee's
+  verdict. [Scoring](#scoring) and the [duplicate-photo check](#submission-checks) go by it.
+- **Completes its checkpoint:** the referee's verdict was `pass` or `pending`, or the moderator
+  has ever approved the photo. A later reject doesn't undo it, so a ruling never sends a team
+  back.
+
+A ruling runs in one transaction under the session's lock, like a photo, so it can't change the
+accepted photos while a duplicate-photo check reads them. Rows carry their `session` and go
+with their submission, so they're deleted with the session's other data.
 
 ### Participants
 
@@ -602,7 +644,7 @@ that team's turn.
 | `progress` | How many checkpoints on the team's route it has completed, and how many there are |
 | `current`  | Only while `playing`, otherwise `null`. `sequence` is what the app sends as `checkpoint` to `POST /challenge`. `position` is its place on the team's route, counting from 1. `clue` is the checkpoint's clue. `open` is whether its effective window is open now |
 | `session`  | The [session clock](#post-sessionssessionstart), as the moderator's start and stop return it: the phase, the planned times (for display, e.g. time to the planned end), when it started and stopped, and `server-time` to correct a phone's clock |
-| `score`    | The team's own [score](#scoring). `points`: its total so far, lower is better. `in-review`: checkpoints whose `pending` photo awaits the moderator. `final`: `true` once the session is stopped. `place`: `null` until final, then the team's position among the teams that joined, lowest points first; ties share a place (1, 1, 3) |
+| `score`    | The team's own [score](#scoring). `points`: its total so far, lower is better. `in-review`: checkpoints whose `pending` photo awaits the moderator's ruling. `final`: `true` once the session is stopped **and** the moderator has ruled on every `pending` photo in it (see [final results](#scoring)). `place`: `null` until final, then the team's position among the teams that joined, lowest points first; ties share a place (1, 1, 3) |
 
 | Status | When |
 |--------|------|
@@ -615,38 +657,51 @@ It isn't rate-limited: a team only learns about itself.
 **Progress comes from the team's submissions**, with no separate table:
 
 - A checkpoint is **completed** once the team's participant has a submission for it whose
-  verdict is `pass` or `pending`. That's "accepted", as the duplicate-photo check already
-  defines it. A `failed` submission doesn't complete it.
+  verdict is `pass` or `pending`, or that the moderator has
+  [approved](#post-sessionssessionsubmissionssubmissionruling). A `failed` submission doesn't
+  complete it unless approved. Once completed, a checkpoint stays completed: a ruling never
+  takes it back.
 - The current checkpoint is the **first one on the team's route that isn't completed**.
 
 **Decision (1 Oct 2026): `pending` completes a checkpoint.** A `pending` verdict goes to the
 moderator's review, and the team shouldn't wait in the field for it: the review changes the
 team's score, not its progress. With the referee disabled (no API key, locally and in CI),
 every submission that doesn't fail is `pending`, so this is also what lets a hunt be played
-through without the referee. When moderator overrides arrive, they'll be recorded beside the
-original verdict rather than rewriting it, so an override can't move a team backwards.
+through without the referee. The moderator's [rulings](#rulings) are recorded beside the
+original verdict rather than rewriting it, so a ruling can't move a team backwards: rejecting a
+`pass` or `pending` photo keeps its checkpoint completed (and scores N+1 there), and approving a
+`failed` one completes it, so the team moves on at its next `GET …/state`.
 
 ### Scoring
 
 Points by order of arrival (day-1 game guidelines, decided 2 Oct 2026); **the lowest total
-wins**. For each team that joined, over the checkpoints on its route:
+wins**. Scoring goes by each photo's **effective verdict**: the moderator's
+[ruling](#post-sessionssessionsubmissionssubmissionruling) if there is one (`approve` → `pass`,
+`reject` → `failed`), else the referee's verdict. For each team that joined, over the
+checkpoints on its route:
 
-- A checkpoint where the referee accepted the team's photo (`pass`) scores the team's
-  **place** there: 1 if its accepted photo was received first among all teams, 2 if second,
-  and so on. Teams are ordered by the server's `received-at` of their first `pass` there.
-  Equal times share a place.
+- A checkpoint where the team has a `pass` photo scores the team's **place** there: 1 if its
+  first `pass` photo was received first among all teams, 2 if second, and so on. Teams are
+  ordered by the server's `received-at` of their first `pass` there. Equal times share a place.
 - Every other checkpoint counts **N+1**, where N is the number of teams that have joined the
   session (not the number in the sessions file).
-- A `pending` photo scores nothing yet: its checkpoint still counts N+1, and it's counted in
-  `in-review`. Once the moderator accepts it, it will take its place by its own receive time,
-  which can move other teams down a place.
-- A `failed` photo scores nothing.
+- A `pending` photo scores nothing until the moderator rules on it: its checkpoint still counts
+  N+1, and it's counted in `in-review`. Once approved, it takes its place by **when it was
+  received**, not when it was ruled, so a team doesn't lose its order of arrival while it waits
+  for review. Approving a photo can move other teams down a place at that checkpoint: that's
+  the rule, not a side effect.
+- A `failed` photo, or a photo the moderator rejected, scores nothing: N+1 there.
 - `points` is the sum. It always equals the result if the session finished now, so lower is
   better at every moment.
 
+**Final results wait for the reviews.** `final` (and each team's `place`, here and in the
+[overview](#get-sessionssessionoverview)) is set once the session has stopped **and** no
+`pending` photo in it is left unruled. Until then, after a stop, `final` is `false` and `place`
+is `null`; the web app polls until the result is final.
+
 The order is set by the **photo**, not the arrive tap: arriving takes no location, so ranking
 by it would let a team tap early and buy a better place. `scoring.team_points` computes a
-team's total; the moderator's overview will use the same function.
+team's total; the moderator's overview uses the same function.
 
 **Secrecy.** The response holds only the current clue: never other checkpoints' clues, any
 checkpoint's name, coordinates, proximity, window times, scene, the team's route, other teams
@@ -712,12 +767,14 @@ at once stamp one time. Each change is logged (session, phase and time), never t
 ## `GET /sessions/{session}/overview`
 
 **Moderator only** (same authorisation as start). One call for the moderator screen: the
-session clock, the standings with each team's progress (to spot a team that's stuck and step
-in with a hint), and the teams that tried to play outside the session.
+session clock, how many photos wait for a ruling, the standings with each team's progress (to
+spot a team that's stuck and step in with a hint), and the teams that tried to play outside the
+session.
 
 ```json
 {
   "session": { "phase": "running", "planned-start": "…", "planned-end": "…", "started-at": "…", "stopped-at": null, "server-time": "…" },
+  "to-review": 1,
   "teams": [
     {
       "team": "Red Foxes",
@@ -740,10 +797,11 @@ in with a hint), and the teams that tried to play outside the session.
 | Field | Meaning |
 |-------|---------|
 | `session` | The [session clock](#post-sessionssessionstart) |
+| `to-review` | The session's `pending` photos the moderator hasn't [ruled on](#post-sessionssessionsubmissionssubmissionruling) yet. After a stop, the results are final once it's `0` |
 | `teams` | Every team in the sessions file. Joined teams first, by `points` then name; teams that haven't joined last, by name, with `joined: false` and `points`, `in-review`, `place`, `last-completed` and `current` all `null` |
 | `completed`, `total` | Checkpoints completed on the team's route, out of how many (as in the team's own state) |
-| `points`, `in-review`, `place` | From the same [scoring](#scoring) as the team's own state, so they always match what the team sees. `place` is `null` until the session is stopped |
-| `last-completed` | The team's most recent accepted photo (`pass` or `pending`) on its route: the checkpoint, its verdict and when it was received; `null` if none. The app shows "approved 14 min ago" from `at` |
+| `points`, `in-review`, `place` | From the same [scoring](#scoring) as the team's own state, so they always match what the team sees. `place` is `null` until the results are final: the session is stopped and `to-review` is `0` |
+| `last-completed` | The team's most recent photo on its route that completed a checkpoint: the checkpoint, the photo's [effective verdict](#rulings) and when it was received; `null` if none. The verdict is `failed` for a photo the moderator rejected, which still completes its checkpoint. The app shows "approved 14 min ago" from `at` |
 | `current` | The checkpoint the team is on; `null` unless it's playing |
 | `blocked` | The newest 50 [blocked attempts](#blocked-attempts), newest first |
 
@@ -759,9 +817,10 @@ scenes, photos, join codes, participant ids or the moderator code.
 ## `GET /sessions/{session}/traces`
 
 **Moderator only** (same authorisation as the [overview](#get-sessionssessionoverview)). Every
-submission in the session, **newest first**, each with the checks that ran and the
-[referee's trace](#referee-traces): why a photo got its verdict, the model's reasons beside
-what the player was told, and what the session costs and how long players wait.
+submission in the session, **newest first**, each with the checks that ran, the
+[referee's trace](#referee-traces) and the moderator's [ruling](#rulings), if any: why a photo
+got its verdict, the model's reasons beside what the player was told, and what the session
+costs and how long players wait.
 
 | Query    | Meaning |
 |----------|---------|
@@ -775,6 +834,7 @@ The first page of two (`?limit=2`):
   "summary": {
     "submissions": 14,
     "verdicts": { "pass": 8, "pending": 2, "failed": 4 },
+    "rulings": { "approve": 1, "reject": 0 },
     "referee-calls": 11,
     "referee-errors": 1,
     "cost-usd": "0.0381",
@@ -808,7 +868,8 @@ The first page of two (`?limit=2`):
         "output-tokens": 143,
         "cost-usd": "0.003605",
         "latency-ms": 2650
-      }
+      },
+      "ruling": { "ruling": "approve", "note": "Pose is right, the arm is just cropped", "ruled-at": "2026-10-03T10:52:40Z" }
     },
     { "submission": 41, "…": "…" }
   ],
@@ -818,13 +879,15 @@ The first page of two (`?limit=2`):
 
 | Field | Meaning |
 |-------|---------|
-| `summary` | The **whole session**, whichever page this is. `submissions` and `verdicts` count every submission; `referee-calls` and `referee-errors` count the traces (`status` `ok` or `error`); `cost-usd` adds up their known costs (`"0"` without any); `processing-ms` is the nearest-rank p50 and p95, and the max, of every submission's [`processing_ms`](#submission-records), all `null` without submissions |
+| `summary` | The **whole session**, whichever page this is. `submissions` and `verdicts` count every submission by the referee's verdict; `rulings` counts the submissions by their latest ruling; `referee-calls` and `referee-errors` count the traces (`status` `ok` or `error`); `cost-usd` adds up their known costs (`"0"` without any); `processing-ms` is the nearest-rank p50 and p95, and the max, of every submission's [`processing_ms`](#submission-records), all `null` without submissions |
 | `prompts` | The text of each `prompt-sha256` on this page, once; `{}` if none |
 | `items` | Up to `limit` submissions, newest (highest id) first, below `before` |
 | `team` | The team's name |
 | `checks` | Every check that ran, as [stored](#submission-records): `reason` is what the player was told, `detail` is why (for the visual checks the model's reason, or why the referee wasn't asked) |
 | `image-id` | The stored photo's id. The photo itself isn't served |
 | `trace` | The [referee call](#referee-traces): what it was sent (`prompt-sha256`, `user-text`, and the `references` by position and hash), what came back (`judgement`, `null` unless the output was valid), its `error-code` when `status` is `error`, and its tokens, cost and latency. `null` when the referee wasn't consulted or is disabled; the visual checks' `detail` says why |
+| `verdict` | The referee's verdict, as recorded: a ruling never changes it |
+| `ruling` | The moderator's latest [ruling](#post-sessionssessionsubmissionssubmissionruling): `{ruling, note, ruled-at}`, or `null` if none. The effective verdict follows from it (`approve` → `pass`, `reject` → `failed`) |
 | `next` | Pass it as `before` for the next page; `null` on the last page |
 
 Costs are decimal strings (`"0.0021"`), exactly the stored `NUMERIC`; a trace's `cost-usd` is
@@ -843,6 +906,68 @@ Only the moderator can call it: it shows the scenes (the answers to the clues), 
 reasons and the checks' `detail`. It never shows coordinates, distances, clues, join codes,
 one-time codes, participant ids, the moderator code or the photos, nor the model's raw
 `response_text`.
+
+## `POST /sessions/{session}/submissions/{submission}/ruling`
+
+**Moderator only** (same authorisation as the [overview](#get-sessionssessionoverview)). The
+moderator approves or rejects a photo: a `pending` one the referee couldn't decide, or a `pass`
+or `failed` one the referee got wrong. The moderator has the last word, and
+[scoring](#scoring) follows the ruling. `submission` is the photo's id, as the
+[traces](#get-sessionssessiontraces) show it.
+
+```json
+{ "ruling": "approve", "note": "Pose is right, the arm is just cropped" }
+```
+
+| Field    | Meaning |
+|----------|---------|
+| `ruling` | `approve` or `reject` |
+| `note`   | Optional, up to 500 characters: why, for the record. Shown back in the traces, never logged |
+
+Unknown fields are rejected. It works on **any** submission in the session, whatever its
+verdict, while the session runs **and after it stops**: the results aren't final until every
+`pending` photo has been ruled on. Posting again **replaces** the ruling, so the moderator can
+change their mind; every ruling is kept as the audit trail ([Rulings](#rulings)).
+
+```json
+{
+  "submission": 42,
+  "verdict": "pending",
+  "ruling": { "ruling": "approve", "note": "Pose is right, the arm is just cropped", "ruled-at": "2026-10-03T10:52:40Z" },
+  "effective-verdict": "pass"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `submission` | The submission ruled on |
+| `verdict` | The referee's verdict. A ruling never changes it, nor the submission's checks or trace |
+| `ruling` | The ruling as recorded; `ruled-at` is the server's time, UTC to the second |
+| `effective-verdict` | What scoring now goes by: `approve` → `pass`, `reject` → `failed` |
+
+What a ruling changes:
+
+- **Approving a `pending` photo**: the team takes its place at that checkpoint by the photo's
+  `received-at` (other teams there can move down a place), and `in-review` and the overview's
+  `to-review` drop by one.
+- **Rejecting a `pending` or `pass` photo**: the team scores N+1 there and keeps its progress:
+  the checkpoint stays completed.
+- **Approving a `failed` photo**: it completes the checkpoint, and the team moves on at its
+  next [`GET …/state`](#get-sessionssessionparticipantsparticipantstate).
+- **The duplicate-photo check** compares only photos whose effective verdict isn't `failed`, so
+  a rejected photo no longer blocks the same photo.
+
+| Status | When |
+|--------|------|
+| `201`  | The submission's first ruling |
+| `200`  | A ruling that replaces an earlier one |
+| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `404`  | Unknown session (`"unknown session"`), or a submission that isn't in this session (`"unknown submission"`) |
+| `422`  | An invalid body: no or another `ruling`, a `note` that isn't text or is over 500 characters, or an unknown field. Or a `submission` that isn't a positive integer (up to 2⁶³−1) |
+
+Each ruling is logged on one line: the session, the submission, the ruling and the original →
+effective verdict, never the note, which may describe the photo. The player isn't told which
+photo was ruled on: their `points` and `in-review` update, with no per-checkpoint breakdown.
 
 ## `POST /sessions/{session}/participants/{participant}/arrive`
 

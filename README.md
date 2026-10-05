@@ -13,8 +13,9 @@ and managed with [uv](https://docs.astral.sh/uv/).
 | `POST` | [`/sessions/{session}/participants/{participant}/arrive`](docs/api.md#post-sessionssessionparticipantsparticipantarrive) | Check in at the current checkpoint: the pose and a one-time code |
 | `POST` | [`/sessions/{session}/start`](docs/api.md#post-sessionssessionstart) | **Moderator:** start the session |
 | `POST` | [`/sessions/{session}/stop`](docs/api.md#post-sessionssessionstop) | **Moderator:** finish the session, for good |
-| `GET`  | [`/sessions/{session}/overview`](docs/api.md#get-sessionssessionoverview) | **Moderator:** the clock, standings, each team's progress and blocked attempts |
-| `GET`  | [`/sessions/{session}/traces`](docs/api.md#get-sessionssessiontraces) | **Moderator:** every verdict, newest first, with its referee trace, and the session's spend and wait times |
+| `GET`  | [`/sessions/{session}/overview`](docs/api.md#get-sessionssessionoverview) | **Moderator:** the clock, the photos left to review, standings, each team's progress and blocked attempts |
+| `GET`  | [`/sessions/{session}/traces`](docs/api.md#get-sessionssessiontraces) | **Moderator:** every verdict, newest first, with its referee trace and any ruling, and the session's spend and wait times |
+| `POST` | [`/sessions/{session}/submissions/{submission}/ruling`](docs/api.md#post-sessionssessionsubmissionssubmissionruling) | **Moderator:** approve or reject a photo, whatever its verdict; scoring follows the ruling |
 | `GET`  | [`/health`](#deploying-on-railway) | Readiness: `200 {"status": "ok"}` when the submissions database answers, else `503 {"status": "unavailable"}` |
 | `POST` | [`/challenge`](docs/api.md#post-challenge) | A participant submits a photo for the checkpoint it checked in at |
 | `POST` | [`/checkpoint/proximity`](docs/api.md#post-checkpointproximity) | **Advisory only:** does the player look in range of an open checkpoint? |

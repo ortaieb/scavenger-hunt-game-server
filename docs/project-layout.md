@@ -22,8 +22,9 @@ src/game_server/
   database.py        # Database: PostgreSQL connection pool and its settings
   schema.sql         # the tables: dropped and created from scratch (destructive)
   db_reset.py        # `python -m game_server.db_reset --yes`: runs schema.sql
-  submissions.py     # SubmissionStore: submissions, attempts, participants, arrivals
+  submissions.py     # SubmissionStore: submissions, attempts, participants, arrivals, rulings
   referee_traces.py  # record_trace: one row per referee call, with its submission; read_traces
+  rulings.py         # record_ruling: the moderator's rulings, beside the referee's verdict
   clock.py           # injectable UTC clock, and the monotonic timer for processing_ms
   geo.py             # haversine distance_m
   phash.py           # perceptual_hash (Pillow + numpy), hamming_distance
@@ -37,8 +38,9 @@ src/game_server/
   session_control.py # moderator start and stop, and the session clock
   overview.py        # `…/overview`: the moderator's standings, progress and blocked attempts
   traces.py          # `…/traces`: the moderator's verdicts with their referee traces and spend
+  ruling.py          # `…/submissions/{submission}/ruling`: the moderator approves or rejects a photo
   game_state.py      # team state: team_state() rules and the `…/state` endpoint
-  scoring.py         # points by order of arrival: team_points(), places()
+  scoring.py         # points by order of arrival: team_points(), places(), results_final()
   arrive.py          # `…/arrive`: check in, pose and one-time code
   arrivals.py        # Arrival, LatestArrival: when a check-in still holds for a photo
   lookup.py          # find_checkpoint: shared session/checkpoint lookup (404s)

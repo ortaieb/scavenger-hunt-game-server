@@ -1,7 +1,7 @@
 -- The game server's tables, dropped (if they exist) and created from scratch.
 --
--- DESTRUCTIVE: every submission, participant and arrival is deleted. Meant for development,
--- until schema changes are applied as versioned migrations.
+-- DESTRUCTIVE: every submission, referee trace, participant and arrival is deleted. Meant for
+-- development, until schema changes are applied as versioned migrations.
 --
 -- Run it with the server's connection settings:  make db-reset
 -- or with psql:                                   psql "$DATABASE_URL" -f src/game_server/schema.sql
@@ -10,7 +10,10 @@
 
 BEGIN;
 
-DROP TABLE IF EXISTS blocked_attempts, session_runs, arrivals, participants, submissions CASCADE;
+DROP TABLE IF EXISTS
+    referee_traces, referee_prompts, blocked_attempts, session_runs, arrivals, participants,
+    submissions
+    CASCADE;
 
 -- A team's check-ins at a checkpoint, each with a one-time code. Not used for scoring: the
 -- order of arrival is set by the accepted photo's received_at. A photo is held to its team's
@@ -51,20 +54,65 @@ CREATE TABLE submissions (
     phash_match_id        BIGINT           REFERENCES submissions (id) ON DELETE SET NULL,
     -- Every check that ran: [{check, outcome, confidence, reason, detail}].
     checks                JSONB            NOT NULL,
-    -- The referee's report, for moderator audit and cost tracking; NULL when it wasn't
-    -- consulted. referee_judgement describes the photo: server-side only.
-    referee_status        TEXT,
-    referee_model         TEXT,
-    referee_error         TEXT,
-    referee_judgement     JSONB,
-    referee_input_tokens  INTEGER,
-    referee_output_tokens INTEGER,
-    referee_latency_ms    INTEGER,
     -- The team's active arrival at the checkpoint that the photo used; NULL when there was none.
     arrival_id            BIGINT           REFERENCES arrivals (id),
+    -- From received_at until the verdict was recorded, whether or not the referee was called.
+    processing_ms         INTEGER          NOT NULL CHECK (processing_ms >= 0),
     UNIQUE (session, participant, checkpoint, attempt)
 );
 CREATE INDEX submissions_by_arrival ON submissions (arrival_id);
+
+-- Each system prompt the referee has used, stored once and named by its hash in the traces.
+-- Not session data: a prompt holds no player data or scene.
+CREATE TABLE referee_prompts (
+    sha256        TEXT        PRIMARY KEY,
+    text          TEXT        NOT NULL,
+    first_used_at TIMESTAMPTZ NOT NULL
+);
+
+-- One row per referee call (status ok or error), written in the same transaction as its
+-- submission; no row when the referee wasn't consulted or is disabled. For moderator audit
+-- and cost tracking. Server-side only: user_text holds the scene (the answer to the clue),
+-- and response_text and judgement describe the photo. Rows carry their session and go with
+-- their submission, so they're deleted with the session's other data.
+CREATE TABLE referee_traces (
+    id                          BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    session                     UUID        NOT NULL,
+    created_at                  TIMESTAMPTZ NOT NULL,
+    submission_id               BIGINT      NOT NULL UNIQUE
+                                            REFERENCES submissions (id) ON DELETE CASCADE,
+    -- The stored player photo, the submission's own file: there's no second copy.
+    image_id                    UUID        NOT NULL,
+    -- The prepared JPEG the model saw (upright, resized, no EXIF); NULL when the photo
+    -- couldn't be prepared (error_code invalid_image), so none was sent.
+    image_sha256                TEXT,
+    image_width                 INTEGER,
+    image_height                INTEGER,
+    -- The reference photos sent with it: [] until they are. (Not `references`: a reserved word.)
+    reference_photos            JSONB       NOT NULL,
+    prompt_sha256               TEXT        NOT NULL REFERENCES referee_prompts (sha256),
+    -- The text part of the user turn: the scene and the pose.
+    user_text                   TEXT        NOT NULL,
+    model                       TEXT        NOT NULL,
+    request_id                  TEXT,
+    status                      TEXT        NOT NULL CHECK (status IN ('ok', 'error')),
+    error_code                  TEXT,
+    stop_reason                 TEXT,
+    -- The model's output as received, and its parsed judgement when it was valid. NULL
+    -- when no reply came back.
+    response_text               TEXT,
+    judgement                   JSONB,
+    input_tokens                INTEGER,
+    output_tokens               INTEGER,
+    -- NULL until the referee uses prompt caching.
+    cache_read_input_tokens     INTEGER,
+    cache_creation_input_tokens INTEGER,
+    -- At list price (game_server/pricing.py); NULL without a reply, or for an unknown model.
+    cost_usd                    NUMERIC,
+    -- The model call, SDK retries included.
+    latency_ms                  INTEGER     NOT NULL
+);
+CREATE INDEX referee_traces_by_session ON referee_traces (session);
 
 -- One participant per team that has joined, keyed by a server-generated id. consented_at is
 -- updated on every join (the player ticked the consent box again).

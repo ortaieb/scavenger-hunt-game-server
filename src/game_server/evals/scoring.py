@@ -122,30 +122,3 @@ def percentile(values: Sequence[float], percent: float) -> float | None:
     ordered = sorted(values)
     rank = max(1, ceil(percent / 100 * len(ordered)))
     return ordered[rank - 1]
-
-
-# USD per million tokens (input, output), from the published price list. Unknown models
-# report no cost rather than a guess.
-PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
-    "claude-haiku-4-5": (1.00, 5.00),
-    "claude-sonnet-4-6": (3.00, 15.00),
-    "claude-sonnet-5": (2.00, 10.00),
-    "claude-opus-4-8": (5.00, 25.00),
-    "claude-opus-5": (5.00, 25.00),
-}
-
-
-def price_for(model: str) -> tuple[float, float] | None:
-    """Prices for a model id, also matching dated snapshots (e.g. `...-20251001`)."""
-    for known, prices in PRICES_PER_MTOK.items():
-        if model == known or model.startswith(f"{known}-"):
-            return prices
-    return None
-
-
-def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
-    """Estimated cost from recorded token counts; None when the price isn't known."""
-    prices = price_for(model)
-    if prices is None:
-        return None
-    return (input_tokens * prices[0] + output_tokens * prices[1]) / 1_000_000

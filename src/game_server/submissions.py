@@ -23,6 +23,7 @@ from game_server.database import Database, get_database
 from game_server.models import VerdictStatus
 from game_server.phash import from_hex, to_hex
 from game_server.referee import RefereeReport
+from game_server.referee_traces import record_trace
 from game_server.scoring import SessionResults
 from game_server.session_runs import RunChange, SessionRun, session_phase
 
@@ -46,7 +47,10 @@ class NewSubmission:
     checks: Sequence[CheckResult]
     distance_m: float
     phash: int
+    # From `received_at` until the verdict is recorded.
+    processing_ms: int
     phash_match_id: int | None = None
+    # Recorded as a trace when the referee made a call (see `referee_traces`).
     referee: RefereeReport | None = None
     # The active arrival the photo used; None when there was none.
     arrival_id: int | None = None
@@ -409,7 +413,10 @@ class SubmissionTransaction:
         )
 
     def record(self, submission: NewSubmission) -> RecordedSubmission:
-        """Insert `submission` as the next attempt for its (session, participant, checkpoint)."""
+        """Insert `submission` as the next attempt for its (session, participant, checkpoint).
+
+        The referee's trace, if it made a call, is inserted with it.
+        """
         key = (submission.session, submission.participant, submission.checkpoint)
         (earlier,) = self._conn.execute(
             "SELECT COUNT(*) FROM submissions"
@@ -420,11 +427,8 @@ class SubmissionTransaction:
         inserted = self._conn.execute(
             "INSERT INTO submissions (session, participant, checkpoint, attempt,"
             " received_at, capture_time, lat, long, image_id, verdict, rejections,"
-            " distance_m, phash, phash_match_id, checks, referee_status, referee_model,"
-            " referee_error, referee_judgement, referee_input_tokens, referee_output_tokens,"
-            " referee_latency_ms, arrival_id)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,"
-            " %s, %s, %s, %s, %s)"
+            " distance_m, phash, phash_match_id, checks, arrival_id, processing_ms)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             " RETURNING id",
             (
                 *key,
@@ -440,13 +444,18 @@ class SubmissionTransaction:
                 to_hex(submission.phash),
                 submission.phash_match_id,
                 Jsonb([_check_record(result) for result in submission.checks]),
-                *_referee_columns(submission.referee),
                 submission.arrival_id,
+                submission.processing_ms,
             ),
         ).fetchone()
         if inserted is None:  # pragma: no cover - INSERT ... RETURNING always returns the row
             raise RuntimeError("the database did not return the inserted row id")
-        return RecordedSubmission(id=inserted[0], attempt=attempt)
+        recorded = RecordedSubmission(id=inserted[0], attempt=attempt)
+        if submission.referee is not None:
+            record_trace(
+                self._conn, recorded.id, submission.session, submission.image_id, submission.referee
+            )
+        return recorded
 
 
 def _session_run(conn: Connection[TupleRow], session: UUID) -> SessionRun | None:
@@ -499,22 +508,6 @@ def _check_record(result: CheckResult) -> dict[str, object]:
         "reason": result.reason,
         "detail": result.detail,
     }
-
-
-def _referee_columns(report: RefereeReport | None) -> tuple[object, ...]:
-    """Values for the referee_* columns, in order; all NULL when it wasn't consulted."""
-    if report is None:
-        return (None,) * 7
-    judgement = Jsonb(report.judgement.model_dump(mode="json")) if report.judgement else None
-    return (
-        report.status,
-        report.model,
-        report.error_code,
-        judgement,
-        report.input_tokens,
-        report.output_tokens,
-        report.latency_ms,
-    )
 
 
 def get_submission_store(database: Annotated[Database, Depends(get_database)]) -> SubmissionStore:

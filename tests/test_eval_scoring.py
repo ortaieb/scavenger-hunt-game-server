@@ -9,11 +9,9 @@ from game_server.evals.scoring import (
     Outcome,
     SweepRow,
     confusion,
-    cost_usd,
     grade,
     outcome_at,
     percentile,
-    price_for,
     suggested_threshold,
     sweep,
 )
@@ -136,23 +134,3 @@ def test_percentile_nearest_rank(
     values: list[float], percent: float, expected: float | None
 ) -> None:
     assert percentile(values, percent) == expected
-
-
-@pytest.mark.parametrize(
-    ("model", "prices"),
-    [
-        ("claude-haiku-4-5", (1.0, 5.0)),
-        ("claude-haiku-4-5-20251001", (1.0, 5.0)),
-        ("claude-sonnet-5", (2.0, 10.0)),
-        ("claude-opus-5", (5.0, 25.0)),
-        ("some-other-model", None),
-        ("claude-haiku-4-50", None),  # not a dated snapshot of haiku-4-5
-    ],
-)
-def test_price_for(model: str, prices: tuple[float, float] | None) -> None:
-    assert price_for(model) == prices
-
-
-def test_cost_from_recorded_tokens() -> None:
-    assert cost_usd("claude-haiku-4-5", 1_000_000, 200_000) == pytest.approx(2.0)
-    assert cost_usd("unknown", 10, 10) is None

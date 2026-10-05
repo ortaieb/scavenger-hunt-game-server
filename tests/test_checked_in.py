@@ -3,6 +3,7 @@ judging the pose issued at arrival. Fixed clock, fake referee."""
 
 import json
 import logging
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -27,7 +28,7 @@ from game_server.arrivals import Arrival, LatestArrival
 from game_server.challenge import judge_and_record
 from game_server.checks import SubmissionContext, run_checks
 from game_server.checks.checked_in import CHECK_IN_EXPIRED, NOT_CHECKED_IN, CheckedInCheck
-from game_server.clock import get_clock
+from game_server.clock import Stopwatch, get_clock
 from game_server.config import Settings, get_settings
 from game_server.models import ChallengeMetadata, Location
 from game_server.phash import perceptual_hash
@@ -341,7 +342,9 @@ def test_concurrent_photos_against_one_arrival_use_it_once(
         )
         earlier = run_checks(before, ctx)  # both see the arrival active
         barrier.wait()
-        submission, _, _ = judge_and_record(ctx, before, earlier, [], ImageStore(tmp_path), store)
+        submission, _, _ = judge_and_record(
+            ctx, before, earlier, [], ImageStore(tmp_path), store, Stopwatch(time.monotonic)
+        )
         [result] = submission.checks
         return result.outcome
 

@@ -9,21 +9,27 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import anthropic
+import psycopg
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx2 import Response
 from images import jpeg, scene
+from psycopg.rows import DictRow
+from pytest_mock import MockerFixture
 from starlette.routing import Route
 
 from game_server.app import create_app
 from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
 from game_server.models import VerdictStatus
+from game_server.referee import ClaudeReferee, ModelReply, get_referee
 from game_server.sessions import get_session_repository, parse_sessions
 from game_server.submissions import NewSubmission, SubmissionStore
 
 SENTINEL = "SENTINEL-SCENE-4b1d"
+REASON = "SENTINEL-REASON-8f"  # the model's description of the photo
 JOIN_CODE = "SENTINEL-CODE-9X"  # a credential: no response may echo it
 NAME = "SENTINEL-NAME-c3"  # checkpoint names are never shown
 LATER_CLUE = "SENTINEL-LATER-CLUE-7e"  # the second clue on the route: not while on the first
@@ -35,6 +41,13 @@ SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 UNKNOWN = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 NOW = datetime(2026, 10, 3, 10, 30, tzinfo=UTC)
 PHOTO = jpeg(scene(3))
+# The model is unsure, so a photo that passes the other checks is pending.
+MODEL_OUTPUT = json.dumps(
+    {
+        "scene_matches": {"reason": f"{REASON} a fountain", "verdict": "unsure", "confidence": 0.5},
+        "pose_correct": {"reason": f"{REASON} a wave", "verdict": "unsure", "confidence": 0.5},
+    }
+)
 
 SESSIONS_JSON = json.dumps(
     [
@@ -73,8 +86,14 @@ SESSIONS_JSON = json.dumps(
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> Iterator[TestClient]:
+def client(tmp_path: Path, mocker: MockerFixture) -> Iterator[TestClient]:
     app = create_app()
+    # The real referee, with only the SDK call faked: its traces hold the scene and reasons.
+    reply = ModelReply("end_turn", MODEL_OUTPUT, "claude-haiku-4-5", "req_secrecy", 1500, 120)
+    mocker.patch("game_server.referee._create_structured_message", return_value=reply)
+    sdk = anthropic.Anthropic(api_key="test-key-not-used")
+    referee = ClaudeReferee(sdk, "claude-haiku-4-5", max_image_edge=1568)
+    app.dependency_overrides[get_referee] = lambda: referee
     settings = Settings(image_base_path=tmp_path / "images")
     app.dependency_overrides[get_settings] = lambda: settings
     (tmp_path / "reference").mkdir()
@@ -269,7 +288,7 @@ def app_routes(client: TestClient) -> set[tuple[str, str]]:
 
 
 def test_no_route_ever_returns_the_scene(
-    client: TestClient, caplog: pytest.LogCaptureFixture
+    client: TestClient, caplog: pytest.LogCaptureFixture, db: psycopg.Connection[DictRow]
 ) -> None:
     caplog.set_level(logging.DEBUG)
     responses = every_route_response(client)
@@ -285,8 +304,18 @@ def test_no_route_ever_returns_the_scene(
             assert PHOTO_NAME not in response.text, f"{route} leaked a reference photo"
             assert "reference" not in response.text.lower(), f"{route} mentions reference photos"
             assert MODERATOR_CODE not in response.text, f"{route} leaked the moderator code"
+            assert REASON not in response.text, f"{route} leaked the model's description"
     for secret in (MODERATOR_CODE, JOIN_CODE):
         assert secret not in caplog.text.upper(), "a credential reached the logs"
+    assert SENTINEL not in caplog.text, "the scene reached the logs"
+    assert REASON not in caplog.text, "the model's description reached the logs"
+    # Not vacuous: the referee was consulted, and its traces hold both.
+    traced = db.execute("SELECT user_text, response_text, judgement FROM referee_traces").fetchall()
+    assert traced
+    for trace in traced:
+        assert SENTINEL in trace["user_text"]
+        assert REASON in trace["response_text"]
+        assert REASON in trace["judgement"]["scene_matches"]["reason"]
 
 
 def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
@@ -347,6 +376,7 @@ def record(
             checks=(),
             distance_m=1.0,
             phash=checkpoint,
+            processing_ms=40,
         )
     )
 

@@ -146,6 +146,7 @@ def submit(
             checks=(),
             distance_m=1.0,
             phash=checkpoint,
+            processing_ms=40,
         )
     )
 

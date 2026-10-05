@@ -1,6 +1,8 @@
 import base64
+import hashlib
 import json
 import logging
+from decimal import Decimal
 from io import BytesIO
 from typing import Any
 
@@ -22,7 +24,9 @@ from game_server.referee import (
     build_referee,
     get_referee,
     prepare_image,
+    prompt_sha256,
     system_prompt,
+    user_text,
 )
 from game_server.sessions import VisualChallenge
 
@@ -43,11 +47,11 @@ GOOD_OUTPUT = json.dumps(
 REQUEST = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
 
 
-def reply(text: str = GOOD_OUTPUT, stop_reason: str = "end_turn") -> ModelReply:
+def reply(text: str = GOOD_OUTPUT, stop_reason: str = "end_turn", model: str = MODEL) -> ModelReply:
     return ModelReply(
         stop_reason=stop_reason,
         text=text,
-        model=MODEL,
+        model=model,
         request_id="req_123",
         input_tokens=1500,
         output_tokens=120,
@@ -79,6 +83,93 @@ def test_valid_judgement_is_ok(claude: ClaudeReferee, mocker: MockerFixture) -> 
     assert (report.input_tokens, report.output_tokens) == (1500, 120)
     assert isinstance(report.latency_ms, int)
     assert report.latency_ms >= 0
+
+
+# --- what the report keeps for the trace (#62) -----------------------------------
+
+
+def test_report_keeps_what_was_sent_and_received(
+    claude: ClaudeReferee, mocker: MockerFixture
+) -> None:
+    mocker.patch(WRAPPER, return_value=reply())
+
+    report = claude.judge(PHOTO, CHALLENGE)
+
+    call = report.call
+    assert call is not None
+    assert call.system_prompt == system_prompt()
+    assert call.prompt_sha256 == hashlib.sha256(system_prompt().encode()).hexdigest()
+    assert call.user_text == user_text(CHALLENGE)
+    prepared = prepare_image(PHOTO, 1568)
+    assert call.image is not None
+    assert call.image.sha256 == hashlib.sha256(prepared.jpeg).hexdigest()
+    assert (call.image.width, call.image.height) == (prepared.width, prepared.height)
+    assert (call.stop_reason, call.response_text) == ("end_turn", GOOD_OUTPUT)
+
+
+def test_sent_image_is_the_jpeg_in_the_request(
+    claude: ClaudeReferee, mocker: MockerFixture
+) -> None:
+    wrapper = mocker.patch(WRAPPER, return_value=reply())
+
+    report = claude.judge(PHOTO, CHALLENGE)
+
+    image_block, text_block = wrapper.call_args.kwargs["content"]
+    sent = base64.b64decode(image_block["source"]["data"])
+    assert report.call is not None
+    assert report.call.image is not None
+    assert report.call.image.sha256 == hashlib.sha256(sent).hexdigest()
+    assert Image.open(BytesIO(sent)).size == (report.call.image.width, report.call.image.height)
+    assert text_block["text"] == report.call.user_text
+
+
+@pytest.mark.parametrize(
+    ("model", "cost"),
+    [
+        pytest.param(MODEL, Decimal("0.0021"), id="model"),
+        pytest.param(f"{MODEL}-20251001", Decimal("0.0021"), id="dated-snapshot"),
+    ],
+)
+def test_report_costs_the_served_model_at_list_price(
+    claude: ClaudeReferee, mocker: MockerFixture, model: str, cost: Decimal
+) -> None:
+    mocker.patch(WRAPPER, return_value=reply(model=model))  # 1500 in, 120 out
+
+    report = claude.judge(PHOTO, CHALLENGE)
+
+    assert report.cost_usd == cost
+
+
+def test_unknown_model_costs_nothing_known_and_warns(
+    claude: ClaudeReferee, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    mocker.patch(WRAPPER, return_value=reply(model="claude-future-9"))
+    caplog.set_level(logging.WARNING, logger="game_server.referee")
+
+    report = claude.judge(PHOTO, CHALLENGE)
+
+    assert report.cost_usd is None
+    [warning] = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert (
+        warning.getMessage() == "referee model=claude-future-9 has no price in game_server.pricing"
+    )
+
+
+def test_prompt_sha256_is_the_hash_of_the_text() -> None:
+    assert prompt_sha256("abc") == hashlib.sha256(b"abc").hexdigest()
+    assert prompt_sha256("abc") != prompt_sha256("abc ")
+
+
+def test_report_repr_leaves_out_the_scene_reasons_and_response(
+    claude: ClaudeReferee, mocker: MockerFixture
+) -> None:
+    mocker.patch(WRAPPER, return_value=reply())
+
+    shown = repr(claude.judge(PHOTO, CHALLENGE))
+
+    for secret in ("SCENE-TEXT", "POSE-TEXT", "SENTINEL", system_prompt()[:40]):
+        assert secret not in shown
+    assert "req_123" in shown
 
 
 # --- failures never raise ------------------------------------------------------
@@ -121,6 +212,10 @@ def test_api_failures_become_errors(
 
     assert (report.status, report.error_code, report.judgement) == ("error", code, None)
     assert report.model == MODEL
+    assert report.cost_usd is None
+    assert report.call is not None
+    assert report.call.image is not None  # it was sent
+    assert (report.call.stop_reason, report.call.response_text) == (None, None)
 
 
 @pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
@@ -135,6 +230,9 @@ def test_unreliable_stop_reasons_become_errors(
     assert (report.status, report.error_code, report.judgement) == ("error", stop_reason, None)
     assert report.request_id == "req_123"
     assert report.output_tokens == 120
+    assert report.call is not None
+    assert (report.call.stop_reason, report.call.response_text) == (stop_reason, GOOD_OUTPUT)
+    assert report.cost_usd == Decimal("0.0021")  # still billed
 
 
 @pytest.mark.parametrize(
@@ -164,6 +262,8 @@ def test_schema_invalid_output_is_an_error_never_a_pass(
         "invalid_output",
         None,
     )
+    assert report.call is not None
+    assert report.call.response_text == text
 
 
 @pytest.mark.parametrize(
@@ -180,6 +280,9 @@ def test_undecodable_image_is_an_error_without_a_network_call(
 
     assert (report.status, report.error_code) == ("error", "invalid_image")
     wrapper.assert_not_called()
+    assert report.call is not None
+    assert report.call.image is None  # nothing was sent
+    assert report.call.user_text == user_text(CHALLENGE)
 
 
 # --- disabled ------------------------------------------------------------------
@@ -197,6 +300,7 @@ def test_no_key_gives_disabled_referee_that_never_calls_the_api(
     assert isinstance(chosen, DisabledReferee)
     assert report.status == "disabled"
     assert report.judgement is None
+    assert (report.call, report.cost_usd) == (None, None)  # no call: nothing to trace
     client_class.assert_not_called()
     wrapper.assert_not_called()
 
@@ -359,7 +463,7 @@ def test_prepared_image_has_no_exif_or_gps() -> None:
     original = photo_with_metadata(scene(4))
     assert Image.open(BytesIO(original)).getexif().get_ifd(GPS_IFD)  # the input has GPS
 
-    prepared = prepare_image(original, 1568)
+    prepared = prepare_image(original, 1568).jpeg
 
     assert dict(Image.open(BytesIO(prepared)).getexif()) == {}
     assert b"Exif" not in prepared
@@ -370,7 +474,7 @@ def test_prepared_image_is_upright() -> None:
     upright = scene(4, size=(640, 480))
     stored_rotated = photo_with_metadata(upright.rotate(90, expand=True), orientation=6)
 
-    prepared = Image.open(BytesIO(prepare_image(stored_rotated, 1568)))
+    prepared = Image.open(BytesIO(prepare_image(stored_rotated, 1568).jpeg))
 
     assert prepared.size == (640, 480)
 
@@ -387,7 +491,7 @@ def test_prepared_image_is_upright() -> None:
 def test_prepared_image_long_edge_is_capped(
     size: tuple[int, int], max_edge: int, expected: tuple[int, int]
 ) -> None:
-    prepared = Image.open(BytesIO(prepare_image(jpeg(scene(5, size=size)), max_edge)))
+    prepared = Image.open(BytesIO(prepare_image(jpeg(scene(5, size=size)), max_edge).jpeg))
 
     assert prepared.size == expected
     assert prepared.format == "JPEG"
@@ -406,7 +510,7 @@ def test_log_line_has_verdicts_but_no_reasons_or_image(
 
     [line] = [r.getMessage() for r in caplog.records if r.name == "game_server.referee"]
     assert f"referee model={MODEL} status=ok" in line
-    assert "tokens=1500/120" in line
+    assert "tokens=1500/120 cost_usd=0.0021 request_id=req_123" in line
     assert "scene_matches=pass(0.90)" in line
     assert "pose_correct=unsure(0.40)" in line
     assert "SENTINEL" not in caplog.text
@@ -425,6 +529,7 @@ def test_error_log_line_names_the_code(
 
     assert "status=error" in caplog.text
     assert "error=timeout" in caplog.text
+    assert "cost_usd=None request_id=None" in caplog.text
 
 
 # --- opt-in live call ------------------------------------------------------------

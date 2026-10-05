@@ -9,7 +9,15 @@ from psycopg.rows import DictRow
 from game_server.db_reset import main, reset_schema, schema_script
 from game_server.submissions import SubmissionStore
 
-TABLES = ["arrivals", "blocked_attempts", "participants", "session_runs", "submissions"]
+TABLES = [
+    "arrivals",
+    "blocked_attempts",
+    "participants",
+    "referee_prompts",
+    "referee_traces",
+    "session_runs",
+    "submissions",
+]
 
 
 def tables(db: psycopg.Connection[DictRow]) -> list[str]:
@@ -43,7 +51,7 @@ def test_reset_deletes_the_data_and_recreates_the_tables(
 
 
 def test_reset_creates_the_tables_when_none_exist(db: psycopg.Connection[DictRow]) -> None:
-    db.execute("DROP TABLE arrivals, participants, submissions")
+    db.execute("DROP TABLE referee_traces, referee_prompts, arrivals, participants, submissions")
 
     reset_schema(db)
 

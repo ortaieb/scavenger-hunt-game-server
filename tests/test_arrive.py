@@ -133,6 +133,7 @@ def submit(
             checks=(),
             distance_m=1.0,
             phash=hash(at) & 0xFFFF,
+            processing_ms=40,
         )
     )
 

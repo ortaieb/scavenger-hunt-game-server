@@ -23,7 +23,7 @@ from game_server.checks import (
     run_checks,
 )
 from game_server.checks.duplicate_photo import DuplicatePhotoRejection
-from game_server.clock import Clock, get_clock
+from game_server.clock import Clock, Stopwatch, Timer, get_clock, get_timer
 from game_server.config import Settings, get_settings
 from game_server.join import find_participant
 from game_server.lookup import find_checkpoint
@@ -106,7 +106,7 @@ def hash_image(image: bytes) -> int:
 
 
 def new_submission(
-    ctx: SubmissionContext, image_id: UUID, results: Sequence[CheckResult]
+    ctx: SubmissionContext, image_id: UUID, results: Sequence[CheckResult], processing_ms: int
 ) -> NewSubmission:
     """The row to record for a judged submission."""
     metadata = ctx.metadata
@@ -123,6 +123,7 @@ def new_submission(
         checks=results,
         distance_m=ctx.distance_m,
         phash=ctx.phash,
+        processing_ms=processing_ms,
         referee=ctx.referee_report,
         arrival_id=ctx.active_arrival.id if ctx.active_arrival else None,
         phash_match_id=next(
@@ -189,6 +190,7 @@ def judge_and_record(
     during: Sequence[Check],
     images: ImageStore,
     submissions: SubmissionStore,
+    stopwatch: Stopwatch,
 ) -> tuple[NewSubmission, int, Path]:
     """Run the in-transaction checks and record the result, in one write transaction.
 
@@ -197,7 +199,9 @@ def judge_and_record(
     another photo used it meanwhile, the `before` checks run again on what's confirmed, so
     two photos can't share one check-in. The accepted-photo snapshot, the `during` checks
     and the insert are serialised against the session's other submissions, so two uploads
-    of the same photo can't both be accepted.
+    of the same photo can't both be accepted. The referee's trace is recorded with the
+    submission, so they commit or roll back together. `stopwatch` started when the photo
+    was received: the submission records how long its verdict took.
     If anything fails after the image is saved, the image is removed.
     """
     saved: Path | None = None
@@ -211,7 +215,7 @@ def judge_and_record(
             results = [*earlier, *run_checks(during, ctx)]
             image_id, image_path = images.save(ctx.image)
             saved = image_path
-            submission = new_submission(ctx, image_id, results)
+            submission = new_submission(ctx, image_id, results, stopwatch.elapsed_ms())
             recorded = transaction.record(submission)
             phase_code = blocked_by_phase(submission)
             if phase_code is not None:
@@ -250,7 +254,8 @@ def describe(submission: NewSubmission, attempt: int, image_path: Path) -> str:
         f"checkpoint {submission.checkpoint} attempt {attempt} "
         f"arrival {submission.arrival_id if submission.arrival_id is not None else 'none'} "
         f"distance {submission.distance_m:.1f}m "
-        f"{referee} verdict {submission.verdict} checks [{checks}] rejections [{codes}]"
+        f"{referee} verdict {submission.verdict} processing_ms {submission.processing_ms} "
+        f"checks [{checks}] rejections [{codes}]"
     )
 
 
@@ -309,6 +314,7 @@ def submit_challenge(
     ],
     response: Response,
     clock: Annotated[Clock, Depends(get_clock)],
+    timer: Annotated[Timer, Depends(get_timer)],
     settings: Annotated[Settings, Depends(get_settings)],
     sessions: Annotated[SessionRepository, Depends(get_session_repository)],
     checks: Annotated[Sequence[Check], Depends(get_checks)],
@@ -324,6 +330,7 @@ def submit_challenge(
     row.
     """
     received_at = clock().astimezone(UTC)
+    stopwatch = Stopwatch(timer)  # processing_ms: from now until the verdict is recorded
     parsed = parse_metadata(metadata)
     image = read_jpeg(challenge_image, settings.max_image_bytes)
     phash = hash_image(image)  # decoded outside the write lock: it's the slow part
@@ -341,7 +348,7 @@ def submit_challenge(
     earlier = run_checks(before, ctx)
     ctx = replace(ctx, referee_report=consult_referee(referee, ctx, earlier))
     submission, attempt, image_path = judge_and_record(
-        ctx, before, earlier, during, images, submissions
+        ctx, before, earlier, during, images, submissions, stopwatch
     )
     logger.info(describe(submission, attempt, image_path))
     if submission.verdict != "pending":  # a final verdict: failed or pass

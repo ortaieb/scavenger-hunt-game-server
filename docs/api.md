@@ -49,7 +49,8 @@ The rules in one place:
   whatever the referee decided, and [scoring](#scoring) follows it. It changes a team's score,
   never sends it back: approving a `failed` photo completes its checkpoint, but rejecting a
   photo doesn't undo one. Once the session stops, the results are final when every `pending`
-  photo has been ruled on.
+  photo has been ruled on. The [review queue](#get-sessionssessionreview) lists those photos,
+  oldest first.
 
 A walkthrough against [`sessions.example.json`](../sessions.example.json), with checkpoint 3's own
 window removed so the whole route can be played now. It uses `jq`; any photo will do (`photo.jpg`), and the referee is off without an
@@ -402,7 +403,7 @@ Submissions are stored in [PostgreSQL](../README.md#database), in a `submissions
 | `distance_m`                | Metres from the claimed position to the checkpoint (server-side only) |
 | `phash`                     | The photo's 64-bit perceptual hash, 16 hex digits         |
 | `phash_match_id`            | On a `duplicate_photo` rejection, the `id` of the accepted submission it matched (server-side only) |
-| `checks`                    | `JSONB` list of every check that ran: `{check, outcome, confidence, reason, detail}`. `detail` is moderator-only, returned only by the [traces](#get-sessionssessiontraces); for the visual checks it holds the model's reason, or why the referee wasn't asked (e.g. `referee disabled: no API key`) |
+| `checks`                    | `JSONB` list of every check that ran: `{check, outcome, confidence, reason, detail}`. `detail` is moderator-only, returned only by the [traces](#get-sessionssessiontraces) and the [review queue](#get-sessionssessionreview); for the visual checks it holds the model's reason, or why the referee wasn't asked (e.g. `referee disabled: no API key`) |
 | `arrival_id`                | The [arrival](#arrivals) the photo used: the team's active check-in at the checkpoint. Empty when there was none |
 | `processing_ms`             | Milliseconds from `received_at` until the verdict was recorded, on a monotonic clock: how long the player waited, referee call included. Recorded for every submission |
 
@@ -884,7 +885,7 @@ The first page of two (`?limit=2`):
 | `items` | Up to `limit` submissions, newest (highest id) first, below `before` |
 | `team` | The team's name |
 | `checks` | Every check that ran, as [stored](#submission-records): `reason` is what the player was told, `detail` is why (for the visual checks the model's reason, or why the referee wasn't asked) |
-| `image-id` | The stored photo's id. The photo itself isn't served |
+| `image-id` | The stored photo's id. The photo itself is served by [`…/photo`](#get-sessionssessionsubmissionssubmissionphoto) |
 | `trace` | The [referee call](#referee-traces): what it was sent (`prompt-sha256`, `user-text`, and the `references` by position and hash), what came back (`judgement`, `null` unless the output was valid), its `error-code` when `status` is `error`, and its tokens, cost and latency. `null` when the referee wasn't consulted or is disabled; the visual checks' `detail` says why |
 | `verdict` | The referee's verdict, as recorded: a ruling never changes it |
 | `ruling` | The moderator's latest [ruling](#post-sessionssessionsubmissionssubmissionruling): `{ruling, note, ruled-at}`, or `null` if none. The effective verdict follows from it (`approve` → `pass`, `reject` → `failed`) |
@@ -907,13 +908,113 @@ reasons and the checks' `detail`. It never shows coordinates, distances, clues, 
 one-time codes, participant ids, the moderator code or the photos, nor the model's raw
 `response_text`.
 
+## `GET /sessions/{session}/review`
+
+**Moderator only** (same authorisation as the [overview](#get-sessionssessionoverview)). The
+moderator's to-do list, which the review screen polls: every photo waiting for a
+[ruling](#post-sessionssessionsubmissionssubmissionruling), each beside what it should show and
+what the referee said about each check, then the latest rulings, so a decision can be changed.
+The photos themselves come from [`…/photo`](#get-sessionssessionsubmissionssubmissionphoto) and
+[`…/reference-photos/{position}`](#get-sessionssessioncheckpointssequencereference-photosposition).
+
+```json
+{
+  "to-review": [
+    {
+      "submission": 42,
+      "team": "Red Foxes",
+      "checkpoint": { "sequence": 2, "name": "Lion fountain" },
+      "attempt": 1,
+      "received-at": "2026-10-03T10:41:05Z",
+      "pose": "Arms raised as if flying, facing the camera",
+      "scene": "A stone fountain with a lion's head spout…",
+      "reference-photos": 2,
+      "checks": [
+        { "check": "pose_correct", "outcome": "uncertain", "confidence": 0.62, "reason": "The referee couldn't decide on this. A moderator will review your photo.", "detail": "One arm raised, not both." }
+      ],
+      "referee": { "status": "ok", "error-code": null }
+    }
+  ],
+  "recent": [
+    { "submission": 40, "team": "Green Owls", "checkpoint": { "sequence": 1, "name": "Stone fountain" }, "ruling": "approve", "note": null, "ruled-at": "2026-10-03T10:39:12Z", "verdict": "pending" }
+  ]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `to-review` | Every `pending` photo nobody has ruled on, **oldest first** (by `received-at`), so the longest wait comes first: exactly the photos the overview's `to-review` counts. A ruling takes the photo out, into `recent` |
+| `submission` | The photo's id: for [`…/photo`](#get-sessionssessionsubmissionssubmissionphoto) and the ruling |
+| `team` | The team's name |
+| `checkpoint` | Its `sequence`, and its `name` from the sessions file (`null` if the checkpoint is no longer in the file) |
+| `attempt`, `received-at` | The team's attempt at the checkpoint, and when the photo was received |
+| `pose` | The pose issued when the team [checked in](#post-sessionssessionparticipantsparticipantarrive), the one the referee judged, even if the sessions file's `challenge.pose` has changed since; `null` if none was issued |
+| `scene` | The checkpoint's scene, from the sessions file; `null` without a visual challenge |
+| `reference-photos` | How many [reference photos](#reference-photos) the checkpoint has in the sessions file: fetch each by position, from 0 |
+| `checks` | Every check that ran, as [stored](#submission-records): `reason` is what the player was told, `detail` is why (for the visual checks, the referee's reason) |
+| `referee` | How the [referee's call](#referee-traces) went: `status` `ok` or `error`, with its `error-code` (e.g. `deadline`) when it errored, since then there are no reasons to read. `null` when the referee wasn't called (e.g. it's disabled) |
+| `recent` | The last 20 rulings, newest first: each ruled photo once, with its latest ruling. `verdict` is the referee's original. Post another ruling to change one |
+
+Both lists are read in one snapshot, so a photo just ruled on is in one of them, never both.
+
+| Status | When |
+|--------|------|
+| `200`  | As above |
+| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `404`  | Unknown session |
+
+Only the moderator can call it: it shows the scenes (the answers to the clues) and the
+referee's reasons. It never shows coordinates, distances, clues, join codes, one-time codes,
+participant ids or the moderator code, nor a reference photo's file name.
+
+## `GET /sessions/{session}/submissions/{submission}/photo`
+
+**Moderator only** (same authorisation as the [overview](#get-sessionssessionoverview)). The
+player's photo, as `image/jpeg`, prepared the way the referee saw it: upright (its EXIF
+orientation applied), every EXIF tag stripped (GPS included), and its long edge at most
+`GAME_SERVER_REFEREE_MAX_IMAGE_EDGE` px (a smaller photo isn't enlarged). It's sent with
+`Cache-Control: no-store`, so neither the browser nor a proxy keeps a copy. The stored file is
+never changed.
+
+| Status | When |
+|--------|------|
+| `200`  | The JPEG |
+| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `404`  | Unknown session (`"unknown session"`), a submission that isn't in this session (`"unknown submission"`), or a photo whose file is gone (`"photo not found"`) |
+| `422`  | A `submission` that isn't a positive integer (up to 2⁶³−1) |
+
+## `GET /sessions/{session}/checkpoints/{sequence}/reference-photos/{position}`
+
+**Moderator only** (same authorisation as the [overview](#get-sessionssessionoverview)). The
+checkpoint's [reference photo](#reference-photos) at `position`: from 0, in the sessions file's
+order, as the [traces](#referee-traces) number them. Prepared and sent like
+[a player's photo](#get-sessionssessionsubmissionssubmissionphoto): upright, no EXIF, long edge
+at most `GAME_SERVER_REFEREE_MAX_IMAGE_EDGE` px, `Cache-Control: no-store`. Every one in the
+file is served, not only the ones the referee sends; the review's `reference-photos` says how
+many there are.
+
+| Status | When |
+|--------|------|
+| `200`  | The JPEG |
+| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `404`  | Unknown session (`"unknown session"`) or checkpoint (`"unknown checkpoint"`), a position past the last (`"unknown reference photo"`), or a file gone since startup (`"photo not found"`) |
+| `422`  | A `sequence` below 1 or a negative `position` |
+
+**Photos and privacy.** These two are the only endpoints that serve photos, and only with the
+moderator code: no participant endpoint returns a photo, nor the scene, a checkpoint's name or a
+reference photo. Each photo served is logged on one line, by session and submission, or by
+session, checkpoint and position, never by the file's path (a file name can describe the
+place). The web app's privacy notice already tells players their photos are checked by an AI
+model and, if needed, by the organiser.
+
 ## `POST /sessions/{session}/submissions/{submission}/ruling`
 
 **Moderator only** (same authorisation as the [overview](#get-sessionssessionoverview)). The
 moderator approves or rejects a photo: a `pending` one the referee couldn't decide, or a `pass`
 or `failed` one the referee got wrong. The moderator has the last word, and
 [scoring](#scoring) follows the ruling. `submission` is the photo's id, as the
-[traces](#get-sessionssessiontraces) show it.
+[review queue](#get-sessionssessionreview) and the [traces](#get-sessionssessiontraces) show
+it.
 
 ```json
 { "ruling": "approve", "note": "Pose is right, the arm is just cropped" }
@@ -1248,6 +1349,9 @@ checkpoint, so `scene_matches` is judged against the place itself, not only its 
   this photo."
 - **Traces.** The [trace](#referee-traces) records each reference sent by its position in the
   checkpoint's list and the SHA-256 of its prepared JPEG, never its path.
+- **For the moderator.** [`GET …/reference-photos/{position}`](#get-sessionssessioncheckpointssequencereference-photosposition)
+  serves each one, by the same position, prepared like a player's photo for the moderator's
+  review.
 - **Privacy.** They're the organisers' photos, with nobody in shot, so the players' privacy
   notice doesn't cover them and doesn't need to. Like the player's photo, they are **sent to
   the model provider** (Anthropic) with each judgement.

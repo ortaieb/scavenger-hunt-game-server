@@ -39,6 +39,9 @@ src/game_server/
   overview.py        # `…/overview`: the moderator's standings, progress and blocked attempts
   traces.py          # `…/traces`: the moderator's verdicts with their referee traces and spend
   ruling.py          # `…/submissions/{submission}/ruling`: the moderator approves or rejects a photo
+  review.py          # `…/review`: the photos waiting for a ruling, and the latest rulings
+  review_queue.py    # read_review_queue: the review queue as stored
+  photos.py          # `…/photo`, `…/reference-photos/{position}`: photos served to the moderator
   game_state.py      # team state: team_state() rules and the `…/state` endpoint
   scoring.py         # points by order of arrival: team_points(), places(), results_final()
   arrive.py          # `…/arrive`: check in, pose and one-time code

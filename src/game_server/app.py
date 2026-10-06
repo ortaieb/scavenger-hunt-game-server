@@ -17,7 +17,9 @@ from game_server import (
     join,
     moderation,
     overview,
+    photos,
     proximity,
+    review,
     ruling,
     session_control,
     traces,
@@ -83,6 +85,8 @@ def create_app() -> FastAPI:
     app.include_router(overview.router)
     app.include_router(traces.router)
     app.include_router(ruling.router)
+    app.include_router(review.router)
+    app.include_router(photos.router)
 
     return app
 

@@ -201,9 +201,12 @@ header's value included). The every-route secrecy test checks that a sentinel mo
 appears in no response and no log line.
 
 **Reference photos** show what the place looks like, so they're secret like `challenge.scene`.
-No endpoint returns a reference photo or its path, and no participant endpoint says how many a
-checkpoint has. Only the moderator's [traces](api.md#get-sessionssessiontraces) list the ones
-sent with each photo, by position and hash. Startup errors and the referee's warnings name an
+No endpoint returns a reference photo's path, and no participant endpoint returns a reference
+photo or says how many a checkpoint has. Only the moderator sees them: the
+[traces](api.md#get-sessionssessiontraces) list the ones sent with each photo, by position and
+hash, the [review queue](api.md#get-sessionssessionreview) says how many each checkpoint has,
+and [`…/reference-photos/{position}`](api.md#get-sessionssessioncheckpointssequencereference-photosposition)
+serves each one, with the moderator code. Startup errors and the referee's warnings name an
 entry by its position, never its path. The every-route secrecy test gives a reference photo a
 sentinel file name and checks no response mentions it.
 

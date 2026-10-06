@@ -54,14 +54,6 @@ class ProximityHint(BaseModel):
     in_range: bool
 
 
-class PoseInstruction(BaseModel):
-    """The pose a player must strike at a checkpoint: the only field, so nothing else leaks."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    pose: str | None = Field(description="`null` when the checkpoint has no visual challenge")
-
-
 CONSENT_TEXT = (
     "I agree to my photos and checkpoint locations being used as described to verify my "
     "progress in this game."

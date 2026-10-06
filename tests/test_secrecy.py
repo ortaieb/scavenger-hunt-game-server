@@ -143,7 +143,6 @@ def hint(client: TestClient, **changes: Any) -> Response:
 
 def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Response]]:
     """Successful and failing calls to every route, keyed by (method, route path)."""
-    pose = "/sessions/{session}/checkpoints/{sequence}/challenge"
     state = "/sessions/{session}/participants/{participant}/state"
     arrive = "/sessions/{session}/participants/{participant}/arrive"
     joined = client.post("/join", json={"code": JOIN_CODE, "consent": True})  # 201, scheduled
@@ -182,11 +181,6 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
             hint(client),  # 429
             hint(client, session=UNKNOWN),  # 404
             hint(client, checkpoint="1"),  # 422
-        ],
-        ("GET", pose): [
-            client.get(f"/sessions/{SESSION}/checkpoints/1/challenge"),
-            client.get(f"/sessions/{SESSION}/checkpoints/9/challenge"),  # 404
-            client.get(f"/sessions/{SESSION}/checkpoints/0/challenge"),  # 422
         ],
         ("GET", "/health"): [client.get("/health")],
         ("POST", "/join"): [
@@ -454,11 +448,6 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
         404,
         422,
     ]
-    assert statuses[("GET", "/sessions/{session}/checkpoints/{sequence}/challenge")] == [
-        200,
-        404,
-        422,
-    ]
 
 
 def test_arrive_reveals_no_place(client: TestClient) -> None:
@@ -469,6 +458,14 @@ def test_arrive_reveals_no_place(client: TestClient) -> None:
     for response in arrive_responses:
         for leak in ("51.5", "-0.1", "proximity", NAME, SENTINEL, LATER_CLUE):
             assert leak not in response.text
+
+
+def test_no_route_gives_the_pose_before_arrival(client: TestClient) -> None:
+    # The pose is given only at check-in: the old pose endpoint is an unknown path.
+    response = client.get(f"/sessions/{SESSION}/checkpoints/1/challenge")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
 
 
 def record(

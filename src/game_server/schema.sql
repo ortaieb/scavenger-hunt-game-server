@@ -1,6 +1,6 @@
 -- The game server's tables, dropped (if they exist) and created from scratch.
 --
--- DESTRUCTIVE: every submission, referee trace, participant and arrival is deleted. Meant for
+-- DESTRUCTIVE: every submission, referee trace, ruling, participant and arrival is deleted. Meant for
 -- development, until schema changes are applied as versioned migrations.
 --
 -- Run it with the server's connection settings:  make db-reset
@@ -10,9 +10,10 @@
 
 BEGIN;
 
+DROP VIEW IF EXISTS ruled_submissions;
 DROP TABLE IF EXISTS
-    referee_traces, referee_prompts, blocked_attempts, session_runs, arrivals, participants,
-    submissions
+    rulings, referee_traces, referee_prompts, blocked_attempts, session_runs, arrivals,
+    participants, submissions
     CASCADE;
 
 -- A team's check-ins at a checkpoint, each with a one-time code. Not used for scoring: the
@@ -115,6 +116,47 @@ CREATE TABLE referee_traces (
     latency_ms                  INTEGER     NOT NULL
 );
 CREATE INDEX referee_traces_by_session ON referee_traces (session);
+
+-- The moderator's rulings on photos: one row per ruling, so a moderator can change their mind
+-- and the earlier rows stay as the audit trail. The latest row (highest id) per submission
+-- wins. The submission's own verdict, checks and trace are never changed: they record what
+-- the referee decided. note is moderator-only and never logged: it may describe the photo.
+CREATE TABLE rulings (
+    id            BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    session       UUID        NOT NULL,
+    submission_id BIGINT      NOT NULL REFERENCES submissions (id) ON DELETE CASCADE,
+    ruling        TEXT        NOT NULL CHECK (ruling IN ('approve', 'reject')),
+    note          TEXT,
+    ruled_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX rulings_by_submission ON rulings (submission_id, id DESC);
+
+-- Every submission with its latest ruling (NULLs without one) and what follows from it, so
+-- the rules live in one place:
+--   effective_verdict: approve → pass, reject → failed, no ruling → the referee's verdict.
+--                      Scoring and the duplicate check go by it.
+--   completes:         the photo completes its checkpoint: its verdict was pass or pending,
+--                      or the moderator has ever approved it. A ruling never takes it back,
+--                      so the moderator's review changes a team's score, not its progress.
+CREATE VIEW ruled_submissions AS
+SELECT
+    s.*,
+    latest.ruling,
+    latest.note,
+    latest.ruled_at,
+    CASE latest.ruling WHEN 'approve' THEN 'pass' WHEN 'reject' THEN 'failed' ELSE s.verdict END
+        AS effective_verdict,
+    s.verdict IN ('pass', 'pending') OR EXISTS (
+        SELECT 1 FROM rulings approved
+        WHERE approved.submission_id = s.id AND approved.ruling = 'approve'
+    ) AS completes
+FROM submissions s
+LEFT JOIN LATERAL (
+    SELECT ruling, note, ruled_at FROM rulings
+    WHERE rulings.submission_id = s.id
+    ORDER BY rulings.id DESC
+    LIMIT 1
+) latest ON TRUE;
 
 -- One participant per team that has joined, keyed by a server-generated id. consented_at is
 -- updated on every join (the player ticked the consent box again).

@@ -2,7 +2,15 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from game_server.scoring import SessionResults, TeamPoints, checkpoint_place, places, team_points
+from game_server.scoring import (
+    SessionResults,
+    TeamPoints,
+    checkpoint_place,
+    places,
+    results_final,
+    team_points,
+)
+from game_server.session_runs import SessionPhase
 from game_server.sessions import Team
 
 T0 = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
@@ -96,6 +104,24 @@ def test_checkpoints_off_the_route_do_not_count() -> None:
 
 
 # --- final places ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("phase", "to_review", "final"),
+    [
+        ("stopped", 0, True),
+        ("stopped", 1, False),
+        ("running", 0, False),
+        ("scheduled", 0, False),
+    ],
+    ids=["stopped-and-reviewed", "stopped-with-a-photo-to-review", "running", "scheduled"],
+)
+def test_results_are_final_once_stopped_and_reviewed(
+    phase: SessionPhase, to_review: int, final: bool
+) -> None:
+    reviewed = SessionResults(frozenset({"A"}), {}, frozenset(), to_review=to_review)
+
+    assert results_final(reviewed, phase) is final
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,9 @@ and managed with [uv](https://docs.astral.sh/uv/).
 | `POST` | [`/sessions/{session}/stop`](docs/api.md#post-sessionssessionstop) | **Moderator:** finish the session, for good |
 | `GET`  | [`/sessions/{session}/overview`](docs/api.md#get-sessionssessionoverview) | **Moderator:** the clock, the photos left to review, standings, each team's progress and blocked attempts |
 | `GET`  | [`/sessions/{session}/traces`](docs/api.md#get-sessionssessiontraces) | **Moderator:** every verdict, newest first, with its referee trace and any ruling, and the session's spend and wait times |
+| `GET`  | [`/sessions/{session}/review`](docs/api.md#get-sessionssessionreview) | **Moderator:** the photos waiting for a ruling, oldest first, beside what they should show and what the referee said, and the latest rulings |
+| `GET`  | [`/sessions/{session}/submissions/{submission}/photo`](docs/api.md#get-sessionssessionsubmissionssubmissionphoto) | **Moderator:** a player's photo, as the referee saw it |
+| `GET`  | [`/sessions/{session}/checkpoints/{sequence}/reference-photos/{position}`](docs/api.md#get-sessionssessioncheckpointssequencereference-photosposition) | **Moderator:** a checkpoint's reference photo, prepared the same way |
 | `POST` | [`/sessions/{session}/submissions/{submission}/ruling`](docs/api.md#post-sessionssessionsubmissionssubmissionruling) | **Moderator:** approve or reject a photo, whatever its verdict; scoring follows the ruling |
 | `GET`  | [`/health`](#deploying-on-railway) | Readiness: `200 {"status": "ok"}` when the submissions database answers, else `503 {"status": "unavailable"}` |
 | `POST` | [`/challenge`](docs/api.md#post-challenge) | A participant submits a photo for the checkpoint it checked in at |
@@ -75,7 +78,7 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_REFEREE_DEADLINE_SECONDS` | `8` | The whole referee step, retries included, ends by then (> 0). Past it the photo's verdict is `pending`, for a moderator. See [deadline and retries](docs/api.md#deadline-and-retries) |
 | `GAME_SERVER_REFEREE_TIMEOUT_SECONDS` | `8` | Longest wait for one attempt, or the time left before the deadline if that's less (> 0) |
 | `GAME_SERVER_REFEREE_MAX_RETRIES` | `2` | Retries on connection errors, 429 and 5xx, within the deadline (≥ 0) |
-| `GAME_SERVER_REFEREE_MAX_IMAGE_EDGE` | `1568` | Long edge, in px, of the image sent to the model (> 0) |
+| `GAME_SERVER_REFEREE_MAX_IMAGE_EDGE` | `1568` | Long edge, in px, of the image sent to the model, and of the photos [served to the moderator](docs/api.md#get-sessionssessionsubmissionssubmissionphoto) (> 0) |
 | `GAME_SERVER_REFEREE_MAX_REFERENCES` | `2` | How many of a checkpoint's [reference photos](docs/api.md#reference-photos) are sent with each photo, in the sessions file's order (0–5; `0` turns them off). They're **sent to the model provider** (Anthropic) |
 | `GAME_SERVER_REFEREE_REFERENCE_MAX_EDGE` | `768` | Long edge, in px, of each reference photo sent to the model (> 0) |
 | `GAME_SERVER_REFEREE_MIN_CONFIDENCE` | `0.8` | Model confidence (0–1) at or above which a visual check's `pass`/`fail` counts; below it the check is `uncertain` |

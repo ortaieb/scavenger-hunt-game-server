@@ -77,10 +77,9 @@ Writing a good challenge:
 - **`scene`** describes what the camera should see behind the player. Be concrete: materials,
   shapes, colours, what surrounds it. It's the answer to the clue, so it is never shown to
   anyone (see *Secrecy*).
-- **`pose`** is shown to the player *before* they find the checkpoint, via
-  [`GET …/challenge`](../docs/api.md#get-sessionssessioncheckpointssequencechallenge). So it **must not
-  describe the place**. "With the fountain behind you" is fine only if the clue already gives
-  that away. Otherwise write "with the landmark behind you".
+- **`pose`** is what the player must do in the photo. It's shown only when the team checks in
+  at the checkpoint, by [`POST …/arrive`](api.md#post-sessionssessionparticipantsparticipantarrive),
+  and the referee judges the photo against the pose given there.
 
 **Reference photos.** The moderator's own photos of each checkpoint, taken while setting up
 the hunt. The [referee](api.md#reference-photos) compares each player's photo with them, so

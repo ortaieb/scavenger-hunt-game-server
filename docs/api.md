@@ -17,7 +17,8 @@ A whole hunt can be played through the API. The moderator opens it, then each te
    only the current checkpoint's clue, on the team's own route.
 3. **Arrive**: when the team thinks it's there,
    [`POST …/arrive`](#post-sessionssessionparticipantsparticipantarrive) checks it in and returns
-   the pose to strike and a one-time code to hold up in the photo.
+   the pose to strike and a one-time code to hold up in the photo. No other endpoint gives the
+   pose.
 4. **Photograph**: [`POST /challenge`](#post-challenge) with the photo and the checkpoint's
    `sequence`. The photo is held to that check-in, and the referee judges the pose it issued.
    A `pass` or `pending` verdict completes the checkpoint. After a `failed` one the team stays
@@ -1178,26 +1179,6 @@ Known limitations, acceptable for the demo:
 
 Nothing is stored: no submission row, and the coordinates aren't logged. Only the normal
 request line (method and path) appears in the access log.
-
-## `GET /sessions/{session}/checkpoints/{sequence}/challenge`
-
-The pose the player must strike in their photo, so the app can show it **before** they take
-the picture. It comes from the checkpoint's [visual challenge](../docs/sessions-file.md#game-sessions-and-checkpoints).
-
-```bash
-curl localhost:8000/sessions/aeffe667-4f9f-4108-b5e2-56ae821fe413/checkpoints/1/challenge
-# {"pose": "Side profile, looking to your left, with the landmark behind you."}
-```
-
-| Status | When |
-|--------|------|
-| `200`  | `{"pose": "<text>"}`, or `{"pose": null}` when the checkpoint has no visual challenge |
-| `404`  | Unknown `session` (`"unknown session"`) or `sequence` (`"unknown checkpoint"`) |
-| `422`  | `session` isn't a UUID, or `sequence` isn't an integer ≥ 1 |
-
-`pose` is the **only** field: never the scene description, nor the checkpoint's name, clue,
-location or window. It isn't rate-limited, because the pose isn't secret and reveals nothing
-about the location.
 
 ## Referee (visual challenge)
 

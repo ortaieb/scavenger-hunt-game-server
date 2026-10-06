@@ -29,7 +29,6 @@ src/game_server/
   geo.py             # haversine distance_m
   phash.py           # perceptual_hash (Pillow + numpy), hamming_distance
   proximity.py       # `POST /checkpoint/proximity` advisory hint
-  checkpoints.py     # `GET /sessions/{session}/checkpoints/{sequence}/challenge` pose
   health.py          # `GET /health` readiness check
   join.py            # `POST /join`, and find_participant for later endpoints
   moderation.py      # require_moderator: the session moderator code (Bearer)

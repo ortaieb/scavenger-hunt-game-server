@@ -11,7 +11,6 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from game_server import (
     arrive,
     challenge,
-    checkpoints,
     game_state,
     health,
     join,
@@ -76,7 +75,6 @@ def create_app() -> FastAPI:
 
     app.include_router(challenge.router)
     app.include_router(proximity.router)
-    app.include_router(checkpoints.router)
     app.include_router(health.router)
     app.include_router(join.router)
     app.include_router(game_state.router)

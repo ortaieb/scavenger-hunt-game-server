@@ -233,14 +233,23 @@ STOP = ("POST", "/sessions/{session}/stop")
 OVERVIEW = ("GET", "/sessions/{session}/overview")
 TRACES = ("GET", "/sessions/{session}/traces")
 RULING = ("POST", "/sessions/{session}/submissions/{submission}/ruling")
+REVIEW = ("GET", "/sessions/{session}/review")
+SUBMISSION_PHOTO = ("GET", "/sessions/{session}/submissions/{submission}/photo")
+REFERENCE_PHOTO = ("GET", "/sessions/{session}/checkpoints/{sequence}/reference-photos/{position}")
 # Routes only the moderator can call, which name checkpoints on purpose.
-NAMES_CHECKPOINTS = {OVERVIEW}
+NAMES_CHECKPOINTS = {OVERVIEW, REVIEW}
 # Routes only the moderator can call, whose 200 shows the scene and the model's reasons on
-# purpose (the referee's traces).
-SHOWS_JUDGING = {TRACES}
+# purpose (the referee's traces, and the photos waiting for a ruling).
+SHOWS_JUDGING = {TRACES, REVIEW}
 # Routes that name the traces' `references` field (the reference photos the referee was sent),
-# which says nothing about any checkpoint's photos: the traces, and the schema documenting them.
-NAMES_REFERENCES_FIELD = {TRACES, ("GET", "/openapi.json")}
+# which says nothing about any checkpoint's photos.
+NAMES_REFERENCES_FIELD = {TRACES}
+# Routes that mention reference photos on purpose once the moderator code is accepted: the
+# review (how many a checkpoint has), the reference photos themselves, and the schema
+# documenting them. None names one by its file.
+NAMES_REFERENCE_PHOTOS = {REVIEW, REFERENCE_PHOTO, ("GET", "/openapi.json")}
+# The only routes that serve photos, and only to the moderator.
+SERVES_PHOTOS = {SUBMISSION_PHOTO, REFERENCE_PHOTO}
 
 
 def session_opening_responses(client: TestClient) -> dict[tuple[str, str], list[Response]]:
@@ -281,6 +290,7 @@ def session_closing_responses(client: TestClient) -> dict[tuple[str, str], list[
 
     items = traces(headers=MODERATOR).json()["items"]
     pending = next(item["submission"] for item in items if item["verdict"] == "pending")
+    reviewing = review_responses(client, pending)  # before it's ruled on
     approve = {"ruling": "approve", "note": f"{NOTE} the arm is cropped"}
     rulings = [
         rule(pending, headers=MODERATOR, json=approve),  # 201
@@ -291,6 +301,7 @@ def session_closing_responses(client: TestClient) -> dict[tuple[str, str], list[
         rule(10**6, headers=MODERATOR, json=approve),  # 404 unknown submission
         rule(pending, headers=MODERATOR, json={"ruling": "maybe"}),  # 422
     ]
+    reviewing[REVIEW].append(client.get(f"/sessions/{SESSION}/review", headers=MODERATOR))
 
     traced = [
         traces(headers=MODERATOR),  # 200, with the referee's calls and a ruling
@@ -305,6 +316,44 @@ def session_closing_responses(client: TestClient) -> dict[tuple[str, str], list[
         OVERVIEW: overviews,
         RULING: rulings,
         TRACES: traced,
+        **reviewing,
+    }
+
+
+def review_responses(client: TestClient, pending: int) -> dict[tuple[str, str], list[Response]]:
+    """The moderator's review queue, the `pending` photo in it, and a reference photo."""
+
+    def get(path: str, session: str = SESSION, **kwargs: Any) -> Response:
+        return client.get(f"/sessions/{session}/{path}", **kwargs)
+
+    not_a_moderator = {"Authorization": f"Bearer {JOIN_CODE}"}
+    photo = f"submissions/{pending}/photo"
+    reference = "checkpoints/1/reference-photos/0"
+    return {
+        REVIEW: [
+            get("review", headers=MODERATOR),  # 200, with the photo to rule on
+            get("review"),  # 401
+            get("review", headers=not_a_moderator),  # 401
+            get("review", UNKNOWN, headers=MODERATOR),  # 404
+        ],
+        SUBMISSION_PHOTO: [
+            get(photo, headers=MODERATOR),  # 200
+            get(photo),  # 401
+            get(photo, headers=not_a_moderator),  # 401
+            get(photo, UNKNOWN, headers=MODERATOR),  # 404 unknown session
+            get(f"submissions/{10**6}/photo", headers=MODERATOR),  # 404 unknown submission
+            get("submissions/abc/photo", headers=MODERATOR),  # 422
+        ],
+        REFERENCE_PHOTO: [
+            get(reference, headers=MODERATOR),  # 200
+            get(reference),  # 401
+            get(reference, headers=not_a_moderator),  # 401
+            get(reference, UNKNOWN, headers=MODERATOR),  # 404 unknown session
+            get("checkpoints/1/reference-photos/1", headers=MODERATOR),  # 404 past the last
+            get("checkpoints/2/reference-photos/0", headers=MODERATOR),  # 404 none there
+            get("checkpoints/9/reference-photos/0", headers=MODERATOR),  # 404 unknown checkpoint
+            get("checkpoints/1/reference-photos/-1", headers=MODERATOR),  # 422
+        ],
     }
 
 
@@ -347,14 +396,20 @@ def test_no_route_ever_returns_the_scene(
             assert LATER_CLUE not in response.text, f"{route} leaked a later clue"
             assert PHOTO_NAME not in response.text, f"{route} leaked a reference photo"
             text = response.text.lower()
-            if route in SHOWS_JUDGING and response.status_code == 200:
+            if route == TRACES and response.status_code == 200:
                 # The referee's prompt explains reference photos in general, not a checkpoint's.
                 body = response.json()
                 assert set(body.pop("prompts").values()) == {system_prompt()}
                 text = json.dumps(body).lower()
             if route in NAMES_REFERENCES_FIELD:
                 text = text.replace('"references"', "")
-            assert "reference" not in text, f"{route} mentions reference photos"
+            if route not in NAMES_REFERENCE_PHOTOS or response.status_code == 401:
+                assert "reference" not in text, f"{route} mentions reference photos"
+            content_type = response.headers.get("content-type", "")
+            if route in SERVES_PHOTOS and response.status_code == 200:
+                assert content_type == "image/jpeg"
+            else:
+                assert not content_type.startswith("image/"), f"{route} served a photo"
             assert MODERATOR_CODE not in response.text, f"{route} leaked the moderator code"
     for secret in (MODERATOR_CODE, JOIN_CODE):
         assert secret not in caplog.text.upper(), "a credential reached the logs"
@@ -384,6 +439,9 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
     assert statuses[OVERVIEW] == [200, 401, 404]
     assert statuses[TRACES] == [200, 401, 404, 422]
     assert statuses[RULING] == [200, 201, 401, 404, 422]
+    assert statuses[REVIEW] == [200, 401, 404]
+    assert statuses[SUBMISSION_PHOTO] == [200, 401, 404, 422]
+    assert statuses[REFERENCE_PHOTO] == [200, 401, 404, 422]
     assert statuses[("POST", "/sessions/{session}/participants/{participant}/arrive")] == [
         200,
         201,
@@ -522,3 +580,52 @@ def test_only_the_moderator_sees_the_judging(client: TestClient) -> None:
         assert response.status_code == 401
         assert SENTINEL not in response.text
         assert REASON not in response.text
+
+
+def test_the_review_reveals_no_coordinates_codes_or_participants(client: TestClient) -> None:
+    """The review shows the scene, the pose and the referee's reasons, but no place or code."""
+    client.post(f"/sessions/{SESSION}/start", headers=MODERATOR)
+    testers = client.post("/join", json={"code": JOIN_CODE, "consent": True}).json()
+    arrival = client.post(
+        f"/sessions/{SESSION}/participants/{testers['participant']}/arrive", json={"checkpoint": 1}
+    ).json()
+    submit(client, metadata(participant=testers["participant"]))  # pending at checkpoint 1
+    url = f"/sessions/{SESSION}/review"
+
+    shown = client.get(url, headers=MODERATOR)
+    refused = [client.get(url), client.get(url, headers={"Authorization": f"Bearer {JOIN_CODE}"})]
+
+    [photo] = shown.json()["to-review"]
+    assert photo["checkpoint"]["name"] == NAME  # names are for the moderator
+    assert SENTINEL in photo["scene"]
+    assert any(REASON in (check["detail"] or "") for check in photo["checks"])
+    for leak in ("51.5", "51.6", "-0.1", "-0.2", "proximity", "Find it", LATER_CLUE, PHOTO_NAME):
+        assert leak not in shown.text
+    for secret in (JOIN_CODE, MODERATOR_CODE, testers["participant"], f'"{arrival["code"]}"'):
+        assert secret not in shown.text
+    for response in refused:
+        assert response.status_code == 401
+        assert SENTINEL not in response.text
+        assert REASON not in response.text
+
+
+def test_only_the_moderator_gets_the_photos(client: TestClient) -> None:
+    client.post(f"/sessions/{SESSION}/start", headers=MODERATOR)
+    testers = client.post("/join", json={"code": JOIN_CODE, "consent": True}).json()
+    client.post(
+        f"/sessions/{SESSION}/participants/{testers['participant']}/arrive", json={"checkpoint": 1}
+    )
+    submitted = submit(client, metadata(participant=testers["participant"]))
+    assert submitted.status_code == 202
+    [photo] = client.get(f"/sessions/{SESSION}/review", headers=MODERATOR).json()["to-review"]
+    urls = [
+        f"/sessions/{SESSION}/submissions/{photo['submission']}/photo",
+        f"/sessions/{SESSION}/checkpoints/1/reference-photos/0",
+    ]
+
+    for url in urls:
+        assert client.get(url, headers=MODERATOR).headers["content-type"] == "image/jpeg"
+        for headers in ({}, {"Authorization": f"Bearer {JOIN_CODE}"}):
+            refused = client.get(url, headers=headers)
+            assert refused.status_code == 401
+            assert refused.headers["content-type"] == "application/json"

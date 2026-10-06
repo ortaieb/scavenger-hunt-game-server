@@ -307,6 +307,16 @@ class SubmissionStore:
             conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             return read_review_queue(conn, session, recent)
 
+    def image_id(self, session: UUID, submission: int) -> UUID | None:
+        """The stored photo's id of one of the session's submissions; None if there's no such
+        submission in the session."""
+        with self._database.connection() as conn:
+            row = conn.execute(
+                "SELECT image_id FROM submissions WHERE id = %s AND session = %s",
+                (submission, session),
+            ).fetchone()
+        return None if row is None else row[0]
+
     def find_participant(self, session: UUID, participant: UUID) -> ParticipantRecord | None:
         """The participant's row, if it joined this session."""
         with self._database.connection() as conn:

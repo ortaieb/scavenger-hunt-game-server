@@ -1,4 +1,5 @@
-"""The review queue as the store reads it (`SubmissionStore.review_queue`)."""
+"""The review queue as the store reads it (`SubmissionStore.review_queue`), and a submission's
+stored photo (`SubmissionStore.image_id`)."""
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -143,3 +144,16 @@ def test_recent_is_capped_newest_first(store: SubmissionStore) -> None:
         rule(store, submission, "approve", minutes)
 
     assert [ruled.id for ruled in store.review_queue(SESSION, 2).recent] == [first, third]
+
+
+def test_the_image_id_of_a_submission_in_the_session(store: SubmissionStore) -> None:
+    submission = record(store)
+
+    assert store.image_id(SESSION, submission) == IMAGE
+
+
+def test_no_image_id_for_another_sessions_submission(store: SubmissionStore) -> None:
+    elsewhere = record(store, session=OTHER_SESSION)
+
+    assert store.image_id(SESSION, elsewhere) is None
+    assert store.image_id(SESSION, elsewhere + 1) is None

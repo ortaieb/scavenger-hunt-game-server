@@ -24,6 +24,7 @@ from game_server.models import VerdictStatus
 from game_server.phash import from_hex, to_hex
 from game_server.referee import RefereeReport
 from game_server.referee_traces import TracePage, read_traces, record_trace
+from game_server.review_queue import ReviewQueue, read_review_queue
 from game_server.rulings import RecordedRuling, Ruling, record_ruling
 from game_server.scoring import SessionResults
 from game_server.session_runs import RunChange, SessionRun, session_phase
@@ -296,6 +297,15 @@ class SubmissionStore:
         with self._database.transaction() as conn:
             conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             return read_traces(conn, session, limit, before)
+
+    def review_queue(self, session: UUID, recent: int) -> ReviewQueue:
+        """The session's photos waiting for a ruling, and its `recent` latest rulings.
+
+        Read in one read-only snapshot, so a photo just ruled on is in one list, never both.
+        """
+        with self._database.transaction() as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            return read_review_queue(conn, session, recent)
 
     def find_participant(self, session: UUID, participant: UUID) -> ParticipantRecord | None:
         """The participant's row, if it joined this session."""

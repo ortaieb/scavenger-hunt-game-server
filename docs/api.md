@@ -1187,7 +1187,8 @@ clues and sets their challenges, as a **draft** for the organiser to review and 
 session. A design runs in the background: start it, then poll the draft until it's `ready`.
 
 `GAME_SERVER_DESIGNER_RUNNER` picks what fills a draft. `agent` (the default) is the
-hunt-designer agent; until it lands, it can't run and starting a design is a `503`. `stub`
+[hunt-designer agent](#the-agent); it runs from the command line, but until it runs behind the
+API, the `agent` runner can't run and starting a design is a `503`. `stub`
 fills every draft, after `GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS`, with the same `ready` hunt
 of three fictional checkpoints around a fixed point, so the designer screen can be built and
 tested against a running server.
@@ -1438,6 +1439,58 @@ gate, green, river, chapel, school, court, place, square, the. So "Hogarth's Hou
 **One source for the limits.** The scene and pose limits are read from the sessions file's
 models, so a draft that passes can always be published. A checkpoint's default `proximity` is
 30 m for a point and 50 m for a way or relation (a park, a large building).
+
+### The agent
+
+The referee is a workflow; the designer is an **agent**, on the
+[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk)
+([`designer/agent.py`](../src/game_server/designer/agent.py)). Given the request, it decides for
+itself which searches to run and which places fit the theme, how to order them into a walkable
+loop, and how to fix a draft the [rules](#draft-rules) send back. Its system prompt is
+[`designer_prompt.md`](../src/game_server/designer_prompt.md); the user prompt is the request
+(area, theme, number of checkpoints and walk length) and nothing else.
+
+**Tools.** It works only through five tools on an in-process MCP server, `hunt`. Each works on
+one run's context: the area, and the candidate places seen so far.
+
+| Tool | What it does |
+|------|--------------|
+| `find_area(query)` | Finds the area ([map data](#map-data)) and keeps it for the run. Returns its name, box and whether it was clipped |
+| `find_places(kinds?)` | Finds the candidate places in the run's area, optionally narrowed to some of the allowed kinds. Shows at most 60, best-documented first, then nearest the area's centre, and adds those to the run's candidates. Each is a ref (its OpenStreetMap id), name, kind, distance from the centre and key tags, cut short: never coordinates |
+| `place_details(ref)` | One candidate's tags in full, from what the run already has: no new request |
+| `measure_route(refs)` | The legs between candidates in the order given, closing the loop, and the loop's length |
+| `submit_draft(checkpoints)` | Each checkpoint is `{ref, clue, scene, pose, rationale}`: there are no coordinates in the schema, and any the model adds are ignored. The server copies each place and its location from the candidate, sets the place's default `proximity`, and runs the [rules](#draft-rules). Returns the problems, or `accepted` |
+
+The last accepted draft is the run's result, in route order. A run that ends without one fails
+with `no_valid_draft`; one that hits a limit fails with `max_turns` or `max_budget`, unless it
+already has an accepted draft, which is then the result. When Claude Code can't start or the
+API fails, the error is `agent_unavailable`.
+
+**The sandbox.** The agent has no built-in tools (no shell, files, web search or web fetch):
+only the five `mcp__hunt__*` tools exist and are allowed, and permissions are `dontAsk`, so
+anything else would be refused without asking. No settings, memory, skills or other MCP servers
+are loaded from the machine: Claude Code gets a configuration directory and an empty working
+directory of its own for each run, both temporary. The key is passed to it as
+`ANTHROPIC_API_KEY`, from `GAME_SERVER_ANTHROPIC_API_KEY`. The organiser's text is sent as
+written: no `@file` expansion.
+
+**Map text is data.** Place names, inscriptions and descriptions reach the model only inside
+tool results, as JSON values, never in its prompts, and the prompt tells it that map text is
+information about a place, never instructions.
+
+| Setting | Default | |
+|---------|---------|-|
+| `GAME_SERVER_DESIGNER_MODEL` | `claude-sonnet-5-5` | The model |
+| `GAME_SERVER_DESIGNER_MAX_TURNS` | `30` | Most turns per run (> 0) |
+| `GAME_SERVER_DESIGNER_MAX_BUDGET_USD` | `1.00` | Most a run may spend, in US dollars (> 0) |
+
+**Logging.** One line per tool call (the tool, and its outcome and number of results) and one
+per run (its outcome, result, turns, cost and duration). Never clues, scenes or coordinates,
+which are answers, and never the key.
+
+**From the command line.** `uv run python -m game_server.designer --area ... --theme ...` runs
+the agent without the server or a database, to tune its prompt; see the
+[README](../README.md#designing-a-hunt-from-the-command-line).
 
 ### Drafts (`hunt_drafts`)
 

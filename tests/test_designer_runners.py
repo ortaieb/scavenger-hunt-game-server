@@ -30,6 +30,7 @@ from pytest_mock import MockerFixture
 
 from game_server.config import Settings
 from game_server.database import Database
+from game_server.designer.agent import AgentUnavailableError
 from game_server.designer_runners import (
     AgentRunner,
     StubRunner,
@@ -140,7 +141,7 @@ def designed(agent: AgentRunner, store: DraftStore) -> Draft:
     draft = started(store)
 
     async def run() -> None:
-        agent.open()
+        await agent.open()
         agent.start(draft, REQUEST)
         await agent.join()
 
@@ -155,7 +156,7 @@ def test_the_agent_runner_is_available_once_open_with_a_key(
 ) -> None:
     async def availability(runner: AgentRunner) -> tuple[bool, bool]:
         before = runner.available()
-        runner.open()
+        await runner.open()
         return before, runner.available()
 
     with_key = AgentRunner(store, lambda: T0, settings)
@@ -165,6 +166,41 @@ def test_the_agent_runner_is_available_once_open_with_a_key(
 
     assert asyncio.run(availability(with_key)) == (False, True)
     assert asyncio.run(availability(without)) == (False, False)
+
+
+def test_opening_with_a_key_logs_that_claude_code_starts(
+    agent: AgentRunner, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="game_server.designer_runners")
+
+    asyncio.run(agent.open())
+
+    assert "Hunt designer self-check: " in caplog.text
+    assert "(Claude Code)" in caplog.text
+
+
+def test_opening_logs_a_failed_self_check(
+    agent: AgentRunner, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    mocker.patch(
+        "game_server.designer_runners.cli_version",
+        side_effect=AgentUnavailableError("claude exited with status 127"),
+    )
+
+    asyncio.run(agent.open())
+
+    assert "Hunt designer self-check failed: claude exited with status 127" in caplog.text
+
+
+def test_opening_without_a_key_checks_nothing(
+    store: DraftStore, settings: Settings, mocker: MockerFixture
+) -> None:
+    check = mocker.patch("game_server.designer_runners.cli_version")
+    runner = AgentRunner(store, lambda: T0, settings.model_copy(update={"anthropic_api_key": None}))
+
+    asyncio.run(runner.open())
+
+    check.assert_not_called()
 
 
 def test_starting_an_unopened_agent_runner_is_an_error(agent: AgentRunner) -> None:
@@ -279,7 +315,7 @@ def test_closing_interrupts_a_run_and_keeps_what_it_had(
     draft = started(store)
 
     async def close_midway() -> None:
-        agent.open()
+        await agent.open()
         agent.start(draft, REQUEST)
         assert await asyncio.to_thread(fake.hanging.wait, WAIT_SECONDS)
         await agent.close()
@@ -342,7 +378,7 @@ def test_each_finished_run_logs_one_line_with_its_error(
 
     draft = designed(agent, store)
 
-    lines = [r.getMessage() for r in caplog.records if r.name == "game_server.designer_runners"]
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Draft")]
     assert lines == [
         f"Draft {draft.id} finished status failed checkpoints 1 cost_usd 0.42 error no_valid_draft"
     ]

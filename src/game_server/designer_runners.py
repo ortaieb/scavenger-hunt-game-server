@@ -24,7 +24,16 @@ from fastapi import Depends, Request
 
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.config import Settings, get_settings
-from game_server.designer.agent import DesignResult, HuntRun, MapData, api_key, run_agent
+from game_server.designer.agent import (
+    AgentUnavailableError,
+    DesignResult,
+    HuntRun,
+    MapData,
+    api_key,
+    bundled_cli,
+    cli_version,
+    run_agent,
+)
 from game_server.designer.osm import osm_client
 from game_server.drafts import (
     BoundingBox,
@@ -93,9 +102,19 @@ class AgentRunner:
         self._runs: dict[UUID, _Run] = {}
         self._lock = threading.Lock()
 
-    def open(self) -> None:
-        """Run on the current event loop from now on."""
+    async def open(self) -> None:
+        """Run on the current event loop from now on. With a key, check that Claude Code
+        starts, and log the outcome: the deploy's logs then show it (the image has no shell
+        to run `--self-check` in)."""
         self._loop = asyncio.get_running_loop()
+        if api_key(self._settings) is None:
+            return
+        try:
+            version = await asyncio.to_thread(cli_version, bundled_cli())
+        except AgentUnavailableError as exc:
+            logger.warning("Hunt designer self-check failed: %s", exc)
+        else:
+            logger.info("Hunt designer self-check: %s", version)
 
     def available(self) -> bool:
         """Once open, with an Anthropic key."""

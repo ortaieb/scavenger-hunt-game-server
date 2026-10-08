@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     store = DraftStore(open_database(database_config(settings)))
     await interrupt_left_running(store, get_clock())
     runner = AgentRunner(store, get_clock(), settings)
-    runner.open()
+    await runner.open()
     app.state.agent_runner = runner
     try:
         yield

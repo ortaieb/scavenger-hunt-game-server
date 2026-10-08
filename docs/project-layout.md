@@ -46,7 +46,7 @@ src/game_server/
     __main__.py      # `python -m game_server.designer`: design a hunt from the command line
   designer_prompt.md # the hunt-designer agent's system prompt
   drafts.py          # the draft contract's models, and DraftStore (hunt_drafts)
-  designer_runners.py  # what fills a draft: StubRunner, and the agent (not run from the API yet)
+  designer_runners.py  # what fills a draft: AgentRunner (the agent, as tasks on the app's loop) or StubRunner
   ruling.py          # `…/submissions/{submission}/ruling`: the moderator approves or rejects a photo
   review.py          # `…/review`: the photos waiting for a ruling, and the latest rulings
   review_queue.py    # read_review_queue: the review queue as stored

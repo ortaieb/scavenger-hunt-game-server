@@ -1187,11 +1187,10 @@ clues and sets their challenges, as a **draft** for the organiser to review and 
 session. A design runs in the background: start it, then poll the draft until it's `ready`.
 
 `GAME_SERVER_DESIGNER_RUNNER` picks what fills a draft. `agent` (the default) is the
-[hunt-designer agent](#the-agent); it runs from the command line, but until it runs behind the
-API, the `agent` runner can't run and starting a design is a `503`. `stub`
-fills every draft, after `GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS`, with the same `ready` hunt
-of three fictional checkpoints around a fixed point, so the designer screen can be built and
-tested against a running server.
+[hunt-designer agent](#the-agent), which needs `GAME_SERVER_ANTHROPIC_API_KEY`: without it,
+starting a design is a `503`. `stub` fills every draft, after
+`GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS`, with the same `ready` hunt of three fictional
+checkpoints around a fixed point, for local development and the web app's tests.
 
 ### Organiser key
 
@@ -1213,7 +1212,7 @@ it.
 
 A draft holds coordinates and scenes, the answers to its clues, so only the organiser sees it.
 The server logs one line per draft created and per draft finished (its id, status, number of
-checkpoints and cost), never its clues, scenes or coordinates.
+checkpoints, cost and error code), never its clues, scenes or coordinates.
 
 ### `POST /designer/drafts`
 
@@ -1306,11 +1305,11 @@ One draft, in full:
 | `status` | `running`, then `ready` or `failed`, and finally `published` |
 | `request` | What the organiser asked for, with the defaults filled in |
 | `area` | The area the run resolved, and whether it was `clipped` to the size limit. `null` until the run has it |
-| `progress` | The run's steps so far, oldest first, for the organiser to follow |
-| `checkpoints` | The proposed checkpoints, in route order: the real place (its OpenStreetMap id, name, kind and location), the clue, the challenge, the `proximity` in metres, why it was picked, the organiser's `review` (`pending`, `accepted` or `rejected`) and whether the organiser `edited` it. Empty while running |
+| `progress` | The run's [steps](#progress) so far, oldest first, for the organiser to follow |
+| `checkpoints` | The proposed checkpoints, in route order: the real place (its OpenStreetMap id, name, kind and location), the clue, the challenge, the `proximity` in metres, why it was picked, the organiser's `review` (`pending`, `accepted` or `rejected`) and whether the organiser `edited` it. Empty while running. On a `failed` draft, the last draft the run submitted, if any, to show how close it got (a checkpoint at a place that isn't a candidate is left out) |
 | `route` | The walking distance, in metres, from each checkpoint to the next, **closing the loop** back to the first, because each team plays its own rotation of the route; and the loop's total. `null` without checkpoints |
-| `problems` | The rules the draft breaks: a `code`, the checkpoint's `position` (or `null` for the whole draft) and a message |
-| `run` | Which runner, the model, its turns, what it cost in US dollars, how long it took (`null` while running), and `error`: `null`, or `{"code"}` with one of `max_turns`, `max_budget`, `deadline`, `no_valid_draft`, `agent_unavailable` or `interrupted` |
+| `problems` | The rules the draft breaks: a `code`, the checkpoint's `position` (or `null` for the whole draft) and a message. Empty on a `ready` draft; on a `failed` one, the problems of the last draft submitted |
+| `run` | Which runner, the model, its turns, what it cost in US dollars, how long it took (`null` while running), and `error`: `null`, or `{"code"}` with one of the [error codes](#statuses-and-errors) |
 | `attribution` | The map data's credit, to show with the draft |
 | `published` | `null`, or `{"session", "at"}` once the draft is published |
 
@@ -1322,6 +1321,48 @@ Times are UTC to the second.
 | `401`  | Organiser key required |
 | `404`  | `{"detail": "unknown draft"}` |
 | `422`  | `draft` isn't a UUID |
+
+### Statuses and errors
+
+| Status | What it means for the organiser |
+|--------|---------------------------------|
+| `running` | The run is going: follow its `progress`. One run at a time, so starting another is a `409` until it ends. A run ends within `GAME_SERVER_DESIGNER_DEADLINE_SECONDS` (5 minutes by default) |
+| `ready` | The run's draft passed every [rule](#draft-rules). Its checkpoints wait for the organiser's review, all `pending` |
+| `failed` | The run ended without a draft that passes: `run.error.code` says why. Nothing to review, but the draft keeps the last checkpoints the run submitted and their problems, or at least the area it found. Start a new design |
+| `published` | It became a session ([#87](#reviewing-and-publishing)) |
+
+A run that already had a draft accepted keeps it, whatever ends it afterwards: it's `ready`.
+
+| Error code | Why the run failed, and what to try |
+|------------|-------------------------------------|
+| `max_turns` | The agent used all its turns (`GAME_SERVER_DESIGNER_MAX_TURNS`) without a draft that passes. The `problems` show what it was stuck on. Try again, perhaps with fewer checkpoints or a longer walk |
+| `max_budget` | The run spent its budget (`GAME_SERVER_DESIGNER_MAX_BUDGET_USD`) without a draft that passes. As for `max_turns` |
+| `deadline` | The run took longer than `GAME_SERVER_DESIGNER_DEADLINE_SECONDS` and was cut off. Usually slow map data or a slow API: try again later |
+| `no_valid_draft` | The agent stopped of its own accord without a draft that passes, often because the area has too few suitable places for the theme. Try a broader theme or a fuller area name |
+| `agent_unavailable` | The agent couldn't run: Claude Code didn't start, the Claude API failed (an outage, or a bad key), or something unexpected went wrong. Try again later; the server log says which |
+| `interrupted` | The server shut down or restarted during the run. Start the design again |
+
+A run cut off before Claude Code reports its result (`deadline`, `interrupted`) has `turns`
+counted from what it saw, but no cost: its `cost-usd` is `0`, and the
+[Claude Console](https://platform.claude.com/) has the real figure. A draft found `running` at
+startup has neither, and no `duration-ms`.
+
+### Progress
+
+Each call the agent makes to one of its [tools](#the-agent) adds one step, named after the
+tool, whose `summary` is the call's outcome: never a clue or a scene.
+
+| `step` | `summary`, for example |
+|--------|------------------------|
+| `find_area` | `Chiswick, London, England`, with ` (clipped)` if it was cut to the size limit; or `No area matches` |
+| `find_places` | `58 candidate places`; or `A kind that isn't allowed` |
+| `place_details` | `Details of Hogarth's House` |
+| `measure_route` | `A loop of 3 places, 1410 m` |
+| `submit_draft` | `No problems` when the draft is accepted; else `2 problems: too_close, wrong_count` |
+
+A call that fails says why instead: `Invalid input`, `No area yet`, `Not a candidate place`,
+`The map data is unavailable` or `The map data timed out`. The agent can recover, so a failed
+step doesn't end the run.
 
 ### Reviewing and publishing
 
@@ -1462,9 +1503,14 @@ one run's context: the area, and the candidate places seen so far.
 | `submit_draft(checkpoints)` | Each checkpoint is `{ref, clue, scene, pose, rationale}`: there are no coordinates in the schema, and any the model adds are ignored. The server copies each place and its location from the candidate, sets the place's default `proximity`, and runs the [rules](#draft-rules). Returns the problems, or `accepted` |
 
 The last accepted draft is the run's result, in route order. A run that ends without one fails
-with `no_valid_draft`; one that hits a limit fails with `max_turns` or `max_budget`, unless it
-already has an accepted draft, which is then the result. When Claude Code can't start or the
-API fails, the error is `agent_unavailable`.
+with `no_valid_draft`; one that hits a limit fails with `max_turns`, `max_budget` or `deadline`,
+unless it already has an accepted draft, which is then the result. When Claude Code can't start
+or the API fails, the error is `agent_unavailable`. A failed run keeps the last draft it
+submitted and its problems (see [statuses and errors](#statuses-and-errors)).
+
+**The deadline.** The SDK has no session timeout of its own, so the server sets one: past
+`GAME_SERVER_DESIGNER_DEADLINE_SECONDS`, the run is cancelled and the SDK ends Claude Code's
+process (it closes its input, waits up to 5 s, then terminates it). The error is `deadline`.
 
 **The sandbox.** The agent has no built-in tools (no shell, files, web search or web fetch):
 only the five `mcp__hunt__*` tools exist and are allowed, and permissions are `dontAsk`, so
@@ -1483,10 +1529,32 @@ information about a place, never instructions.
 | `GAME_SERVER_DESIGNER_MODEL` | `claude-sonnet-5-5` | The model |
 | `GAME_SERVER_DESIGNER_MAX_TURNS` | `30` | Most turns per run (> 0) |
 | `GAME_SERVER_DESIGNER_MAX_BUDGET_USD` | `1.00` | Most a run may spend, in US dollars (> 0) |
+| `GAME_SERVER_DESIGNER_DEADLINE_SECONDS` | `300` | Longest a run may take, in seconds (> 0) |
 
 **Logging.** One line per tool call (the tool, and its outcome and number of results) and one
 per run (its outcome, result, turns, cost and duration). Never clues, scenes or coordinates,
 which are answers, and never the key.
+
+**Behind the API.** `POST /designer/drafts` starts the run as a task on the server's event loop
+and returns at once. The run is minutes of work in the same server that judges players' photos
+within seconds, so it never blocks the event loop: the agent's work happens in Claude Code's
+process and in async tool calls, and the tools' map requests and the draft's database writes run
+in threads. Players' requests are served as usual while a design runs. One run at a time:
+Anthropic suggests allowing about 1 GiB of memory per agent run (Claude Code itself takes about
+230 MiB once started, before its conversation grows).
+
+**Restarts.** At startup, any draft still `running`, whose run died with the previous process,
+fails with `interrupted`. At shutdown, a running design is stopped: Claude Code is shut down
+and the draft fails with `interrupted`, keeping what it had. Shutting Claude Code down takes up
+to about 5 s; if the platform kills the server sooner, the next startup marks the draft instead
+(without what it had). If the database can't be reached at startup, drafts left `running` stay
+so, and block new designs, until a startup that can reach it.
+
+**Claude Code in the image.** The Agent SDK's wheel bundles the Claude Code binary, which the
+Docker image carries in its virtualenv; it needs only glibc. Each run gives it a configuration
+directory of its own under the system's temporary directory (`/tmp`, writable by the image's
+`nonroot` user), deleted when the run ends. `python -m game_server.designer --self-check` checks
+that the binary starts.
 
 **From the command line.** `uv run python -m game_server.designer --area ... --theme ...` runs
 the agent without the server or a database, to tune its prompt; see the

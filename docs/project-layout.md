@@ -8,7 +8,8 @@ src/game_server/
   app.py             # FastAPI app factory, `GET /`
   challenge.py       # `POST /challenge` route and request handling
   models.py          # request/response models
-  sessions.py        # game session/checkpoint models, file loading, SessionRepository
+  sessions.py        # game session/checkpoint models, file loading, SessionRepository (file and published), publish_session
+  published_sessions.py  # PublishedSessionRows: published sessions and their codes in the database
   storage.py         # ImageStore: writes images to disk
   checks/
     base.py          # Check protocol, SubmissionContext, Rejection, verdict decision

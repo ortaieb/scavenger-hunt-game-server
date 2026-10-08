@@ -9,6 +9,7 @@ requires-python = ">=3.13"
 dependencies = [
     "anthropic>=1.9.0",
     "fastapi>=0.141.1",
+    "httpx2>=2.13.1",
     "numpy>=2.5.3",
     "pillow>=12.3.0",
     "psycopg-pool>=3.3.3",
@@ -27,7 +28,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "httpx2>=2.13.1",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
@@ -59,8 +59,8 @@ plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Live tests call the real Claude API: opt in with `uv run pytest -m live`.
+# Live tests call real services (the Claude API, OpenStreetMap): opt in with `uv run pytest -m live`.
 addopts = "-ra -m 'not live'"
-markers = ["live: calls the real Claude API; needs GAME_SERVER_ANTHROPIC_API_KEY"]
+markers = ["live: calls a real external service (the Claude API, which needs GAME_SERVER_ANTHROPIC_API_KEY, or OpenStreetMap)"]
 # Fail on warnings, e.g. an unclosed connection (ResourceWarning).
 filterwarnings = ["error"]

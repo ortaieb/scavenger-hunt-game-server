@@ -1,0 +1,2063 @@
+{
+ "version": 0.6,
+ "generator": "Overpass API 0.7.62.11 87bfad18",
+ "osm3s": {
+  "timestamp_osm_base": "2026-10-08T13:34:45Z",
+  "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+ },
+ "elements": [
+  {
+   "type": "node",
+   "id": 249573060,
+   "lat": 51.492118,
+   "lon": -0.2715562,
+   "tags": {
+    "amenity": "place_of_worship",
+    "denomination": "christ_scientist",
+    "name": "First Church of Christ, Scientist Chiswick",
+    "religion": "christian"
+   }
+  },
+  {
+   "type": "node",
+   "id": 249573063,
+   "lat": 51.4903425,
+   "lon": -0.2727527,
+   "tags": {
+    "amenity": "place_of_worship",
+    "check_date": "2025-10-24",
+    "denomination": "baptist",
+    "name": "Gunnersbury Baptist Church",
+    "religion": "christian"
+   }
+  },
+  {
+   "type": "node",
+   "id": 256508648,
+   "lat": 51.4970506,
+   "lon": -0.2487883,
+   "tags": {
+    "amenity": "place_of_worship",
+    "created_by": "JOSM",
+    "denomination": "seventh_day_adventist",
+    "name": "Chiswick Seventh Day Adventist Church",
+    "religion": "christian"
+   }
+  },
+  {
+   "type": "node",
+   "id": 302173383,
+   "lat": 51.504512,
+   "lon": -0.2689663,
+   "tags": {
+    "amenity": "place_of_worship",
+    "denomination": "evangelical",
+    "name": "Berrymead Evangelical Church",
+    "religion": "christian"
+   }
+  },
+  {
+   "type": "node",
+   "id": 302173385,
+   "lat": 51.5041342,
+   "lon": -0.2686264,
+   "tags": {
+    "amenity": "place_of_worship",
+    "check_date": "2026-04-30",
+    "name": "Ukrainian Autocephalous Orthodox Church",
+    "note": "Cathedral of the Holy Transfiguration of our Saviour",
+    "phone": "+44 20 8992 4689",
+    "postal_code": "W3 8AJ",
+    "religion": "christian"
+   }
+  },
+  {
+   "type": "node",
+   "id": 524171511,
+   "lat": 51.4881179,
+   "lon": -0.2670568,
+   "tags": {
+    "amenity": "place_of_worship",
+    "check_date": "2026-09-06",
+    "denomination": "methodist",
+    "name": "Chiswick Methodist Church",
+    "religion": "christian"
+   }
+  },
+  {
+   "type": "node",
+   "id": 679119297,
+   "lat": 51.4837475,
+   "lon": -0.2585917,
+   "tags": {
+    "check_date:opening_hours": "2023-09-27",
+    "fee": "yes",
+    "fee:conditional": "no @ (age < 5)",
+    "name": "Chiswick House",
+    "opening_hours": "May-Oct Th-Su 11:00-16:00",
+    "seasonal": "yes",
+    "tourism": "museum",
+    "website": "https://chiswickhouseandgardens.org.uk/",
+    "wheelchair": "limited",
+    "wheelchair:description": "no wheelchair access to the upper floor.",
+    "wikidata": "Q1074877"
+   }
+  },
+  {
+   "type": "node",
+   "id": 762640041,
+   "lat": 51.4823687,
+   "lon": -0.261288,
+   "tags": {
+    "historic": "monument",
+    "name": "Obelisk",
+    "wikidata": "Q17527744"
+   }
+  },
+  {
+   "type": "node",
+   "id": 762656746,
+   "lat": 51.4846327,
+   "lon": -0.2598771,
+   "tags": {
+    "name": "Goose's Foot",
+    "tourism": "attraction"
+   }
+  },
+  {
+   "type": "node",
+   "id": 763618707,
+   "lat": 51.4822004,
+   "lon": -0.2642304,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "The first V2 rocket on London fell here 8 September 1944 killing three",
+    "material": "stone",
+    "memorial": "war_memorial",
+    "memorial:conflict": "WW2",
+    "name": "V2 Memorial"
+   }
+  },
+  {
+   "type": "node",
+   "id": 778690379,
+   "lat": 51.4844417,
+   "lon": -0.2599498,
+   "tags": {
+    "name": "Exedra",
+    "name:ru": "Экзедра",
+    "tourism": "attraction"
+   }
+  },
+  {
+   "type": "node",
+   "id": 4646622289,
+   "lat": 51.4807054,
+   "lon": -0.2562546,
+   "tags": {
+    "addr:street": "Alexandra Gardens",
+    "check_date:opening_hours": "2021-02-13",
+    "name": "The Food Market Chiswick",
+    "opening_hours": "Su 10:00-14:00",
+    "tourism": "attraction",
+    "website": "https://www.thefoodmarketchiswick.com/"
+   }
+  },
+  {
+   "type": "node",
+   "id": 7985313787,
+   "lat": 51.4967322,
+   "lon": -0.2559252,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "John Lindley (1799-1865) Botanist and Pioneer Orchidologist lived here from 1836 and died here",
+    "memorial": "blue_plaque",
+    "name": "John Lindley",
+    "openplaques:id": "652",
+    "subject:wikidata": "Q378629"
+   }
+  },
+  {
+   "type": "node",
+   "id": 7995272771,
+   "lat": 51.4897879,
+   "lon": -0.242868,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "Sir Alan Herbert (A. P .H.) (1890-1971) Author, Humourist and reformist M.P. lived and died here",
+    "memorial": "blue_plaque",
+    "name": "A P Herbert",
+    "openplaques:id": "116",
+    "subject:wikidata": "Q4352362"
+   }
+  },
+  {
+   "type": "node",
+   "id": 7995288615,
+   "lat": 51.4898685,
+   "lon": -0.2424396,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "Sir Emery Walker (1851-1933) Typographer and antiquary lived here 1903-1933",
+    "memorial": "blue_plaque",
+    "name": "Emery Walker",
+    "openplaques:id": "623",
+    "subject:wikidata": "Q346323"
+   }
+  },
+  {
+   "type": "node",
+   "id": 8002395360,
+   "lat": 51.4826147,
+   "lon": -0.2716208,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "Jack Beresford (1899-1977) Olympic Rowing Champion lived here 1903-1940",
+    "memorial": "blue_plaque",
+    "name": "Jack Beresford",
+    "openplaques:id": "358",
+    "subject:wikidata": "Q970076"
+   }
+  },
+  {
+   "type": "node",
+   "id": 8002395378,
+   "lat": 51.488747,
+   "lon": -0.2654632,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "Tommy Cooper (1921-1984) Comedian lived here 1955-1984",
+    "memorial": "blue_plaque",
+    "name": "Tommy Cooper",
+    "openplaques:id": "41326",
+    "subject:wikidata": "Q612027"
+   }
+  },
+  {
+   "type": "node",
+   "id": 8002418086,
+   "lat": 51.4923321,
+   "lon": -0.2672489,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "E. M. Forster (1879-1970) Novelist lived here",
+    "memorial": "blue_plaque",
+    "name": "E. M. Forster",
+    "openplaques:id": "495",
+    "subject:wikidata": "Q189119"
+   }
+  },
+  {
+   "type": "node",
+   "id": 8002418145,
+   "lat": 51.4842368,
+   "lon": -0.2738645,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "Joseph Michael Gandy (1771-1843) Architectural Visionary lived here 1833-1838",
+    "memorial": "blue_plaque",
+    "name": "Joseph Michael Gandy",
+    "openplaques:id": "219",
+    "subject:wikidata": "Q6283347"
+   }
+  },
+  {
+   "type": "node",
+   "id": 8002418153,
+   "lat": 51.4895262,
+   "lon": -0.2674642,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "Patrick Hamilton (1904-1962) Novelist and Playwright lived here",
+    "memorial": "blue_plaque",
+    "name": "Patrick Hamilton",
+    "openplaques:id": "8222",
+    "subject:wikidata": "Q1278407"
+   }
+  },
+  {
+   "type": "node",
+   "id": 8002418158,
+   "lat": 51.4915868,
+   "lon": -0.2533656,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "Private Frederick Hitch V.C. (1856-1913) Hero of Rorke's Drift lived and died here",
+    "memorial": "blue_plaque",
+    "name": "Frederick Hitch",
+    "openplaques:id": "612",
+    "subject:wikidata": "Q1938101"
+   }
+  },
+  {
+   "type": "node",
+   "id": 8003807222,
+   "lat": 51.4980693,
+   "lon": -0.2452449,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "Lucien Pissarro (1863-1944) Painter, Printer Wood Engraver lived here",
+    "memorial": "blue_plaque",
+    "name": "Lucien Pissarro",
+    "openplaques:id": "654",
+    "subject:wikidata": "Q964608"
+   }
+  },
+  {
+   "type": "node",
+   "id": 8003807229,
+   "lat": 51.4880284,
+   "lon": -0.2496109,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "Alexander Pope (1688-1744) Poet lived in this row, Mawson's Buildings 1716-1719",
+    "memorial": "blue_plaque",
+    "name": "Alexander Pope",
+    "openplaques:id": "99",
+    "subject:wikidata": "Q164047"
+   }
+  },
+  {
+   "type": "node",
+   "id": 8003807238,
+   "lat": 51.486603,
+   "lon": -0.2822909,
+   "tags": {
+    "historic": "memorial",
+    "inscription": "Johann Zoffany (1733-1810) Painter lived here 1790-1810",
+    "memorial": "blue_plaque",
+    "name": "Johann Zoffany",
+    "openplaques:id": "563",
+    "subject:wikidata": "Q702272"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9197591167,
+   "lat": 51.4925884,
+   "lon": -0.2551852,
+   "tags": {
+    "artist:wikidata": "Q6196671",
+    "artist:wikipedia": "en:Jim Mathieson (sculptor)",
+    "artist_name": "Jim Mathieson",
+    "artwork_type": "statue",
+    "check_date": "2026-05-31",
+    "name": "Statue of William Hogarth",
+    "start_date": "2001-10-23",
+    "subject:wikidata": "Q171344",
+    "subject:wikipedia": "fr:William Hogarth",
+    "tourism": "artwork"
+   }
+  },
+  {
+   "type": "node",
+   "id": 11162837096,
+   "lat": 51.479242,
+   "lon": -0.2516936,
+   "tags": {
+    "artist_name": "Kevin Herlihy",
+    "artwork_type": "sculpture",
+    "name": "The Fantastic Herons",
+    "tourism": "artwork"
+   }
+  },
+  {
+   "type": "node",
+   "id": 11224945385,
+   "lat": 51.491123,
+   "lon": -0.2422937,
+   "tags": {
+    "artwork_type": "statue",
+    "name": "Draped Woman",
+    "tourism": "artwork",
+    "wikidata": "Q25935032"
+   }
+  },
+  {
+   "type": "node",
+   "id": 11224971916,
+   "lat": 51.4919109,
+   "lon": -0.2440024,
+   "tags": {
+    "artwork_type": "statue",
+    "name": "Greek Runner",
+    "tourism": "artwork",
+    "wikidata": "Q26353472"
+   }
+  },
+  {
+   "type": "node",
+   "id": 11730987128,
+   "lat": 51.4959634,
+   "lon": -0.2552281,
+   "tags": {
+    "artist_name": "Conrad Shawcross",
+    "artwork_type": "sculpture",
+    "description": "Title taken from Yeats’s poem “He Wishes for the Cloths of Heaven”. Located outside St Michael & All Angels church, near the Yeats family’s former homes in Bedford Park.",
+    "name": "#EnwroughtLight",
+    "start_date": "2022-09-06",
+    "tourism": "artwork"
+   }
+  },
+  {
+   "type": "node",
+   "id": 11826340863,
+   "lat": 51.4924349,
+   "lon": -0.2666368,
+   "tags": {
+    "artwork_type": "installation",
+    "name": "Rockery",
+    "tourism": "artwork"
+   }
+  },
+  {
+   "type": "node",
+   "id": 11826352025,
+   "lat": 51.4922259,
+   "lon": -0.2633549,
+   "tags": {
+    "historic": "memorial",
+    "material": "stone",
+    "memorial": "obelisk",
+    "name": "Chiswick War Memorial",
+    "wikidata": "Q26677146"
+   }
+  },
+  {
+   "type": "node",
+   "id": 11884982285,
+   "lat": 51.5032931,
+   "lon": -0.2854229,
+   "tags": {
+    "addr:city": "London",
+    "addr:country": "GB",
+    "addr:housenumber": "55",
+    "addr:postcode": "W3 9AB",
+    "addr:street": "Carbery Avenue",
+    "amenity": "place_of_worship",
+    "denomination": "mahayana",
+    "name": "Three Wheels Shin Buddhist Temple",
+    "religion": "buddhist",
+    "website": "https://threewheels.org.uk/"
+   }
+  },
+  {
+   "type": "node",
+   "id": 12686983560,
+   "lat": 51.5023428,
+   "lon": -0.2740903,
+   "tags": {
+    "access": "permissive",
+    "addr:city": "London",
+    "addr:housename": "Cultivate London @Berrymede Community Gardens",
+    "addr:housenumber": "232",
+    "addr:postcode": "W3 8SN",
+    "addr:street": "Osborne Road",
+    "description": "The beds are located in the playgrounds of the 3 buildings of the Acton Gardens Primary school (formerly Berrymede), the drop-in sessions are outside lessons times: Saturdays 11:30 – 14:30 and Tuesdays 4-6pm (only from April until October).",
+    "door": "gate",
+    "entrance": "community_garden_entrance",
+    "fee": "no",
+    "garden:type": "community",
+    "leisure": "garden",
+    "name": "Cultivate London @Berrymede Community Gardens",
+    "operator": "Cultivate London",
+    "operator:type": "charitable",
+    "wheelchair": "yes"
+   }
+  },
+  {
+   "type": "node",
+   "id": 13772198934,
+   "lat": 51.4944383,
+   "lon": -0.274575,
+   "tags": {
+    "artist_name": "Kevin Herlihy",
+    "artwork_type": "sculpture",
+    "material": "metal",
+    "name": "Cormorant",
+    "tourism": "artwork"
+   }
+  },
+  {
+   "type": "node",
+   "id": 13811813213,
+   "lat": 51.5036165,
+   "lon": -0.2558349,
+   "tags": {
+    "artist_name": "Sarah Staton",
+    "artwork_type": "sculpture",
+    "check_date": "2026-06-01",
+    "description": "The figure of Sybil honours the 19th century entrepreneurial women of South Acton who set up laundry businesses in the area which became known as “Soapsud Island”.",
+    "name": "Sybil",
+    "tourism": "artwork"
+   }
+  },
+  {
+   "type": "node",
+   "id": 13811813214,
+   "lat": 51.503649,
+   "lon": -0.2556379,
+   "tags": {
+    "artist_name": "Sarah Staton",
+    "artwork_type": "sculpture",
+    "check_date": "2026-06-01",
+    "description": "Of the three figures here, Colin represents both the unsung heroes in the public sector and ordinary people of Acton who made a difference against the odds. Colin was co-developed with the artist and a group of young people from Bollo Brook Youth Centre.",
+    "name": "Colin",
+    "tourism": "artwork"
+   }
+  },
+  {
+   "type": "node",
+   "id": 13816171082,
+   "lat": 51.5034985,
+   "lon": -0.2564935,
+   "tags": {
+    "artist_name": "Sarah Staton",
+    "artwork_type": "sculpture",
+    "check_date": "2026-06-01",
+    "description": "The Sir Joseph Bazalgette figure marks the western extent of the sewerage system that he designed in the 1860s, and the start of the super sewer tunnel that runs east from this location.",
+    "name": "Sir Joseph Bazalgette",
+    "tourism": "artwork"
+   }
+  },
+  {
+   "type": "node",
+   "id": 13981546898,
+   "lat": 51.4946926,
+   "lon": -0.2749802,
+   "tags": {
+    "alt_name": "2-Way Mirror Labyrinth",
+    "artist_name": "Jeppe Hein",
+    "artwork_type": "sculpture",
+    "material": "steel",
+    "name": "Mirror Labyrinth",
+    "tourism": "artwork",
+    "website": "https://www.jeppehein.net/project_id.php?path=publics&id=163"
+   }
+  },
+  {
+   "type": "way",
+   "id": 4788807,
+   "center": {
+    "lat": 51.4811229,
+    "lon": -0.2795416
+   },
+   "tags": {
+    "addr:city": "Richmond",
+    "addr:full": "The National Archives, Kew, Richmond, Surrey, TW9 4DU",
+    "addr:postcode": "TW9 4DU",
+    "building": "government",
+    "check_date": "2025-09-13",
+    "government": "archive",
+    "internet_access": "wlan",
+    "internet_access:fee": "no",
+    "internet_access:ssid": "The National Archives",
+    "name": "The National Archives",
+    "office": "government",
+    "opening_hours": "Tu,Th 09:00-19:00; We,Fr,Sa 09:00-17:00",
+    "payment:cash": "yes",
+    "payment:credit_cards": "yes",
+    "payment:debit_cards": "yes",
+    "phone": "+44 20 8876 3444",
+    "short_name": "TNA",
+    "toilets:wheelchair": "yes",
+    "website": "https://www.nationalarchives.gov.uk/",
+    "wheelchair": "yes",
+    "wikidata": "Q392703",
+    "wikipedia": "en:The National Archives (United Kingdom)"
+   }
+  },
+  {
+   "type": "way",
+   "id": 5094376,
+   "center": {
+    "lat": 51.4773512,
+    "lon": -0.2540718
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Dukes Meadows",
+    "wikidata": "Q5313183",
+    "wikipedia": "en:Dukes Meadows"
+   }
+  },
+  {
+   "type": "way",
+   "id": 9183927,
+   "center": {
+    "lat": 51.4975555,
+    "lon": -0.2468159
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Stamford Brook Common",
+    "website": "https://www.parksandgardens.org/places/stamford-brook-common"
+   }
+  },
+  {
+   "type": "way",
+   "id": 9184699,
+   "center": {
+    "lat": 51.495639,
+    "lon": -0.2577775
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Acton Green Common"
+   }
+  },
+  {
+   "type": "way",
+   "id": 9184779,
+   "center": {
+    "lat": 51.4941672,
+    "lon": -0.2578066
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Chiswick Back Common"
+   }
+  },
+  {
+   "type": "way",
+   "id": 17939312,
+   "center": {
+    "lat": 51.4970755,
+    "lon": -0.2394441
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Ravenscourt Park",
+    "operator": "London Borough of Hammersmith and Fulham",
+    "operator:type": "government",
+    "operator:wikidata": "Q40478",
+    "website": "https://www.lbhf.gov.uk/sports-and-parks/parks-and-open-spaces/ravenscourt-park",
+    "wikidata": "Q7296505",
+    "wikipedia": "en:Ravenscourt Park"
+   }
+  },
+  {
+   "type": "way",
+   "id": 22696907,
+   "center": {
+    "lat": 51.495411,
+    "lon": -0.263413
+   },
+   "tags": {
+    "barrier": "fence",
+    "leisure": "park",
+    "name": "Acton Green Common"
+   }
+  },
+  {
+   "type": "way",
+   "id": 22697257,
+   "center": {
+    "lat": 51.4894559,
+    "lon": -0.2493904
+   },
+   "tags": {
+    "access": "yes",
+    "leisure": "park",
+    "name": "Homefield Recreation Ground North"
+   }
+  },
+  {
+   "type": "way",
+   "id": 22697284,
+   "center": {
+    "lat": 51.4918774,
+    "lon": -0.2440107
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "St. Peter's Square"
+   }
+  },
+  {
+   "type": "way",
+   "id": 22703168,
+   "center": {
+    "lat": 51.4963715,
+    "lon": -0.2908795
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Gunnersbury Park",
+    "wheelchair": "yes",
+    "wikidata": "Q5619226",
+    "wikipedia": "en:Gunnersbury Park"
+   }
+  },
+  {
+   "type": "way",
+   "id": 23117181,
+   "center": {
+    "lat": 51.4921004,
+    "lon": -0.2650665
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W4 5DT",
+    "amenity": "place_of_worship",
+    "building": "church",
+    "denomination": "anglican",
+    "name": "Christ Church",
+    "ref:GB:uprn": "10023863020",
+    "religion": "christian",
+    "source:addr:postcode": "ONSUD;OS Open UPRN",
+    "wikidata": "Q26484321",
+    "wikipedia": "en:Christ Church, Turnham Green"
+   }
+  },
+  {
+   "type": "way",
+   "id": 23117234,
+   "center": {
+    "lat": 51.491136,
+    "lon": -0.2654367
+   },
+   "tags": {
+    "building": "public",
+    "name": "Chiswick Town Hall",
+    "wikidata": "Q5102165",
+    "wikipedia": "en:Chiswick Town Hall"
+   }
+  },
+  {
+   "type": "way",
+   "id": 23268752,
+   "center": {
+    "lat": 51.4963491,
+    "lon": -0.2648478
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Duke of Sussex Island"
+   }
+  },
+  {
+   "type": "way",
+   "id": 23687878,
+   "center": {
+    "lat": 51.4971065,
+    "lon": -0.2484056
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Land at Prebend Gardens"
+   }
+  },
+  {
+   "type": "way",
+   "id": 24034914,
+   "center": {
+    "lat": 51.4883465,
+    "lon": -0.2484754
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Homefield Recreation Ground South"
+   }
+  },
+  {
+   "type": "way",
+   "id": 24485101,
+   "center": {
+    "lat": 51.4885338,
+    "lon": -0.2750899
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Harvard Hill Recreation Ground"
+   }
+  },
+  {
+   "type": "way",
+   "id": 24817859,
+   "center": {
+    "lat": 51.4877098,
+    "lon": -0.2781346
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Chiswick Village Green"
+   }
+  },
+  {
+   "type": "way",
+   "id": 25595637,
+   "center": {
+    "lat": 51.4847194,
+    "lon": -0.2626888
+   },
+   "tags": {
+    "bridge": "yes",
+    "heritage": "yes",
+    "highway": "footway",
+    "layer": "2",
+    "name": "The Classic Bridge",
+    "name:ru": "Классический мост",
+    "tourism": "attraction",
+    "wikidata": "Q17527849"
+   }
+  },
+  {
+   "type": "way",
+   "id": 25595644,
+   "center": {
+    "lat": 51.4853998,
+    "lon": -0.257713
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W4 2QN",
+    "addr:street": "Hogarth Lane",
+    "building": "yes",
+    "description": "Camelia House",
+    "name": "Conservatory",
+    "name:ru": "Консерватория - дом камелий",
+    "note": "Part of the National Camelia Collection",
+    "ref:GB:uprn": "10093765957",
+    "tourism": "attraction"
+   }
+  },
+  {
+   "type": "way",
+   "id": 25599337,
+   "center": {
+    "lat": 51.4843654,
+    "lon": -0.2607204
+   },
+   "tags": {
+    "name": "Amphitheatre",
+    "name:ru": "Амфитеатр",
+    "tourism": "attraction"
+   }
+  },
+  {
+   "type": "way",
+   "id": 26338580,
+   "center": {
+    "lat": 51.49581,
+    "lon": -0.2630103
+   },
+   "tags": {
+    "amenity": "place_of_worship",
+    "building": "church",
+    "check_date": "2025-09-29",
+    "denomination": "anglican",
+    "name": "St Alban",
+    "religion": "christian",
+    "wikidata": "Q60751321",
+    "wikipedia": "en:St Alban's Church, Acton Green"
+   }
+  },
+  {
+   "type": "way",
+   "id": 27524220,
+   "center": {
+    "lat": 51.5018663,
+    "lon": -0.2733777
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W3 8DG",
+    "addr:street": "Bollo Bridge Road",
+    "leisure": "park",
+    "name": "Bollo Brook Park",
+    "opening_hours": "24/7"
+   }
+  },
+  {
+   "type": "way",
+   "id": 27524511,
+   "center": {
+    "lat": 51.5042474,
+    "lon": -0.2773378
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Mill Hill Gardens"
+   }
+  },
+  {
+   "type": "way",
+   "id": 27525075,
+   "center": {
+    "lat": 51.5044336,
+    "lon": -0.2706089
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Mill Hill Park"
+   }
+  },
+  {
+   "type": "way",
+   "id": 28052760,
+   "center": {
+    "lat": 51.5067543,
+    "lon": -0.2851941
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W5 3PA",
+    "building": "transportation",
+    "name": "Ealing Common Depot",
+    "ref:GB:uprn": "12008189",
+    "source": "yahoo",
+    "wikidata": "Q5325476",
+    "wikipedia": "en:Ealing Common Depot"
+   }
+  },
+  {
+   "type": "way",
+   "id": 29167370,
+   "center": {
+    "lat": 51.4860225,
+    "lon": -0.2585363
+   },
+   "tags": {
+    "barrier": "wall",
+    "garden:style": "kitchen",
+    "garden:type": "kitchen",
+    "leisure": "garden",
+    "name": "Southern Walled Garden (Kitchen Garden)"
+   }
+  },
+  {
+   "type": "way",
+   "id": 29230799,
+   "center": {
+    "lat": 51.4855489,
+    "lon": -0.2615283
+   },
+   "tags": {
+    "building": "yes",
+    "name": "Eye Catcher",
+    "name:ru": "Владовзор",
+    "note": "Build from a demolished wing of the house",
+    "tourism": "attraction"
+   }
+  },
+  {
+   "type": "way",
+   "id": 29230829,
+   "center": {
+    "lat": 51.4840389,
+    "lon": -0.2607128
+   },
+   "tags": {
+    "building": "yes",
+    "name": "Ionic Temple",
+    "name:ru": "Храм",
+    "tourism": "attraction"
+   }
+  },
+  {
+   "type": "way",
+   "id": 29254463,
+   "center": {
+    "lat": 51.4853152,
+    "lon": -0.2594515
+   },
+   "tags": {
+    "building": "yes",
+    "name": "Rose Column",
+    "tourism": "attraction",
+    "wikidata": "Q17527806"
+   }
+  },
+  {
+   "type": "way",
+   "id": 29333621,
+   "center": {
+    "lat": 51.4869114,
+    "lon": -0.2552378
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W4 2QN",
+    "addr:street": "Hogarth Lane",
+    "building": "yes",
+    "fee": "no",
+    "listed_status": "Grade I",
+    "name": "Hogarth's House",
+    "opening_hours": "Tu-Su 12:00-17:00; PH 12:00-17:00; Dec 24-26 off; Jan 01 off; easter off",
+    "ref:GB:uprn": "100023518941",
+    "tourism": "museum",
+    "website": "https://hogarthshouse.org/",
+    "wheelchair": "limited",
+    "wikidata": "Q5877115"
+   }
+  },
+  {
+   "type": "way",
+   "id": 42176568,
+   "center": {
+    "lat": 51.4851062,
+    "lon": -0.2590001
+   },
+   "tags": {
+    "building": "yes",
+    "name": "Deer House",
+    "tourism": "attraction",
+    "wikidata": "Q17527749"
+   }
+  },
+  {
+   "type": "way",
+   "id": 43634102,
+   "center": {
+    "lat": 51.5046663,
+    "lon": -0.2813747
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W3 9BQ",
+    "building": "yes",
+    "fee": "yes",
+    "name": "Transport Museum Depot",
+    "opening_hours": "\"special events\"",
+    "ref:GB:uprn": "12157552",
+    "source": "Bing",
+    "tourism": "museum",
+    "website": "https://www.ltmuseum.co.uk/visit/museum-depot",
+    "wheelchair": "limited",
+    "wikidata": "Q1541098",
+    "wikipedia": "en:London Transport Museum"
+   }
+  },
+  {
+   "type": "way",
+   "id": 44358424,
+   "center": {
+    "lat": 51.4924433,
+    "lon": -0.2784208
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:housenumber": "626",
+    "addr:postcode": "W4 5RY",
+    "addr:street": "Chiswick High Road",
+    "building": "yes",
+    "internet_access": "wlan",
+    "name": "Clayton Hotel",
+    "ref:GB:uprn": "100023493055;100023492050;200003992073",
+    "tourism": "hotel",
+    "website": "https://www.claytonhotelchiswick.com/",
+    "wikidata": "Q56085005"
+   }
+  },
+  {
+   "type": "way",
+   "id": 45775334,
+   "center": {
+    "lat": 51.4960404,
+    "lon": -0.2547354
+   },
+   "tags": {
+    "amenity": "place_of_worship",
+    "building": "church",
+    "denomination": "anglican",
+    "name": "Saint Michael and All Angels Church",
+    "religion": "christian",
+    "website": "https://www.smaaa.org.uk/",
+    "wikidata": "Q17551891"
+   }
+  },
+  {
+   "type": "way",
+   "id": 60918586,
+   "center": {
+    "lat": 51.4837897,
+    "lon": -0.2580827
+   },
+   "tags": {
+    "building": "yes",
+    "name": "Marquee",
+    "seasonal": "summer",
+    "tourism": "attraction"
+   }
+  },
+  {
+   "type": "way",
+   "id": 62331640,
+   "center": {
+    "lat": 51.4843956,
+    "lon": -0.2580353
+   },
+   "tags": {
+    "building": "yes",
+    "name": "Inigo Jones Gateway",
+    "tourism": "attraction"
+   }
+  },
+  {
+   "type": "way",
+   "id": 165236259,
+   "center": {
+    "lat": 51.502322,
+    "lon": -0.2483084
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Wendell Park",
+    "opening_hours": "07:30-dusk",
+    "source": "bing",
+    "source:name": "OS OpenData Locator",
+    "start_date": "1896"
+   }
+  },
+  {
+   "type": "way",
+   "id": 175629798,
+   "center": {
+    "lat": 51.4928652,
+    "lon": -0.2666266
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:housenumber": "434",
+    "addr:postcode": "W4 5TF",
+    "addr:street": "Chiswick High Road",
+    "amenity": "pub",
+    "brand": "Fuller's",
+    "brand:wikidata": "Q5253950",
+    "brewery": "Fuller's",
+    "building": "yes",
+    "check_date": "2026-05-11",
+    "check_date:opening_hours": "2025-10-02",
+    "drink:beer": "yes",
+    "drink:gin": "yes",
+    "drink:whiskey": "yes",
+    "drink:wine": "yes",
+    "name": "The Old Pack Horse",
+    "opening_hours": "Mo-Th,Sa 12:00-24:00; Fr 12:00-26:00; Su 12:00-23:00",
+    "opening_hours:kitchen": "Mo-Th 12:00-15:00,17:00-21:30; Fr,Sa 12:00-22:30; Su 12:00-21:30",
+    "outdoor_seating": "yes",
+    "payment:american_express": "yes",
+    "payment:apple_pay": "yes",
+    "payment:cash": "yes",
+    "payment:contactless": "yes",
+    "payment:debit_cards": "yes",
+    "payment:mastercard": "yes",
+    "payment:mastercard_contactless": "yes",
+    "payment:visa": "yes",
+    "payment:visa_debit": "yes",
+    "phone": "+44 20 8994 2872",
+    "real_ale": "yes",
+    "smoking": "outside",
+    "toilets": "yes",
+    "toilets:access": "customers",
+    "website": "https://www.oldpackhorsechiswick.co.uk/",
+    "wikidata": "Q15979214"
+   }
+  },
+  {
+   "type": "way",
+   "id": 205143238,
+   "center": {
+    "lat": 51.4927335,
+    "lon": -0.2637316
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:housenumber": "374",
+    "addr:postcode": "W4 5TA",
+    "addr:street": "Chiswick High Road",
+    "amenity": "pub",
+    "building": "yes",
+    "check_date": "2024-11-23",
+    "cuisine": "burger;fish_and_chips;wings",
+    "email": "hello@crownandanchorchiswick.com",
+    "live_sport": "yes",
+    "name": "The Crown and Anchor",
+    "opening_hours": "Mo-Sa 12:00-23:00; Su 12:00-22:00",
+    "operator": "Young's",
+    "phone": "+44 20 8995 2607",
+    "source": "Bing;photograph;tags copied from replaced node",
+    "toilets": "yes",
+    "toilets:access": "customers",
+    "website": "https://www.crownandanchorchiswick.com/",
+    "wikidata": "Q26352597"
+   }
+  },
+  {
+   "type": "way",
+   "id": 205748412,
+   "center": {
+    "lat": 51.4921808,
+    "lon": -0.2574813
+   },
+   "tags": {
+    "addr:housenumber": "197-199",
+    "addr:street": "Chiswick High Road",
+    "amenity": "restaurant",
+    "building": "fire_station",
+    "building:use": "retail",
+    "check_date": "2024-11-23",
+    "diet:vegan": "yes",
+    "diet:vegetarian": "yes",
+    "fhrs:id": "491116",
+    "indoor_seating": "yes",
+    "name": "No 197 Chiswick Fire Station",
+    "outdoor_seating": "yes",
+    "reservation": "yes",
+    "source": "Bing;photograph",
+    "survey:date": "2022-04-08",
+    "toilets": "yes",
+    "toilets:access": "customers",
+    "was:amenity": "fire_station",
+    "website": "https://www.no197chiswickfirestation.co.uk/",
+    "wikidata": "Q108084570",
+    "wikipedia": "en:Old Fire Station, Chiswick"
+   }
+  },
+  {
+   "type": "way",
+   "id": 209271376,
+   "center": {
+    "lat": 51.4922514,
+    "lon": -0.2551522
+   },
+   "tags": {
+    "amenity": "place_of_worship",
+    "building": "church",
+    "check_date": "2026-09-19",
+    "denomination": "baptist",
+    "name": "Chiswick Baptist Church",
+    "religion": "christian"
+   }
+  },
+  {
+   "type": "way",
+   "id": 209271385,
+   "center": {
+    "lat": 51.4918833,
+    "lon": -0.2561129
+   },
+   "tags": {
+    "amenity": "restaurant",
+    "award:michelin": "1",
+    "building": "yes",
+    "building:levels": "2",
+    "building:material": "brick",
+    "cuisine": "french",
+    "name": "La Trompette",
+    "opening_hours:signed": "no",
+    "source": "Bing;photograph;tags copied from replaced node",
+    "toilets:wheelchair": "yes",
+    "wheelchair": "yes",
+    "wikidata": "Q14955163"
+   }
+  },
+  {
+   "type": "way",
+   "id": 209445862,
+   "center": {
+    "lat": 51.4968979,
+    "lon": -0.2563082
+   },
+   "tags": {
+    "amenity": "place_of_worship",
+    "building": "yes",
+    "building:levels": "2",
+    "name": "London Buddhist Vihara",
+    "ref:GB:uprn": "12145572;12150117",
+    "religion": "buddhist",
+    "source": "Bing;photograph",
+    "website": "http://www.londonbuddhistvihara.org/",
+    "wikidata": "Q13645027"
+   }
+  },
+  {
+   "type": "way",
+   "id": 209445869,
+   "center": {
+    "lat": 51.4956885,
+    "lon": -0.2547054
+   },
+   "tags": {
+    "amenity": "pub",
+    "brand": "Greene King",
+    "brand:wikidata": "Q5564162",
+    "building": "yes",
+    "name": "The Tabard",
+    "operator": "Spirit Pub Company",
+    "real_ale": "yes",
+    "ref:GB:uprn": "200002818754;10091854897;10090801615",
+    "toilets": "yes",
+    "toilets:access": "customers",
+    "website": "https://www.greeneking.co.uk/pubs/greater-london/tabard",
+    "wikidata": "Q16707771",
+    "wikipedia": "en:The Tabard, Chiswick"
+   }
+  },
+  {
+   "type": "way",
+   "id": 209445879,
+   "center": {
+    "lat": 51.4953096,
+    "lon": -0.2549768
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:housename": "Turnham Green Station",
+    "addr:postcode": "W4 1LR",
+    "addr:street": "Turnham Green Terrace",
+    "building": "train_station",
+    "name": "Turnham Green",
+    "naptan:AtcoCode": "940GZZLUTNG",
+    "operator": "Transport for London",
+    "source": "NPE + GPX + Survey",
+    "wikidata": "Q519434"
+   }
+  },
+  {
+   "type": "way",
+   "id": 211662193,
+   "center": {
+    "lat": 51.4859197,
+    "lon": -0.2504983
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W4 2PH",
+    "addr:street": "Church Street",
+    "alt_name": "St Nicholas",
+    "amenity": "place_of_worship",
+    "building": "church",
+    "denomination": "anglican",
+    "name": "Chiswick Parish Church",
+    "note": "Parish of St. Nicholas of Myra and St. Mary Magdalene",
+    "ref:GB:uprn": "200003971272",
+    "ref:dove": "15523",
+    "religion": "christian",
+    "source": "Bing;survey;tags copied from replaced node",
+    "website": "https://stnicholaschiswick.org/",
+    "wikidata": "Q15979530"
+   }
+  },
+  {
+   "type": "way",
+   "id": 211662231,
+   "center": {
+    "lat": 51.487921,
+    "lon": -0.2496431
+   },
+   "tags": {
+    "building": "yes",
+    "building:levels": "3",
+    "disused:amenity": "pub",
+    "name": "Mawson Arms & Fox and Hounds",
+    "note": "The pub has two names (originally it was two separate pubs, but it is all a single pub now). Has limited opening hours.",
+    "wikidata": "Q15252216",
+    "wikipedia": "en:Mawson Arms"
+   }
+  },
+  {
+   "type": "way",
+   "id": 211662235,
+   "center": {
+    "lat": 51.4861734,
+    "lon": -0.2498682
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W4 2PJ",
+    "addr:street": "Chiswick Mall",
+    "building": "house",
+    "name": "The Vicarage",
+    "ref:GB:uprn": "100021581291",
+    "source": "Bing;survey",
+    "wikidata": "Q26686385"
+   }
+  },
+  {
+   "type": "way",
+   "id": 215633473,
+   "center": {
+    "lat": 51.4973618,
+    "lon": -0.2434617
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:housenumber": "313",
+    "addr:street": "Goldhawk Road",
+    "building": "apartments",
+    "building:flats": "8",
+    "building:levels": "2",
+    "description": "Administration Block to Queen Charlotte's Maternity Hospital (1930-2000) House, formerly Oakburn. 1878, by Brandon.",
+    "name": "Oakbrooke Lodge",
+    "ref:GB:uprn": "34134753;34134754;34134755;34134756;34134750;34134751;34134752;34134757;34134758",
+    "roof:levels": "1",
+    "wikidata": "Q26486713"
+   }
+  },
+  {
+   "type": "way",
+   "id": 222712430,
+   "center": {
+    "lat": 51.4859269,
+    "lon": -0.28631
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Westerly Ware",
+    "wikidata": "Q17035982",
+    "wikipedia": "en:Westerley Ware"
+   }
+  },
+  {
+   "type": "way",
+   "id": 233499575,
+   "center": {
+    "lat": 51.4973328,
+    "lon": -0.2637749
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Beaconsfield Gardens"
+   }
+  },
+  {
+   "type": "way",
+   "id": 285295097,
+   "center": {
+    "lat": 51.4945121,
+    "lon": -0.2678525
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:housename": "Chiswick Park Station",
+    "addr:postcode": "W4 5NE",
+    "addr:street": "Bollo Lane",
+    "building": "train_station",
+    "name": "Chiswick Park",
+    "naptan:AtcoCode": "940GZZLUCWP",
+    "operator": "Transport for London",
+    "source_ref": "http://en.wikipedia.org/wiki/List_of_London_Underground_stations",
+    "wikidata": "Q1074875"
+   }
+  },
+  {
+   "type": "way",
+   "id": 306586924,
+   "center": {
+    "lat": 51.4966773,
+    "lon": -0.2681902
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W4 5ER",
+    "amenity": "place_of_worship",
+    "building": "yes",
+    "fixme": "name needs checking",
+    "name": "Acton Green Church",
+    "ref:GB:uprn": "12143041",
+    "religion": "christian",
+    "source": "OSM Note #252662/OS StreetView Open Data",
+    "source:addr:postcode": "ONSUD;OS Open UPRN",
+    "source:geometry": "Bing",
+    "source:name": "OSM Note #252662"
+   }
+  },
+  {
+   "type": "way",
+   "id": 360912110,
+   "center": {
+    "lat": 51.4913741,
+    "lon": -0.2419109
+   },
+   "tags": {
+    "amenity": "place_of_worship",
+    "building": "church",
+    "denomination": "anglican",
+    "name": "Parish church of St Peter",
+    "ref:GB:uprn": "34007867",
+    "religion": "christian",
+    "wikidata": "Q7595244",
+    "wikipedia": "en:St Peter's Church, Hammersmith"
+   }
+  },
+  {
+   "type": "way",
+   "id": 381307572,
+   "center": {
+    "lat": 51.4920308,
+    "lon": -0.2620333
+   },
+   "tags": {
+    "building": "office",
+    "name": "Voysey House",
+    "nohousenumber": "yes",
+    "wikidata": "Q17552004"
+   }
+  },
+  {
+   "type": "way",
+   "id": 410570985,
+   "center": {
+    "lat": 51.4794686,
+    "lon": -0.247655
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "SW13 9QL",
+    "addr:street": "Lonsdale Road",
+    "building": "church",
+    "name": "Barnes Baptist Church",
+    "ref:GB:uprn": "100023309505",
+    "wikidata": "Q16253350"
+   }
+  },
+  {
+   "type": "way",
+   "id": 459136835,
+   "center": {
+    "lat": 51.4939926,
+    "lon": -0.2824268
+   },
+   "tags": {
+    "layer": "1",
+    "man_made": "bridge",
+    "name": "Power Road Bridge"
+   }
+  },
+  {
+   "type": "way",
+   "id": 479024733,
+   "center": {
+    "lat": 51.4956174,
+    "lon": -0.2427067
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:street": "Ravenscourt Gardens",
+    "building": "apartments",
+    "building:flats": "68",
+    "building:levels": "5",
+    "description": "Formerly Nurses’ Home of the former Royal Masonic Hospital. After the Royal Masonic Hospital closed in 1996, the building, now known as Ashlar Court, was used as a hostel until 2009.",
+    "name": "Ashlar Court",
+    "wikidata": "Q27083463"
+   }
+  },
+  {
+   "type": "way",
+   "id": 538327627,
+   "center": {
+    "lat": 51.4902232,
+    "lon": -0.280303
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Wellesley Road Playground"
+   }
+  },
+  {
+   "type": "way",
+   "id": 576806322,
+   "center": {
+    "lat": 51.4842361,
+    "lon": -0.2791142
+   },
+   "tags": {
+    "bridge:structure": "arch",
+    "layer": "1",
+    "man_made": "bridge",
+    "name": "Kew Railway Bridge",
+    "start_date": "1869",
+    "wikidata": "Q1740293"
+   }
+  },
+  {
+   "type": "way",
+   "id": 647782158,
+   "center": {
+    "lat": 51.4889305,
+    "lon": -0.2848092
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Kew Bridge Court Resident Park"
+   }
+  },
+  {
+   "type": "way",
+   "id": 749603168,
+   "center": {
+    "lat": 51.4819326,
+    "lon": -0.2558575
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:country": "GB",
+    "addr:housenumber": "5",
+    "addr:postcode": "W4 2ST",
+    "addr:street": "Dolphin Square, Edensor Gardens",
+    "building": "office",
+    "country": "MD",
+    "diplomatic": "embassy",
+    "embassy": "yes",
+    "name": "Embassy of Moldova",
+    "name:fr": "Ambassade de Moldavie",
+    "office": "diplomatic",
+    "official_name": "Embassy of the Republic of Moldova",
+    "phone": "+44 20 8995 6818",
+    "ref:GB:uprn": "100023490719",
+    "short_name": "Moldovan Embassy",
+    "source": "London Diplomatic List",
+    "target": "GB",
+    "website": "http://britania.mfa.gov.md",
+    "wikidata": "Q16891025",
+    "wikipedia": "en:Embassy of Moldova, London"
+   }
+  },
+  {
+   "type": "way",
+   "id": 840980021,
+   "center": {
+    "lat": 51.4921855,
+    "lon": -0.261118
+   },
+   "tags": {
+    "amenity": "place_of_worship",
+    "building": "church",
+    "check_date": "2024-04-11",
+    "denomination": "catholic",
+    "heritage": "yes",
+    "name": "Our Lady of Grace and St. Edward's Church",
+    "religion": "christian",
+    "wikidata": "Q26388366"
+   }
+  },
+  {
+   "type": "way",
+   "id": 852424587,
+   "center": {
+    "lat": 51.4873149,
+    "lon": -0.2717424
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W4 3DY",
+    "amenity": "place_of_worship",
+    "building": "church",
+    "denomination": "anglican",
+    "name": "St Michael",
+    "ref:GB:uprn": "10093765468",
+    "religion": "christian",
+    "wikidata": "Q26533705"
+   }
+  },
+  {
+   "type": "way",
+   "id": 852426172,
+   "center": {
+    "lat": 51.4814818,
+    "lon": -0.2735482
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W4 3SB",
+    "addr:street": "Grove Park Road",
+    "amenity": "place_of_worship",
+    "building": "church",
+    "denomination": "anglican",
+    "name": "St Paul",
+    "ref:GB:uprn": "200001528595",
+    "religion": "christian",
+    "wikidata": "Q105099919"
+   }
+  },
+  {
+   "type": "way",
+   "id": 852462075,
+   "center": {
+    "lat": 51.5020078,
+    "lon": -0.2687191
+   },
+   "tags": {
+    "amenity": "place_of_worship",
+    "building": "church",
+    "check_date": "2024-12-14",
+    "denomination": "anglican",
+    "name": "All Saints",
+    "ref:GB:uprn": "12142526",
+    "religion": "christian",
+    "wikidata": "Q105100137"
+   }
+  },
+  {
+   "type": "way",
+   "id": 852642637,
+   "center": {
+    "lat": 51.5028159,
+    "lon": -0.2490755
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:street": "Cobbold Road",
+    "amenity": "place_of_worship",
+    "building": "church",
+    "check_date": "2024-05-27",
+    "denomination": "anglican",
+    "name": "St Saviour Wendell Park",
+    "ref:GB:uprn": "34124290;34149228;34159571",
+    "religion": "christian",
+    "wikidata": "Q105107449"
+   }
+  },
+  {
+   "type": "way",
+   "id": 855299403,
+   "center": {
+    "lat": 51.5023912,
+    "lon": -0.261527
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W4 1BB",
+    "amenity": "place_of_worship",
+    "building": "church",
+    "denomination": "anglican",
+    "name": "St Peter's, Acton Green",
+    "ref:GB:uprn": "12142767",
+    "religion": "christian",
+    "source:addr:postcode": "ONSUD;OS Open UPRN",
+    "wikidata": "Q105100126"
+   }
+  },
+  {
+   "type": "way",
+   "id": 858580630,
+   "center": {
+    "lat": 51.4980282,
+    "lon": -0.2451723
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:housenumber": "27",
+    "addr:street": "Stamford Brook Road",
+    "building": "house",
+    "building:levels": "2",
+    "name": "The Brook",
+    "ref:GB:uprn": "200003971708",
+    "wikidata": "Q26643001"
+   }
+  },
+  {
+   "type": "way",
+   "id": 910050447,
+   "center": {
+    "lat": 51.5013805,
+    "lon": -0.2762255
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "West Park"
+   }
+  },
+  {
+   "type": "way",
+   "id": 958333078,
+   "center": {
+    "lat": 51.5020885,
+    "lon": -0.2429323
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:street": "Askew Road",
+    "amenity": "place_of_worship",
+    "building": "yes",
+    "check_date": "2024-03-16",
+    "denomination": "Methodist/United_Reformed",
+    "name": "Askew Road Church",
+    "religion": "christian",
+    "website": "https://askewroadchurch.org.uk/"
+   }
+  },
+  {
+   "type": "way",
+   "id": 975919360,
+   "center": {
+    "lat": 51.4821978,
+    "lon": -0.2516696
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:housename": "Chiswick RNLI Lifeboat Station",
+    "addr:postcode": "W4 2UG",
+    "addr:street": "Corney Reach Way",
+    "building": "yes",
+    "building:levels": "2",
+    "building:material": "brick",
+    "emergency": "water_rescue",
+    "image": "https://archive.org/details/thames-2019-10-06/DSCN0781.JPG",
+    "name": "Chiswick Lifeboat Station",
+    "operator": "Royal National Lifeboat Institution",
+    "operator:short": "RNLI",
+    "operator:wikidata": "Q2166873",
+    "seamark:name": "Chiswick Lifeboat Station",
+    "seamark:rescue_station:category": "lifeboat",
+    "seamark:type": "rescue_station",
+    "website": "https://rnli.org/find-my-nearest/lifeboat-stations/chiswick-lifeboat-station",
+    "wikidata": "Q105200229",
+    "wikipedia": "en:Chiswick Lifeboat Station"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1005633916,
+   "center": {
+    "lat": 51.489631,
+    "lon": -0.2760368
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:housenumber": "57",
+    "addr:postcode": "W4 4ED",
+    "addr:street": "Harvard Road",
+    "amenity": "place_of_worship",
+    "building": "yes",
+    "denomination": "orthodox",
+    "name": "Cathedral of the Nativity of the Mother of God and the Holy Royal Martyrs",
+    "ref:GB:uprn": "10093258381",
+    "religion": "christian",
+    "website": "https://www.russianchurchlondon.org/en/",
+    "wikidata": "Q17496858"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1047517067,
+   "center": {
+    "lat": 51.480296,
+    "lon": -0.2701497
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W4 3TE",
+    "addr:street": "Bolton Road",
+    "amenity": "place_of_worship",
+    "building": "yes",
+    "denomination": "catholic",
+    "name": "St Joseph's Catholic Church",
+    "ref:GB:uprn": "200002819851",
+    "religion": "christian"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1196029027,
+   "center": {
+    "lat": 51.5048451,
+    "lon": -0.2802753
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Heathfield Nature Garden"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1223845120,
+   "center": {
+    "lat": 51.4905583,
+    "lon": -0.2668926
+   },
+   "tags": {
+    "amenity": "fountain",
+    "name": "Arbor Fountain"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1223845121,
+   "center": {
+    "lat": 51.4907288,
+    "lon": -0.2675555
+   },
+   "tags": {
+    "amenity": "fountain",
+    "name": "Cedar Fountain"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1241767754,
+   "center": {
+    "lat": 51.4884833,
+    "lon": -0.2459498
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:postcode": "W4 2PS",
+    "addr:street": "Chiswick Mall",
+    "building": "yes",
+    "name": "Strawberry House",
+    "ref:GB:uprn": "100021581313",
+    "wikidata": "Q17551998"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1365558777,
+   "center": {
+    "lat": 51.4911393,
+    "lon": -0.2425322
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "North Verbena Garden"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1381522782,
+   "center": {
+    "lat": 51.4863656,
+    "lon": -0.2520318
+   },
+   "tags": {
+    "addr:city": "London",
+    "addr:housename": "The George & Devonshire",
+    "addr:housenumber": "8",
+    "addr:postcode": "W4 2QE",
+    "addr:street": "Burlington Lane",
+    "amenity": "pub",
+    "brand": "Fuller's",
+    "brand:wikidata": "Q5253950",
+    "building": "yes",
+    "check_date": "2026-09-04",
+    "check_date:currency:XBT": "2025-03-05",
+    "currency:GBP": "yes",
+    "currency:XBT": "no",
+    "description": "Dating back to 1650, the George & Devonshire in Chiswick serves up a slice of history alongside its fabulous food and drink",
+    "email": "georgeanddevonshire@gmail.com",
+    "indoor_seating": "yes",
+    "internet_access": "wlan",
+    "internet_access:fee": "no",
+    "name": "George and Devonshire",
+    "operator": "Fuller's",
+    "outdoor_seating": "yes",
+    "phone": "+44 20 8742 7342",
+    "real_ale": "yes",
+    "toilets": "yes",
+    "toilets:access": "customers",
+    "website": "https://www.georgeanddevonshire.co.uk/",
+    "wikidata": "Q15978995"
+   }
+  },
+  {
+   "type": "way",
+   "id": 1428341218,
+   "center": {
+    "lat": 51.4958269,
+    "lon": -0.2726791
+   },
+   "tags": {
+    "layer": "1",
+    "man_made": "bridge",
+    "name": "Chiswick Park Footbridge",
+    "wikidata": "Q65048451",
+    "wikipedia": "en:Chiswick Park Footbridge"
+   }
+  },
+  {
+   "type": "relation",
+   "id": 8048634,
+   "center": {
+    "lat": 51.4838165,
+    "lon": -0.2585421
+   },
+   "tags": {
+    "building": "house",
+    "name": "Chiswick House",
+    "tourism": "attraction",
+    "type": "multipolygon",
+    "wikidata": "Q1074877",
+    "wikipedia": "en:Chiswick House"
+   }
+  },
+  {
+   "type": "relation",
+   "id": 8048635,
+   "center": {
+    "lat": 51.4851685,
+    "lon": -0.2579387
+   },
+   "tags": {
+    "leisure": "garden",
+    "name": "Italianate Garden",
+    "type": "multipolygon"
+   }
+  },
+  {
+   "type": "relation",
+   "id": 8048639,
+   "center": {
+    "lat": 51.4846882,
+    "lon": -0.2604716
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Chiswick House and Grounds",
+    "name:ru": "Чизик",
+    "type": "multipolygon"
+   }
+  },
+  {
+   "type": "relation",
+   "id": 15625117,
+   "center": {
+    "lat": 51.4913085,
+    "lon": -0.2817738
+   },
+   "tags": {
+    "bridge": "viaduct",
+    "layer": "1",
+    "man_made": "bridge",
+    "name": "Chiswick Flyover",
+    "operator": "National Highways",
+    "operator:wikidata": "Q5760006",
+    "type": "multipolygon",
+    "wikidata": "Q13528109"
+   }
+  },
+  {
+   "type": "relation",
+   "id": 15635065,
+   "center": {
+    "lat": 51.4910479,
+    "lon": -0.3016692
+   },
+   "tags": {
+    "bridge": "viaduct",
+    "description": "Assumed to include the Boston Manor Viaduct and the Chiswick Flyover.",
+    "layer": "1",
+    "man_made": "bridge",
+    "name": "M4 Elevated Section",
+    "type": "multipolygon",
+    "wikidata": "Q117281285"
+   }
+  },
+  {
+   "type": "relation",
+   "id": 18033155,
+   "center": {
+    "lat": 51.4918662,
+    "lon": -0.2657567
+   },
+   "tags": {
+    "leisure": "park",
+    "name": "Turnham Green",
+    "type": "multipolygon",
+    "wikidata": "Q1065157",
+    "wikipedia": "en:Turnham Green"
+   }
+  }
+ ]
+}

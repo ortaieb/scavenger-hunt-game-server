@@ -11,7 +11,6 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from game_server import (
     arrive,
     challenge,
-    designer,
     game_state,
     health,
     join,
@@ -26,6 +25,7 @@ from game_server import (
 )
 from game_server.config import get_settings
 from game_server.database import close_databases, database_config, open_database
+from game_server.designer import routes as designer_routes
 from game_server.logging_config import configure_logging
 from game_server.sessions import load_session_repository
 
@@ -83,7 +83,7 @@ def create_app() -> FastAPI:
     app.include_router(session_control.router)
     app.include_router(overview.router)
     app.include_router(traces.router)
-    app.include_router(designer.router)
+    app.include_router(designer_routes.router)
     app.include_router(ruling.router)
     app.include_router(review.router)
     app.include_router(photos.router)

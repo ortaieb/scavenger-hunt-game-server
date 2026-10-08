@@ -17,7 +17,7 @@ from game_server.app import create_app
 from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
 from game_server.database import Database
-from game_server.designer import route_of
+from game_server.designer.routes import route_of
 from game_server.designer_runners import StubRunner, get_designer_runner, stub_checkpoints
 from game_server.drafts import DraftRequest, DraftResult, DraftStore
 from game_server.geo import distance_m
@@ -412,7 +412,7 @@ def test_one_line_when_created_and_one_when_finished(
     lines = [
         r.getMessage()
         for r in caplog.records
-        if r.name in ("game_server.designer", "game_server.designer_runners")
+        if r.name in ("game_server.designer.routes", "game_server.designer_runners")
     ]
     assert lines == [
         f"Draft {draft} created status running runner stub",

@@ -12,6 +12,7 @@ from game_server.submissions import SubmissionStore
 TABLES = [
     "arrivals",
     "blocked_attempts",
+    "hunt_drafts",
     "participants",
     "referee_prompts",
     "referee_traces",

@@ -1,6 +1,7 @@
 -- The game server's tables, dropped (if they exist) and created from scratch.
 --
--- DESTRUCTIVE: every submission, referee trace, ruling, participant and arrival is deleted. Meant for
+-- DESTRUCTIVE: every submission, referee trace, ruling, participant, arrival and hunt draft is
+-- deleted. Meant for
 -- development, until schema changes are applied as versioned migrations.
 --
 -- Run it with the server's connection settings:  make db-reset
@@ -12,7 +13,7 @@ BEGIN;
 
 DROP VIEW IF EXISTS ruled_submissions;
 DROP TABLE IF EXISTS
-    rulings, referee_traces, referee_prompts, blocked_attempts, session_runs, arrivals,
+    hunt_drafts, rulings, referee_traces, referee_prompts, blocked_attempts, session_runs, arrivals,
     participants, submissions
     CASCADE;
 
@@ -189,5 +190,35 @@ CREATE TABLE blocked_attempts (
     at      TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX blocked_attempts_newest ON blocked_attempts (session, at DESC, id DESC);
+
+-- The hunt designer's drafts: what the organiser asked for, what the run found and wrote, and
+-- what it cost. Organiser-only: a draft holds coordinates and scenes, the answers to its clues.
+-- Not scoped to a session: a draft exists before any session does.
+CREATE TABLE hunt_drafts (
+    id                UUID          PRIMARY KEY,
+    status            TEXT          NOT NULL
+                                    CHECK (status IN ('running', 'ready', 'failed', 'published')),
+    request           JSONB         NOT NULL,
+    -- The area the run resolved: {name, bbox: {south, west, north, east}, clipped}.
+    area              JSONB,
+    checkpoints       JSONB         NOT NULL DEFAULT '[]',
+    -- [{at, step, summary}], appended as the run goes.
+    progress          JSONB         NOT NULL DEFAULT '[]',
+    problems          JSONB         NOT NULL DEFAULT '[]',
+    runner            TEXT          NOT NULL,
+    model             TEXT,
+    turns             INTEGER       NOT NULL DEFAULT 0,
+    cost_usd          NUMERIC(12,6) NOT NULL DEFAULT 0,
+    duration_ms       INTEGER,
+    error_code        TEXT          CHECK (error_code IN ('max_turns', 'max_budget', 'deadline',
+                                    'no_valid_draft', 'agent_unavailable', 'interrupted')),
+    published_session UUID,
+    published_at      TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ   NOT NULL,
+    finished_at       TIMESTAMPTZ
+);
+CREATE INDEX hunt_drafts_newest ON hunt_drafts (created_at DESC);
+-- One run at a time: an agent run is a separate process using about 1 GiB.
+CREATE UNIQUE INDEX hunt_drafts_one_running ON hunt_drafts ((true)) WHERE status = 'running';
 
 COMMIT;

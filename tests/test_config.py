@@ -303,6 +303,24 @@ def test_referee_defaults() -> None:
     assert settings.referee_reference_max_edge == 768
 
 
+def test_designer_agent_defaults() -> None:
+    settings = Settings()
+
+    assert settings.designer_max_turns == 30
+    assert settings.designer_max_budget_usd == 1.0
+    assert settings.designer_model == "claude-sonnet-5-5"
+
+
+@pytest.mark.parametrize(
+    "name", ["GAME_SERVER_DESIGNER_MAX_TURNS", "GAME_SERVER_DESIGNER_MAX_BUDGET_USD"]
+)
+def test_designer_agent_limits_must_be_positive(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    monkeypatch.setenv(name, "0")
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
 @pytest.mark.parametrize("value", ["0", "5"])
 def test_referee_max_references_accepts_zero_to_five(
     monkeypatch: pytest.MonkeyPatch, value: str

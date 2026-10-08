@@ -52,12 +52,12 @@ class DesignerRunner(Protocol):
 
 
 class AgentRunner:
-    """The hunt-designer agent. Not built yet (#86): never available."""
+    """The hunt-designer agent. Not run from the API yet (#86): never available."""
 
     name = "agent"
 
     def available(self) -> bool:
-        """Never, until the agent lands."""
+        """Never, until the agent runs behind the API."""
         return False
 
     def start(self, draft_id: UUID, request: DraftRequest) -> None:

@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     designer_max_area_km: float = Field(default=3, gt=0)
     # The least distance between two of a draft's checkpoints, in metres.
     designer_min_spacing_m: float = Field(default=DEFAULT_DESIGNER_MIN_SPACING_M, gt=0)
+    # The hunt-designer agent's limits and model: a run stops at whichever limit comes first.
+    designer_max_turns: int = Field(default=30, gt=0)
+    designer_max_budget_usd: float = Field(default=1.0, gt=0)
+    designer_model: str = "claude-sonnet-5-5"
     # OpenStreetMap: Nominatim finds the area, Overpass the places in it. Public instances by
     # default; their usage policies apply (see docs/api.md, Map data).
     osm_nominatim_url: str = "https://nominatim.openstreetmap.org"

@@ -9,6 +9,7 @@ requires-python = ">=3.13"
 dependencies = [
     "annotated-types>=0.8.0",
     "anthropic>=1.9.0",
+    "claude-agent-sdk>=0.2.165",
     "fastapi>=0.141.1",
     "httpx2>=2.13.1",
     "numpy>=2.5.3",

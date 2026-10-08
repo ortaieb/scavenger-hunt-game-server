@@ -75,7 +75,7 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_MAX_IMAGE_BYTES` | `10485760` | Largest accepted challenge image (10 MiB)            |
 | `GAME_SERVER_MAX_CAPTURE_AGE_SECONDS` | `300` | Oldest accepted photo, measured from `capture-time` to `received-at` (> 0). See [time checks](docs/api.md#submission-checks) |
 | `GAME_SERVER_MAX_CLOCK_SKEW_SECONDS` | `30` | How far `capture-time` may be ahead of `received-at`, for phone clock drift (> 0) |
-| `GAME_SERVER_ANTHROPIC_API_KEY` | unset | Claude API key for the [referee](docs/api.md#referee-visual-challenge). Unset: the referee is disabled and never calls the API. Never logged |
+| `GAME_SERVER_ANTHROPIC_API_KEY` | unset | Claude API key for the [referee](docs/api.md#referee-visual-challenge) and the [hunt-designer agent](docs/api.md#the-agent). Unset: neither calls the API. Never logged |
 | `GAME_SERVER_REFEREE_MODEL` | `claude-haiku-4-5` | Model the referee uses (vision + structured outputs) |
 | `GAME_SERVER_REFEREE_DEADLINE_SECONDS` | `8` | The whole referee step, retries included, ends by then (> 0). Past it the photo's verdict is `pending`, for a moderator. See [deadline and retries](docs/api.md#deadline-and-retries) |
 | `GAME_SERVER_REFEREE_TIMEOUT_SECONDS` | `8` | Longest wait for one attempt, or the time left before the deadline if that's less (> 0) |
@@ -91,6 +91,9 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_DESIGNER_RUNNER` | `agent` | What fills a draft: `agent` (not available yet: starting a design answers `503`) or `stub`, a fixed hunt for building the designer screen |
 | `GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS` | `1` | How long the `stub` runner takes (≥ 0) |
 | `GAME_SERVER_DESIGNER_MIN_SPACING_M` | `150` | The least distance between two of a draft's checkpoints, in metres; see the [draft rules](docs/api.md#draft-rules) |
+| `GAME_SERVER_DESIGNER_MODEL` | `claude-sonnet-5-5` | Model the [hunt-designer agent](docs/api.md#the-agent) runs on |
+| `GAME_SERVER_DESIGNER_MAX_TURNS` | `30` | Most turns one design run may take (> 0); past it the run fails with `max_turns` |
+| `GAME_SERVER_DESIGNER_MAX_BUDGET_USD` | `1.00` | Most one design run may spend, in US dollars (> 0); past it the run fails with `max_budget` |
 | `GAME_SERVER_DESIGNER_MAX_AREA_KM`, `GAME_SERVER_OSM_*` | | The designer's [map data](docs/api.md#map-data): the largest area, and the OpenStreetMap services and timeout |
 | `GAME_SERVER_DB_*` | | PostgreSQL connection and pool: see [Database](#database) |
 | `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](docs/sessions-file.md#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |
@@ -167,7 +170,8 @@ whenever `schema.sql` changes (which deletes the data).
 | Start / stop a local PostgreSQL (Docker) | `make db-up` / `make db-down` |
 | Drop and recreate the tables (**deletes all data**) | `make db-reset` |
 | Tests (pytest; needs PostgreSQL)  | `make test`        |
-| Live referee test (real API call, costs money; needs `GAME_SERVER_ANTHROPIC_API_KEY`) | `uv run pytest -m live` |
+| Live tests: the referee and the designer (real API calls, cost money; need `GAME_SERVER_ANTHROPIC_API_KEY`) | `uv run pytest -m live` |
+| Design a hunt from the command line (real API calls; see [below](#designing-a-hunt-from-the-command-line)) | `uv run python -m game_server.designer --area ... --theme ...` |
 | Referee eval on your test photos (real API calls; see [Referee evals](docs/api.md#referee-evals)) | `make eval-referee EVAL_DIR=...` |
 | Tests with coverage               | `make coverage`    |
 | All of the above before a PR      | `make check`       |
@@ -196,6 +200,30 @@ the run still in progress for the same PR.
   it is what catches a native library missing from the distroless runtime.
 
 CI does not auto-fix. Run `make check` locally before pushing to catch the same issues.
+
+### Designing a hunt from the command line
+
+The [hunt-designer agent](docs/api.md#the-agent) runs from the command line too, with the same
+prompt, tools, sandbox and limits as the API, so its prompt
+([`designer_prompt.md`](src/game_server/designer_prompt.md)) can be tuned without the server or
+the web app. It needs only `GAME_SERVER_ANTHROPIC_API_KEY` and network access (the Claude API and
+OpenStreetMap): no database and no running server. Every run calls the real API and costs money,
+up to `GAME_SERVER_DESIGNER_MAX_BUDGET_USD`.
+
+```bash
+uv run python -m game_server.designer --area "Chiswick, London" \
+  --theme "Painters, brewers and the river" [--checkpoints 3] [--max-walk-km 3] [--json]
+```
+
+It prints the accepted draft (each checkpoint's place, clue, scene, pose, proximity and why it
+was picked, then the route) or the run's error code, and the run's stats: model, turns, cost,
+duration and result. `--json` prints the area, checkpoints and route in the
+[API's draft shape](docs/api.md#get-designerdraftsdraft), with the run's stats under `run`.
+Progress and the tool-call log lines go to stderr. The exit status is 0 for an accepted draft,
+1 for a run that ended without one, and 2 for a setup problem (no key, an invalid request).
+
+`uv run python -m game_server.designer --self-check` only starts the Claude Code binary bundled
+with the Agent SDK and prints its version, to check the platform can run it.
 
 ## Docker
 

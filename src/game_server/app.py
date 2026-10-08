@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from game_server import (
     arrive,
     challenge,
+    designer,
     game_state,
     health,
     join,
@@ -82,6 +83,7 @@ def create_app() -> FastAPI:
     app.include_router(session_control.router)
     app.include_router(overview.router)
     app.include_router(traces.router)
+    app.include_router(designer.router)
     app.include_router(ruling.router)
     app.include_router(review.router)
     app.include_router(photos.router)

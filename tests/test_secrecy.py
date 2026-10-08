@@ -23,6 +23,9 @@ from starlette.routing import Route
 from game_server.app import create_app
 from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
+from game_server.database import Database
+from game_server.designer_runners import StubRunner, get_designer_runner
+from game_server.drafts import DraftStore
 from game_server.models import VerdictStatus
 from game_server.referee import ClaudeReferee, ModelReply, get_referee, system_prompt
 from game_server.sessions import get_session_repository, parse_sessions
@@ -37,6 +40,7 @@ PHOTO_NAME = "SENTINEL-PHOTO-fountain-north"  # a reference photo's file name sh
 MODERATOR_CODE = "SENTINEL-MOD-4Q"  # a credential: never in a response or a log line
 RIVALS = "SENTINEL-RIVALS-5d"  # another team: never in this team's state
 RIVAL_CODE = "SENTINEL-RIVAL-CODE-2W"
+ORGANISER_KEY = "SENTINEL-ORGANISER-KEY-3b9d"  # a credential: never in a response or a log
 NOTE = "SENTINEL-NOTE-6c"  # the moderator's note on a ruling may describe the photo: never logged
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 UNKNOWN = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
@@ -87,15 +91,26 @@ SESSIONS_JSON = json.dumps(
 
 
 @pytest.fixture
-def client(tmp_path: Path, mocker: MockerFixture) -> Iterator[TestClient]:
+def designer(database: Database) -> Iterator[StubRunner]:
+    """The stub designer, waiting until the test wakes it."""
+    runner = StubRunner(DraftStore(database), lambda: NOW, delay_seconds=60)
+    yield runner
+    runner.stop()
+
+
+@pytest.fixture
+def client(tmp_path: Path, mocker: MockerFixture, designer: StubRunner) -> Iterator[TestClient]:
     app = create_app()
+    app.dependency_overrides[get_designer_runner] = lambda: designer
     # The real referee, with only the SDK call faked: its traces hold the scene and reasons.
     reply = ModelReply("end_turn", MODEL_OUTPUT, "claude-haiku-4-5", "req_secrecy", 1500, 120)
     mocker.patch("game_server.referee._create_structured_message", return_value=reply)
     sdk = anthropic.Anthropic(api_key="test-key-not-used")
     referee = ClaudeReferee(sdk, "claude-haiku-4-5", max_image_edge=1568)
     app.dependency_overrides[get_referee] = lambda: referee
-    settings = Settings(image_base_path=tmp_path / "images")
+    settings = Settings(
+        image_base_path=tmp_path / "images", organiser_key=ORGANISER_KEY, designer_runner="stub"
+    )
     app.dependency_overrides[get_settings] = lambda: settings
     (tmp_path / "reference").mkdir()
     (tmp_path / "reference" / f"{PHOTO_NAME}.jpg").write_bytes(jpeg(scene(4, (64, 48))))
@@ -141,7 +156,9 @@ def hint(client: TestClient, **changes: Any) -> Response:
     return client.post("/checkpoint/proximity", json=body)
 
 
-def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Response]]:
+def every_route_response(
+    client: TestClient, designer: StubRunner
+) -> dict[tuple[str, str], list[Response]]:
     """Successful and failing calls to every route, keyed by (method, route path)."""
     state = "/sessions/{session}/participants/{participant}/state"
     arrive = "/sessions/{session}/participants/{participant}/arrive"
@@ -210,9 +227,51 @@ def every_route_response(client: TestClient) -> dict[tuple[str, str], list[Respo
         ("POST", "/challenge"): [submit(client, photo(), image=jpeg(scene(5)))],
         ("POST", "/checkpoint/proximity"): [hint(client, participant=str(UNKNOWN))],
     }
-    for route, route_responses in (*opening.items(), *closing.items(), *after_stop.items()):
+    designing = designer_responses(client, designer)
+    for route, route_responses in (
+        *opening.items(),
+        *closing.items(),
+        *after_stop.items(),
+        *designing.items(),
+    ):
         responses.setdefault(route, []).extend(route_responses)
     return responses
+
+
+ORGANISER = {"Authorization": f"Bearer {ORGANISER_KEY}"}
+DRAFTS = ("POST", "/designer/drafts")
+DRAFT_LIST = ("GET", "/designer/drafts")
+DRAFT = ("GET", "/designer/drafts/{draft}")
+
+
+def designer_responses(
+    client: TestClient, designer: StubRunner
+) -> dict[tuple[str, str], list[Response]]:
+    """The organiser's designer: a draft started, refused, followed and read."""
+    body = {"area": "Chiswick, London", "theme": "The Thames and brewing history"}
+    started = client.post("/designer/drafts", json=body, headers=ORGANISER)  # 202
+    draft = started.json()["id"]
+    starts = [
+        client.post("/designer/drafts", json=body),  # 401
+        client.post("/designer/drafts", json={**body, "checkpoints": 2}, headers=ORGANISER),  # 422
+        started,
+        client.post("/designer/drafts", json=body, headers=ORGANISER),  # 409: one at a time
+    ]
+    reads = [client.get(f"/designer/drafts/{draft}", headers=ORGANISER)]  # running
+    designer.wake()
+    designer.join()
+    reads += [
+        client.get(f"/designer/drafts/{draft}", headers=ORGANISER),  # ready, with the draft
+        client.get(f"/designer/drafts/{draft}"),  # 401
+        client.get(f"/designer/drafts/{UNKNOWN}", headers=ORGANISER),  # 404
+        client.get("/designer/drafts/not-a-uuid", headers=ORGANISER),  # 422
+    ]
+    assert reads[1].json()["status"] == "ready"  # not vacuous: the full draft was read
+    lists = [
+        client.get("/designer/drafts", headers=ORGANISER),
+        client.get("/designer/drafts", headers={"Authorization": f"Bearer {MODERATOR_CODE}"}),
+    ]
+    return {DRAFTS: starts, DRAFT_LIST: lists, DRAFT: reads}
 
 
 def moderator_post(
@@ -373,10 +432,13 @@ def app_routes(client: TestClient) -> set[tuple[str, str]]:
 
 
 def test_no_route_ever_returns_the_scene(
-    client: TestClient, caplog: pytest.LogCaptureFixture, db: psycopg.Connection[DictRow]
+    client: TestClient,
+    designer: StubRunner,
+    caplog: pytest.LogCaptureFixture,
+    db: psycopg.Connection[DictRow],
 ) -> None:
     caplog.set_level(logging.DEBUG)
-    responses = every_route_response(client)
+    responses = every_route_response(client, designer)
 
     assert set(responses) == app_routes(client), "a route is missing from this test"
     for route, route_responses in responses.items():
@@ -405,7 +467,8 @@ def test_no_route_ever_returns_the_scene(
             else:
                 assert not content_type.startswith("image/"), f"{route} served a photo"
             assert MODERATOR_CODE not in response.text, f"{route} leaked the moderator code"
-    for secret in (MODERATOR_CODE, JOIN_CODE):
+            assert ORGANISER_KEY not in response.text, f"{route} leaked the organiser key"
+    for secret in (MODERATOR_CODE, JOIN_CODE, ORGANISER_KEY):
         assert secret not in caplog.text.upper(), "a credential reached the logs"
     assert SENTINEL not in caplog.text, "the scene reached the logs"
     assert NOTE not in caplog.text, "a ruling's note reached the logs"
@@ -419,10 +482,10 @@ def test_no_route_ever_returns_the_scene(
         assert REASON in trace["judgement"]["scene_matches"]["reason"]
 
 
-def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
+def test_the_calls_cover_success_and_error_paths(client: TestClient, designer: StubRunner) -> None:
     statuses = {
         route: sorted({r.status_code for r in rs})
-        for route, rs in every_route_response(client).items()
+        for route, rs in every_route_response(client, designer).items()
     }
 
     assert statuses[("POST", "/challenge")] == [200, 202, 404, 422]
@@ -431,6 +494,9 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
     assert statuses[("POST", "/sessions/{session}/start")] == [200, 201, 401, 404, 409]
     assert statuses[("POST", "/sessions/{session}/stop")] == [200, 201, 409]
     assert statuses[OVERVIEW] == [200, 401, 404]
+    assert statuses[DRAFTS] == [202, 401, 409, 422]
+    assert statuses[DRAFT_LIST] == [200, 401]
+    assert statuses[DRAFT] == [200, 401, 404, 422]
     assert statuses[TRACES] == [200, 401, 404, 422]
     assert statuses[RULING] == [200, 201, 401, 404, 422]
     assert statuses[REVIEW] == [200, 401, 404]
@@ -450,8 +516,8 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient) -> None:
     ]
 
 
-def test_arrive_reveals_no_place(client: TestClient) -> None:
-    arrive_responses = every_route_response(client)[
+def test_arrive_reveals_no_place(client: TestClient, designer: StubRunner) -> None:
+    arrive_responses = every_route_response(client, designer)[
         ("POST", "/sessions/{session}/participants/{participant}/arrive")
     ]
 

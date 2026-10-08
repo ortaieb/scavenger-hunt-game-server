@@ -40,7 +40,7 @@ def install(app: FastAPI) -> None:
     errors.install(app)
 
 
-def _bearer_token(authorization: str | None) -> str | None:
+def bearer_token(authorization: str | None) -> str | None:
     """The token of `Bearer <token>` (the scheme is case-insensitive), else None."""
     if not authorization:
         return None
@@ -65,7 +65,7 @@ def require_moderator(
     if found is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown session")
     expected = sessions.moderator_code(session)
-    token = _bearer_token(authorization)
+    token = bearer_token(authorization)
     if expected is None or token is None:
         raise ModeratorUnauthorisedError
     if not secrets.compare_digest(normalise_join_code(token).encode(), expected.encode()):

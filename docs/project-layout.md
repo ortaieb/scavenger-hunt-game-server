@@ -37,6 +37,10 @@ src/game_server/
   session_control.py # moderator start and stop, and the session clock
   overview.py        # `…/overview`: the moderator's standings, progress and blocked attempts
   traces.py          # `…/traces`: the moderator's verdicts with their referee traces and spend
+  organiser.py       # require_organiser: the organiser key (Bearer), for the hunt designer
+  designer.py        # `/designer/drafts`: start a design, list and read drafts
+  drafts.py          # the draft contract's models, and DraftStore (hunt_drafts)
+  designer_runners.py  # what fills a draft: StubRunner, and the agent (not available yet)
   ruling.py          # `…/submissions/{submission}/ruling`: the moderator approves or rejects a photo
   review.py          # `…/review`: the photos waiting for a ruling, and the latest rulings
   review_queue.py    # read_review_queue: the review queue as stored

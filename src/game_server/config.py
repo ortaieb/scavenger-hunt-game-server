@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import AliasChoices, Field, SecretStr, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
@@ -16,6 +16,8 @@ DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 DEFAULT_REFEREE_DEADLINE_SECONDS = 8.0
 DEFAULT_REFEREE_TIMEOUT_SECONDS = 8.0
 DEFAULT_REFEREE_MAX_RETRIES = 2
+ORGANISER_KEY_MIN_LENGTH = 24
+DesignerRunnerName = Literal["stub", "agent"]
 
 
 class Settings(BaseSettings):
@@ -35,6 +37,8 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         validate_by_name=True,  # Settings(port=...) still works despite the port's aliases
+        # A validation error never echoes a value: some settings are secrets (keys, passwords).
+        hide_input_in_errors=True,
     )
 
     host: str = "0.0.0.0"  # noqa: S104 - binding all interfaces is intended inside a container
@@ -88,6 +92,18 @@ class Settings(BaseSettings):
     referee_reference_max_edge: int = Field(default=768, gt=0)
     # The model's confidence is self-reported, not calibrated: tuned with an eval (#23).
     referee_min_confidence: float = Field(default=0.8, ge=0, le=1)
+    # The hunt designer's key (`Authorization: Bearer <key>`). Unset: nobody can use it.
+    organiser_key: SecretStr | None = None
+    # `agent` runs the hunt-designer agent; `stub` fills drafts with a fixed hunt after a delay.
+    designer_runner: DesignerRunnerName = "agent"
+    designer_stub_delay_seconds: float = Field(default=1, ge=0)
+
+    @field_validator("organiser_key")
+    @classmethod
+    def _organiser_key_is_long_enough(cls, key: SecretStr | None) -> SecretStr | None:
+        if key is not None and len(key.get_secret_value()) < ORGANISER_KEY_MIN_LENGTH:
+            raise ValueError(f"must be at least {ORGANISER_KEY_MIN_LENGTH} characters")
+        return key
 
     @model_validator(mode="after")
     def _pool_sizes_are_consistent(self) -> Self:

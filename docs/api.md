@@ -1180,6 +1180,191 @@ Known limitations, acceptable for the demo:
 Nothing is stored: no submission row, and the coordinates aren't logged. Only the normal
 request line (method and path) appears in the access log.
 
+## Hunt designer
+
+Given an area and a theme, the hunt designer picks checkpoints from map data, writes their
+clues and sets their challenges, as a **draft** for the organiser to review and publish as a
+session. A design runs in the background: start it, then poll the draft until it's `ready`.
+
+`GAME_SERVER_DESIGNER_RUNNER` picks what fills a draft. `agent` (the default) is the
+hunt-designer agent; until it lands, it can't run and starting a design is a `503`. `stub`
+fills every draft, after `GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS`, with the same `ready` hunt
+of three fictional checkpoints around a fixed point, so the designer screen can be built and
+tested against a running server.
+
+### Organiser key
+
+**Organiser only.** The moderator code can't authorise the designer: it belongs to a session,
+and a draft exists before any session does. So the designer has its own key, a stopgap like the
+moderator code until real accounts exist: `GAME_SERVER_ORGANISER_KEY`, at least 24 characters,
+presented as `Authorization: Bearer <key>` and compared in constant time.
+
+A missing header, another scheme, a wrong key, or no key configured all get the same `401`, so
+a caller can't tell why:
+
+```json
+{"detail": "organiser key required", "code": "organiser_unauthorised"}
+```
+
+with `WWW-Authenticate: Bearer`. The key is checked before anything else in the request. It's
+never returned, never logged, and a too-short key stops the server at startup without echoing
+it.
+
+A draft holds coordinates and scenes, the answers to its clues, so only the organiser sees it.
+The server logs one line per draft created and per draft finished (its id, status, number of
+checkpoints and cost), never its clues, scenes or coordinates.
+
+### `POST /designer/drafts`
+
+Start a design.
+
+```json
+{ "area": "Chiswick, London", "theme": "The Thames and brewing history", "checkpoints": 3, "max-walk-km": 3 }
+```
+
+| Field | Rules |
+|-------|-------|
+| `area`, `theme` | 3–200 characters each, after trimming spaces |
+| `checkpoints` | An integer, 3–8. Default 3 |
+| `max-walk-km` | A number, 0.5–10. Default 3 |
+
+Unknown fields are rejected. The response is `202` with the draft's id, and its URL in
+`Location`:
+
+```json
+{ "id": "5b0c7a1e-…", "status": "running" }
+```
+
+| Status | When |
+|--------|------|
+| `202`  | Started |
+| `401`  | Organiser key required |
+| `409`  | `{"detail": "a design is already running", "code": "designer_busy"}` while another draft is `running`. One run at a time: an agent run is a separate process using about 1 GiB |
+| `422`  | Invalid body. As elsewhere, no submitted value is echoed |
+| `503`  | `{"detail": "the hunt designer is not available", "code": "designer_disabled"}` when the runner can't run, e.g. the `agent` runner with no Anthropic key. Nothing is stored |
+
+### `GET /designer/drafts`
+
+The drafts, newest first, at most 50:
+
+```json
+{
+  "drafts": [
+    {
+      "id": "5b0c7a1e-…",
+      "status": "ready",
+      "area": "Chiswick, London",
+      "theme": "The Thames and brewing history",
+      "created-at": "2026-10-08T09:00:00Z",
+      "finished-at": "2026-10-08T09:03:41Z",
+      "checkpoints": 3,
+      "cost-usd": 0.42
+    }
+  ]
+}
+```
+
+`area` and `theme` are as requested; `checkpoints` is how many the draft has. Answers `200`, or
+`401` without the organiser key.
+
+### `GET /designer/drafts/{draft}`
+
+One draft, in full:
+
+```json
+{
+  "id": "5b0c7a1e-…",
+  "status": "ready",
+  "request": { "area": "Chiswick, London", "theme": "The Thames and brewing history", "checkpoints": 3, "max-walk-km": 3 },
+  "area": { "name": "Chiswick, London, England", "bbox": { "south": 51.48, "west": -0.27, "north": 51.50, "east": -0.24 }, "clipped": false },
+  "progress": [ { "at": "2026-10-08T09:00:12Z", "step": "find_places", "summary": "58 candidate places" } ],
+  "checkpoints": [
+    {
+      "position": 1,
+      "place": { "osm": "node/123456", "name": "…", "kind": "historic=memorial", "location": { "lat": 51.49, "long": -0.25 } },
+      "clue": "…",
+      "challenge": { "scene": "…", "pose": "…" },
+      "proximity": 40,
+      "rationale": "Why the agent picked it, for the organiser",
+      "review": "pending",
+      "edited": false
+    }
+  ],
+  "route": { "legs-m": [420, 610, 380], "loop-m": 1410 },
+  "problems": [ { "code": "too_close", "position": 2, "message": "…" } ],
+  "run": { "runner": "agent", "model": "…", "turns": 23, "cost-usd": 0.42, "duration-ms": 221000, "error": null },
+  "attribution": "© OpenStreetMap contributors",
+  "published": null,
+  "created-at": "2026-10-08T09:00:00Z",
+  "finished-at": "2026-10-08T09:03:41Z"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `status` | `running`, then `ready` or `failed`, and finally `published` |
+| `request` | What the organiser asked for, with the defaults filled in |
+| `area` | The area the run resolved, and whether it was `clipped` to the size limit. `null` until the run has it |
+| `progress` | The run's steps so far, oldest first, for the organiser to follow |
+| `checkpoints` | The proposed checkpoints, in route order: the real place (its OpenStreetMap id, name, kind and location), the clue, the challenge, the `proximity` in metres, why it was picked, the organiser's `review` (`pending`, `accepted` or `rejected`) and whether the organiser `edited` it. Empty while running |
+| `route` | The walking distance, in metres, from each checkpoint to the next, **closing the loop** back to the first, because each team plays its own rotation of the route; and the loop's total. `null` without checkpoints |
+| `problems` | The rules the draft breaks: a `code`, the checkpoint's `position` (or `null` for the whole draft) and a message |
+| `run` | Which runner, the model, its turns, what it cost in US dollars, how long it took (`null` while running), and `error`: `null`, or `{"code"}` with one of `max_turns`, `max_budget`, `deadline`, `no_valid_draft`, `agent_unavailable` or `interrupted` |
+| `attribution` | The map data's credit, to show with the draft |
+| `published` | `null`, or `{"session", "at"}` once the draft is published |
+
+Times are UTC to the second.
+
+| Status | When |
+|--------|------|
+| `200`  | As above |
+| `401`  | Organiser key required |
+| `404`  | `{"detail": "unknown draft"}` |
+| `422`  | `draft` isn't a UUID |
+
+### Reviewing and publishing
+
+Defined here so the designer screen can be built against them; **not served yet**.
+
+**`PATCH /designer/drafts/{draft}/checkpoints/{position}`** edits one checkpoint. The body has
+any of `clue`, `pose`, `scene`, `proximity` and `review` (`accepted`, `rejected` or `pending`).
+
+| Status | When |
+|--------|------|
+| `200`  | The updated checkpoint, in the shape above |
+| `409`  | `{"detail": …, "code": "draft_not_editable"}` unless the draft is `ready` |
+| `422`  | `{"detail": "draft problems", "problems": [...]}` when the edit breaks a rule, with the problems in the shape above |
+
+**`POST /designer/drafts/{draft}/publish`** turns the accepted checkpoints into a session:
+
+```json
+{ "name": "Chiswick Hunt", "start-time": "2026-10-11T10:00:00+01:00", "end-time": "2026-10-11T13:00:00+01:00", "teams": ["Red Foxes", "Blue Herons"] }
+```
+
+| Status | When |
+|--------|------|
+| `201`  | `{"session", "name", "moderator-code", "teams": [{"name", "join-code"}]}` |
+| `409`  | `{"detail": …, "code": "draft_not_ready"}` while any checkpoint is still `pending`, when fewer than 3 are `accepted`, or when the draft is already published |
+
+**`GET /designer/drafts/{draft}/publication`** returns the same body as the publish response,
+for a published draft.
+
+### Drafts (`hunt_drafts`)
+
+Drafts are stored in a `hunt_drafts` table, not scoped to a session:
+
+| Column | Content |
+|--------|---------|
+| `id` | The draft's UUID |
+| `status` | `running`, `ready`, `failed` or `published` |
+| `request`, `area`, `checkpoints`, `progress`, `problems` | `JSONB`, in the shapes above |
+| `runner`, `model`, `turns`, `cost_usd`, `duration_ms`, `error_code` | The run |
+| `published_session`, `published_at` | The session it became, and when |
+| `created_at`, `finished_at` | Server times |
+
+A partial unique index allows only one `running` draft at a time, so two starts at once can't
+both run.
+
 ## Referee (visual challenge)
 
 The deterministic checks can only rule a submission *out*: a phone can report any location,

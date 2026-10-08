@@ -1349,6 +1349,63 @@ any of `clue`, `pose`, `scene`, `proximity` and `review` (`accepted`, `rejected`
 **`GET /designer/drafts/{draft}/publication`** returns the same body as the publish response,
 for a published draft.
 
+### Map data
+
+The designer picks its checkpoints from [OpenStreetMap](https://www.openstreetmap.org/), which
+is free, open (ODbL) and needs no key. Data © OpenStreetMap contributors: a draft carries this
+`attribution`, and the designer screen shows it.
+
+- **[Nominatim](https://nominatim.org/)** turns the organiser's `area` ("Chiswick, London") into
+  a name, a bounding box and the place's own point. A walking hunt needs a small area: a box
+  wider than `GAME_SERVER_DESIGNER_MAX_AREA_KM` (default 3) in either direction is cut to that
+  size around the point in that direction, and the area is `clipped`.
+- **[Overpass](https://overpass-api.de/)** lists the named, public places in the box, in one
+  query. Ways and relations (a park, a church) are placed at their centre.
+
+The agent never calls these services itself: its tools call the server's map functions
+([`designer/osm.py`](../src/game_server/designer/osm.py)), so the server, not the model, holds
+every place's real coordinates.
+
+**Which places.** Named places of these kinds only:
+
+| Key | Values |
+|-----|--------|
+| `historic` | `memorial`, `monument`, `building`, `boundary_stone`, `milestone`, `wayside_cross`, `wayside_shrine`, `city_gate`, `ruins` |
+| `tourism` | `artwork`, `attraction`, `viewpoint`, `museum` (from outside) |
+| `amenity` | `fountain`, `clock`, `place_of_worship` (from outside) |
+| `man_made` | `obelisk`, `lighthouse`, `water_tower`, `bridge` |
+| `leisure` | `park`, `garden` |
+| `building` | Any, with `heritage` or `wikidata` |
+
+Left out: anything with `access` of `private`, `no` or `customers`; schools, kindergartens and
+playgrounds, where children are; anything without a name. A place keeps only the tags a clue
+can use (`name`, `inscription`, `description`, `wikipedia`, `wikidata`, `start_date`,
+`artist_name`, `heritage`, `memorial`, `historic`, `tourism`, `amenity`, `material`, `subject`),
+and its `kind` is the tag that matched, e.g. `historic=memorial`. Places with the same name less
+than 30 m apart are one place (a statue mapped twice). At most 200 come back, those with a
+Wikipedia or Wikidata link or an inscription first.
+
+**Being a good citizen.** The public instances have
+[usage](https://operations.osmfoundation.org/policies/nominatim/)
+[policies](https://dev.overpass-api.de/overpass-doc/en/preface/commons.html), and breaking them
+gets the server blocked. So every request identifies itself
+(`User-Agent: scavenger-hunt-game-server/<version> (+https://github.com/ortaieb/scavenger-hunt-game-server)`)
+and has a timeout; Nominatim gets at most one request a second; a `429` or `504` is retried
+once, after a backoff; and results are kept in memory for an hour, by the area's name or by the
+box and the kinds, so asking again makes no request. Each request is logged with the service,
+its status, the number of results and how long it took, never the query.
+
+When the map data can't be had, the error's `code` is `map_unavailable` (unreachable, or still
+`429`/`5xx` after the retry) or `map_timeout`. An area that isn't found isn't an error: there's
+just no area.
+
+| Setting | Default | |
+|---------|---------|-|
+| `GAME_SERVER_OSM_NOMINATIM_URL` | `https://nominatim.openstreetmap.org` | Nominatim's base URL |
+| `GAME_SERVER_OSM_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass's interpreter URL |
+| `GAME_SERVER_OSM_TIMEOUT_SECONDS` | `30` | Each request's timeout (> 0) |
+| `GAME_SERVER_DESIGNER_MAX_AREA_KM` | `3` | The largest area, in km either way (> 0) |
+
 ### Drafts (`hunt_drafts`)
 
 Drafts are stored in a `hunt_drafts` table, not scoped to a session:

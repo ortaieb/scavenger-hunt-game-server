@@ -19,6 +19,9 @@ and managed with [uv](https://docs.astral.sh/uv/).
 | `GET`  | [`/sessions/{session}/submissions/{submission}/photo`](docs/api.md#get-sessionssessionsubmissionssubmissionphoto) | **Moderator:** a player's photo, as the referee saw it |
 | `GET`  | [`/sessions/{session}/checkpoints/{sequence}/reference-photos/{position}`](docs/api.md#get-sessionssessioncheckpointssequencereference-photosposition) | **Moderator:** a checkpoint's reference photo, prepared the same way |
 | `POST` | [`/sessions/{session}/submissions/{submission}/ruling`](docs/api.md#post-sessionssessionsubmissionssubmissionruling) | **Moderator:** approve or reject a photo, whatever its verdict; scoring follows the ruling |
+| `POST` | [`/designer/drafts`](docs/api.md#post-designerdrafts) | **Organiser:** start designing a hunt for an area and a theme |
+| `GET`  | [`/designer/drafts`](docs/api.md#get-designerdrafts) | **Organiser:** the drafts, newest first |
+| `GET`  | [`/designer/drafts/{draft}`](docs/api.md#get-designerdraftsdraft) | **Organiser:** a draft in full: its checkpoints, route, problems and cost |
 | `GET`  | [`/health`](#deploying-on-railway) | Readiness: `200 {"status": "ok"}` when the submissions database answers, else `503 {"status": "unavailable"}` |
 | `POST` | [`/challenge`](docs/api.md#post-challenge) | A participant submits a photo for the checkpoint it checked in at |
 | `POST` | [`/checkpoint/proximity`](docs/api.md#post-checkpointproximity) | **Advisory only:** does the player look in range of an open checkpoint? |
@@ -28,7 +31,7 @@ and managed with [uv](https://docs.astral.sh/uv/).
 - [API reference](docs/api.md): the [game loop](docs/api.md#game-loop) step by step, every
   endpoint, the [submission checks](docs/api.md#submission-checks),
   [scoring](docs/api.md#scoring), the [referee](docs/api.md#referee-visual-challenge) and its
-  [evals](docs/api.md#referee-evals)
+  [evals](docs/api.md#referee-evals), and the [hunt designer](docs/api.md#hunt-designer)
 - [Sessions file](docs/sessions-file.md): defining sessions, checkpoints and teams, and what
   stays [secret](docs/sessions-file.md#secrecy)
 - [Project layout](docs/project-layout.md): what each module does
@@ -84,6 +87,9 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_ARRIVAL_CODE_TTL_SECONDS` | `600` | How long an [arrival's](docs/api.md#post-sessionssessionparticipantsparticipantarrive) one-time code stays valid, in seconds (> 0) |
 | `GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS` | `10` | Minimum seconds between [proximity hints](docs/api.md#post-checkpointproximity) per (session, participant) (> 0) |
 | `GAME_SERVER_PHASH_MAX_DISTANCE` | `6` | Hamming distance (0–32 of 64 bits) at or below which a photo is a [duplicate](docs/api.md#submission-checks) of an accepted one |
+| `GAME_SERVER_ORGANISER_KEY` | unset | The [hunt designer's](docs/api.md#hunt-designer) key, at least 24 characters. Unset: nobody can use the designer. Never logged |
+| `GAME_SERVER_DESIGNER_RUNNER` | `agent` | What fills a draft: `agent` (not available yet: starting a design answers `503`) or `stub`, a fixed hunt for building the designer screen |
+| `GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS` | `1` | How long the `stub` runner takes (≥ 0) |
 | `GAME_SERVER_DB_*` | | PostgreSQL connection and pool: see [Database](#database) |
 | `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](docs/sessions-file.md#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |
 
@@ -286,6 +292,8 @@ Set these up once in the dashboard (they can't be declared in `railway.toml`):
      `/app/data/hunt/sessions.json`. Upload it with `railway volume` or the dashboard.
    - Optionally `GAME_SERVER_ANTHROPIC_API_KEY` (sealed) to turn on the
      [referee](docs/api.md#referee-visual-challenge).
+   - Optionally `GAME_SERVER_ORGANISER_KEY` (sealed) to open the
+     [hunt designer](docs/api.md#hunt-designer) to the organiser.
 
 **Reference photos** go on the volume next to the sessions file, which they're resolved
 against. The referee sends them to the model provider (Anthropic) with each photo judged at

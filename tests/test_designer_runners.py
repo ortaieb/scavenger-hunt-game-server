@@ -285,9 +285,10 @@ def test_each_failure_fails_the_draft_with_its_code(
     code: str,
 ) -> None:
     replay_runs(mocker, script, end=ending.end, raises=ending.raises, hang=ending.hang)
-    short = settings.model_copy(update={"designer_deadline_seconds": 0.1})
+    if ending.hang:  # only a run that never ends meets the deadline
+        settings = settings.model_copy(update={"designer_deadline_seconds": 0.5})
 
-    draft = designed(AgentRunner(store, lambda: T0, short, maps), store)
+    draft = designed(AgentRunner(store, lambda: T0, settings, maps), store)
 
     assert (draft.status, draft.error_code, draft.finished_at) == ("failed", code, T0)
 

@@ -1362,7 +1362,7 @@ tool, whose `summary` is the call's outcome: never a clue or a scene.
 
 A call that fails says why instead: `Invalid input`, `No area yet`, `Not a candidate place`,
 `The map data is unavailable` or `The map data timed out`. The agent can recover, so a failed
-step doesn't end the run.
+step doesn't end the run. The `stub` runner reports four fixed steps of its own.
 
 ### Reviewing and publishing
 

@@ -621,7 +621,7 @@ def test_a_failed_design_shows_its_code_and_how_close_it_got(
 def test_a_design_past_its_deadline_fails_with_deadline(
     agent_env: None, monkeypatch: pytest.MonkeyPatch, now: list[datetime], mocker: MockerFixture
 ) -> None:
-    monkeypatch.setenv("GAME_SERVER_DESIGNER_DEADLINE_SECONDS", "0.2")
+    monkeypatch.setenv("GAME_SERVER_DESIGNER_DEADLINE_SECONDS", "1")
     replay_runs(mocker, SEARCH, hang=True)
     with TestClient(agent_app(now)) as client:
         body = until_finished(client, start(client).json()["id"])

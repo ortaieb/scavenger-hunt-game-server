@@ -759,7 +759,7 @@ def test_a_run_past_its_deadline_is_cut_off_with_what_it_had(
 ) -> None:
     rejected = {"checkpoints": [submitted(HOUSE, 1)]}
     replay(mocker, run, [*SEARCH, ("submit_draft", rejected)], hang=True)
-    short = settings.model_copy(update={"designer_deadline_seconds": 0.05})
+    short = settings.model_copy(update={"designer_deadline_seconds": 0.5})
 
     result = design(run, short)
 
@@ -768,14 +768,14 @@ def test_a_run_past_its_deadline_is_cut_off_with_what_it_had(
     assert [p.code for p in result.problems] == ["wrong_count"]
     assert (result.stats.model, result.stats.turns, result.stats.subtype) == (MODEL, 3, None)
     assert result.stats.cost_usd == Decimal(0)
-    assert result.stats.duration_ms >= 50
+    assert result.stats.duration_ms >= 500
 
 
 def test_an_accepted_draft_survives_the_deadline(
     mocker: MockerFixture, run: HuntRun, settings: Settings
 ) -> None:
     replay(mocker, run, DESIGN, hang=True)
-    short = settings.model_copy(update={"designer_deadline_seconds": 0.05})
+    short = settings.model_copy(update={"designer_deadline_seconds": 0.5})
 
     result = design(run, short)
 
@@ -868,7 +868,8 @@ def ended(pid_file: Path) -> bool:
 def test_the_deadline_ends_claude_codes_process(
     run: HuntRun, settings: Settings, fake_claude_code: Path
 ) -> None:
-    short = settings.model_copy(update={"designer_deadline_seconds": 1.0})
+    # Long enough for the fake to start and write its pid, even on a slow machine.
+    short = settings.model_copy(update={"designer_deadline_seconds": 3.0})
 
     result = design(run, short)
 
@@ -881,8 +882,9 @@ def test_stopping_ends_claude_codes_process(
 ) -> None:
     async def stop_once_started() -> agent.DesignResult:
         task = asyncio.create_task(run_agent(run, settings))
-        while not fake_claude_code.exists():
-            await asyncio.sleep(0.02)
+        async with asyncio.timeout(WAIT_SECONDS):
+            while not fake_claude_code.exists():
+                await asyncio.sleep(0.02)
         run.stop()
         return await task
 

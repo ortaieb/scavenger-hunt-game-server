@@ -1,5 +1,6 @@
 """The designer's command line, with the agent itself replaced: no API calls."""
 
+import asyncio
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -18,6 +19,7 @@ from game_server.drafts import (
     DraftCheckpoint,
     DraftPlace,
     DraftRequest,
+    Problem,
 )
 from game_server.models import Location
 
@@ -57,6 +59,19 @@ ACCEPTED = DesignResult(
 )
 FAILED = DesignResult(
     area=None, checkpoints=(), route=None, stats=STATS, error_code="no_valid_draft"
+)
+TOO_CLOSE = Problem(
+    code="too_close",
+    position=2,
+    message="Checkpoints 1 and 2 are 111 m apart; keep them at least 150 m apart",
+)
+PARTIAL = DesignResult(
+    area=ACCEPTED.area,
+    checkpoints=CHECKPOINTS,
+    route=ACCEPTED.route,
+    stats=STATS,
+    error_code="max_turns",
+    problems=(TOO_CLOSE,),
 )
 
 
@@ -135,7 +150,25 @@ def test_json_prints_a_failed_runs_error(
     printed = json.loads(capsys.readouterr().out)
     assert status == 1
     assert (printed["area"], printed["checkpoints"], printed["route"]) == (None, [], None)
+    assert printed["problems"] == []
     assert printed["run"]["error"] == {"code": "no_valid_draft"}
+
+
+@pytest.mark.usefixtures("key")
+def test_json_prints_a_failed_runs_last_draft_and_its_problems(
+    mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    designer(mocker, PARTIAL)
+
+    status = main([*ARGS, "--json"])
+
+    printed = json.loads(capsys.readouterr().out)
+    assert status == 1
+    assert len(printed["checkpoints"]) == 3
+    assert printed["problems"] == [
+        {"code": "too_close", "position": 2, "message": TOO_CLOSE.message}
+    ]
+    assert printed["run"]["error"] == {"code": "max_turns"}
 
 
 @pytest.mark.usefixtures("key")
@@ -171,6 +204,20 @@ def test_prints_the_error_and_exits_1_when_the_run_fails(
 
 
 @pytest.mark.usefixtures("key")
+def test_prints_a_failed_runs_last_draft_and_its_problems(
+    mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    designer(mocker, PARTIAL)
+
+    status = main(ARGS)
+
+    out = capsys.readouterr().out
+    assert status == 1
+    assert "3. Place 3 (historic=memorial, node/3)" in out
+    assert f"Problem: {TOO_CLOSE.message} (too_close)\nError: max_turns" in out
+
+
+@pytest.mark.usefixtures("key")
 def test_runs_the_request_as_given_with_the_settings(mocker: MockerFixture) -> None:
     design = designer(mocker, ACCEPTED)
 
@@ -198,7 +245,7 @@ def test_reports_progress_on_stderr(
     capsys.readouterr()
     assert design.await_args is not None
 
-    design.await_args.kwargs["on_progress"]("find_places", "58 candidate places")
+    asyncio.run(design.await_args.kwargs["on_progress"]("find_places", "58 candidate places"))
 
     assert capsys.readouterr().err == "[find_places] 58 candidate places\n"
 

@@ -10,7 +10,7 @@ draft's coordinates are copied from the candidates.
 
 The agent runs in a narrow sandbox: no built-in tools (no shell, files or web), no settings,
 memory or other MCP servers from the machine, an empty working directory, and limits on its
-turns and spend. Map text reaches the model only inside tool results, as JSON data.
+turns, spend and time. Map text reaches the model only inside tool results, as JSON data.
 
 All Claude Agent SDK runs go through `_run_query`; tests replace it.
 """
@@ -21,14 +21,16 @@ import logging
 import subprocess
 import sys
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from decimal import Decimal
 from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Protocol
 
+import anyio
 import claude_agent_sdk
 from claude_agent_sdk import (
     AssistantMessage,
@@ -68,6 +70,7 @@ from game_server.drafts import (
     DraftCheckpoint,
     DraftPlace,
     DraftRequest,
+    Problem,
     RunErrorCode,
 )
 from game_server.geo import distance_m
@@ -98,9 +101,12 @@ MAX_RESULT_CHARS = 100_000
 # distance rule: it never reaches a result, since `unknown_place` rejects the draft.
 NOWHERE = Location(lat=0, long=0)
 SELF_CHECK_TIMEOUT_SECONDS = 30.0
+# The model Claude Code names on a message it made up itself, e.g. for an API error.
+SYNTHETIC_MODEL = "<synthetic>"
 
-Progress = Callable[[str, str], None]
-"""Told each step of a run: its name (e.g. `find_places`) and a summary for the organiser."""
+Progress = Callable[[str, str], Awaitable[None]]
+"""Told each tool call of a run: the tool (e.g. `find_places`) and its outcome for the
+organiser (e.g. "58 candidate places"), never a clue or a scene."""
 
 
 class MapData(Protocol):
@@ -140,14 +146,16 @@ class RunStats:
 
 @dataclass(frozen=True)
 class DesignResult:
-    """A run's outcome: the area, the accepted checkpoints in route order and the route; or,
-    on failure, only an error code. The stats either way."""
+    """A run's outcome: the area, the accepted checkpoints in route order and the route. On
+    failure, an error code, with the last draft submitted (if any) and its problems, to show
+    how close the run got. The stats either way."""
 
     area: DraftArea | None
     checkpoints: tuple[DraftCheckpoint, ...]
     route: Route | None
     stats: RunStats
     error_code: RunErrorCode | None = None
+    problems: tuple[Problem, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -159,11 +167,23 @@ class AcceptedDraft:
 
 
 @dataclass(frozen=True)
+class SubmittedDraft:
+    """The last draft `submit_draft` checked, accepted or not, and its problems. Only its
+    checkpoints at candidate places are kept: every place and location is the map data's."""
+
+    area: DraftArea
+    checkpoints: tuple[DraftCheckpoint, ...]
+    problems: tuple[Problem, ...]
+
+
+@dataclass(frozen=True)
 class Reply:
-    """A tool's answer to the model (JSON), and what its log line says."""
+    """A tool's answer to the model (JSON), what its log line says, and its progress step's
+    summary for the organiser."""
 
     payload: Mapping[str, object]
     outcome: str
+    summary: str
     results: int | None = None
     is_error: bool = False
 
@@ -173,8 +193,25 @@ class Reply:
         return {"content": [{"type": "text", "text": text}], "is_error": self.is_error}
 
 
+# What a tool's error says in the run's progress.
+ERROR_SUMMARIES = {
+    "area_not_found": "No area matches",
+    "no_area": "No area yet",
+    "invalid_input": "Invalid input",
+    "invalid_kind": "A kind that isn't allowed",
+    "unknown_place": "Not a candidate place",
+    "map_unavailable": "The map data is unavailable",
+    "map_timeout": "The map data timed out",
+}
+
+
 def _error(code: str, message: str) -> Reply:
-    return Reply({"error": code, "message": message}, outcome=code, is_error=True)
+    summary = ERROR_SUMMARIES.get(code, code)
+    return Reply({"error": code, "message": message}, code, summary, is_error=True)
+
+
+def _counted(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
 # --- the tools' inputs --------------------------------------------------------------------
@@ -319,13 +356,13 @@ TOOL_SPECS: dict[str, ToolSpec] = {
 # --- one run's context, and its tools -----------------------------------------------------
 
 
-def _ignore_progress(step: str, summary: str) -> None:
+async def _ignore_progress(step: str, summary: str) -> None:
     """The default `Progress`: tells nobody."""
 
 
 class HuntRun:
-    """One design run: the request, the area, the candidates seen so far and the last
-    accepted draft. Its tools, `call`ed by name, read and change it."""
+    """One design run: the request, the area, the candidates seen so far, and the last
+    draft submitted and the last accepted. Its tools, `call`ed by name, read and change it."""
 
     def __init__(
         self,
@@ -339,6 +376,9 @@ class HuntRun:
         self.area: Area | None = None
         self.candidates: dict[str, Place] = {}
         self.accepted: AcceptedDraft | None = None
+        self.submitted: SubmittedDraft | None = None
+        self.stopped = False
+        self._scope: anyio.CancelScope | None = None
         self._maps = maps
         self._min_spacing_m = min_spacing_m
         self._progress = on_progress
@@ -351,7 +391,8 @@ class HuntRun:
         }
 
     async def call(self, name: str, args: Mapping[str, object]) -> dict[str, object]:
-        """Run the tool `name` as the agent does; one log line, never its text."""
+        """Run the tool `name` as the agent does: one progress step and one log line, never
+        its text."""
         reply = await self._tools[name](args)
         logger.info(
             "Designer tool %s outcome %s results %s",
@@ -359,7 +400,28 @@ class HuntRun:
             reply.outcome,
             "-" if reply.results is None else reply.results,
         )
+        await self._progress(name, reply.summary)
         return reply.sdk_result()
+
+    def stop(self) -> None:
+        """Cut the run off, e.g. as the server shuts down: Claude Code is shut down and the
+        run fails with `interrupted`, unless it has an accepted draft. Call it on the run's
+        event loop."""
+        self.stopped = True
+        if self._scope is not None:
+            self._scope.cancel()
+
+    @contextmanager
+    def limited(self, seconds: float) -> Iterator[anyio.CancelScope]:
+        """The scope the agent runs in, cancelled `seconds` from now or by `stop`."""
+        with anyio.move_on_after(seconds) as scope:
+            self._scope = scope
+            if self.stopped:
+                scope.cancel()
+            try:
+                yield scope
+            finally:
+                self._scope = None
 
     def server(self) -> McpSdkServerConfig:
         """The in-process MCP server holding this run's tools."""
@@ -391,12 +453,11 @@ class HuntRun:
         except MapDataError as exc:
             return _error(exc.code, "The map data can't be had right now; try again")
         if area is None:
-            self._progress("resolve_area", "No area matches")
             return _error("area_not_found", "No area matches; try a fuller name, with the city")
         self.area = area
-        self._progress("resolve_area", area.name + (" (clipped)" if area.clipped else ""))
+        summary = area.name + (" (clipped)" if area.clipped else "")
         payload = area.draft_area().model_dump(mode="json", by_alias=True)
-        return Reply(payload, outcome="ok", results=1)
+        return Reply(payload, "ok", summary, results=1)
 
     async def _find_places(self, args: Mapping[str, object]) -> Reply:
         if self.area is None:
@@ -415,9 +476,9 @@ class HuntRun:
             found, key=lambda place: (not documented(place), self._distance_from_centre(place))
         )[:PLACES_SHOWN]
         self.candidates.update((place.osm, place) for place in best)
-        self._progress("find_places", f"{len(best)} candidate places")
         places = [self._summary(place) for place in best]
-        return Reply({"found": len(found), "places": places}, outcome="ok", results=len(best))
+        payload = {"found": len(found), "places": places}
+        return Reply(payload, "ok", _counted(len(best), "candidate place"), results=len(best))
 
     def _summary(self, place: Place) -> dict[str, object]:
         """A place in brief: no coordinates, and its key tags cut short."""
@@ -439,7 +500,7 @@ class HuntRun:
         if place is None:
             return _error("unknown_place", "Not a candidate place; use a ref from find_places")
         payload = {**self._summary(place), "tags": dict(place.tags)}
-        return Reply(payload, outcome="ok", results=1)
+        return Reply(payload, "ok", f"Details of {place.name}", results=1)
 
     async def _measure_route(self, args: Mapping[str, object]) -> Reply:
         try:
@@ -452,13 +513,13 @@ class HuntRun:
                 "unknown_place", f"Not candidate places: {', '.join(unknown)}; use find_places"
             )
         route = route_of([self.candidates[ref].location for ref in refs])
-        self._progress("measure_route", f"A loop of {len(refs)} places, {route.loop_m} m")
         payload = {
             "legs_m": list(route.legs_m),
             "loop_m": route.loop_m,
             "max_loop_m": round(self.request.max_walk_km * 1000),
         }
-        return Reply(payload, outcome="ok", results=len(refs))
+        summary = f"A loop of {_counted(len(refs), 'place')}, {route.loop_m} m"
+        return Reply(payload, "ok", summary, results=len(refs))
 
     async def _submit_draft(self, args: Mapping[str, object]) -> Reply:
         if self.area is None:
@@ -474,16 +535,17 @@ class HuntRun:
         problems = check_draft(
             checkpoints, self.candidates.values(), self.request, self.area, self._min_spacing_m
         )
+        placed = tuple(c for c in checkpoints if c.place.osm in self.candidates)
+        self.submitted = SubmittedDraft(self.area.draft_area(), placed, tuple(problems))
         if problems:
             codes = ", ".join(sorted({problem.code for problem in problems}))
-            self._progress("check_draft", f"{len(problems)} problems: {codes}")
             listed = [problem.model_dump(mode="json", by_alias=True) for problem in problems]
             payload = {"status": "rejected", "problems": listed}
-            return Reply(payload, outcome="rejected", results=len(problems))
+            summary = f"{_counted(len(problems), 'problem')}: {codes}"
+            return Reply(payload, "rejected", summary, results=len(problems))
         self.accepted = AcceptedDraft(self.area.draft_area(), checkpoints)
-        self._progress("check_draft", "No problems")
         payload = {"status": "accepted", "message": "The draft is accepted: you're done"}
-        return Reply(payload, outcome="accepted", results=len(checkpoints))
+        return Reply(payload, "accepted", "No problems", results=len(checkpoints))
 
     def _checkpoint(self, position: int, submitted: SubmittedCheckpoint) -> DraftCheckpoint:
         """The checkpoint, with its place and location from the candidate, never the model."""
@@ -578,33 +640,38 @@ def _run_query(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Messag
 
 @dataclass
 class _Stream:
-    """What a run's messages said: the model that answered, and the result."""
+    """What a run's messages said: the model that answered, the turns seen, and the result;
+    or that the run was cut off before it had one."""
 
     model: str | None = None
+    messages: set[str] = field(default_factory=set)
     result: ResultMessage | None = None
     error_subtype: str | None = None
+    cut_off: RunErrorCode | None = None
 
 
-async def _read(prompt: str, options: ClaudeAgentOptions) -> _Stream:
-    """Run the agent; an SDK failure ends the stream, and only the result says why."""
-    stream = _Stream()
+async def _read(prompt: str, options: ClaudeAgentOptions, stream: _Stream) -> None:
+    """Run the agent into `stream`; an SDK failure ends it, and only the result says why."""
     try:
         async for message in _run_query(prompt, options):
-            if isinstance(message, AssistantMessage) and stream.model is None:
-                stream.model = message.model
+            if isinstance(message, AssistantMessage) and message.model != SYNTHETIC_MODEL:
+                stream.model = stream.model or message.model
+                if message.message_id is not None:  # one API response may be several messages
+                    stream.messages.add(message.message_id)
             elif isinstance(message, ResultMessage):
                 stream.result = message
     except ResultError as exc:  # the CLI exits non-zero after an error result
         stream.error_subtype = exc.subtype
     except ClaudeSDKError as exc:  # Claude Code not found, didn't start, or broke off
         logger.warning("Designer agent unavailable: %s", type(exc).__name__)
-    return stream
 
 
 def error_code(stream: _Stream, accepted: AcceptedDraft | None) -> RunErrorCode | None:
     """None when a draft was accepted, whatever ended the run after; else why there's none."""
     if accepted is not None:
         return None
+    if stream.cut_off is not None:
+        return stream.cut_off
     subtype = stream.result.subtype if stream.result is not None else stream.error_subtype
     if subtype == "error_max_turns":
         return "max_turns"
@@ -619,7 +686,8 @@ def _result(run: HuntRun, stream: _Stream, settings: Settings, started: float) -
     result = stream.result
     stats = RunStats(
         model=stream.model or settings.designer_model,
-        turns=result.num_turns if result is not None else 0,
+        turns=result.num_turns if result is not None else len(stream.messages),
+        # A run cut off before its result never learns its cost.
         cost_usd=Decimal(str(result.total_cost_usd or 0)) if result is not None else Decimal(0),
         duration_ms=result.duration_ms
         if result is not None
@@ -635,24 +703,42 @@ def _result(run: HuntRun, stream: _Stream, settings: Settings, started: float) -
         stats.cost_usd,
         stats.duration_ms,
     )
-    if code is not None or run.accepted is None:
-        return DesignResult(area=None, checkpoints=(), route=None, stats=stats, error_code=code)
-    checkpoints = run.accepted.checkpoints
-    route = route_of([checkpoint.place.location for checkpoint in checkpoints])
-    return DesignResult(run.accepted.area, checkpoints, route, stats)
+    if code is None and run.accepted is not None:
+        checkpoints = run.accepted.checkpoints
+        return DesignResult(run.accepted.area, checkpoints, _route(checkpoints), stats)
+    submitted = run.submitted
+    if submitted is None:
+        area = run.area.draft_area() if run.area is not None else None
+        return DesignResult(area, (), None, stats, error_code=code)
+    checkpoints = submitted.checkpoints
+    return DesignResult(
+        submitted.area, checkpoints, _route(checkpoints), stats, code, submitted.problems
+    )
+
+
+def _route(checkpoints: Sequence[DraftCheckpoint]) -> Route | None:
+    return route_of([c.place.location for c in checkpoints]) if checkpoints else None
 
 
 async def run_agent(run: HuntRun, settings: Settings) -> DesignResult:
-    """Let the agent design the run's hunt; the last draft it got accepted is the result."""
+    """Let the agent design the run's hunt; the last draft it got accepted is the result.
+
+    Past the deadline, or when the run is stopped, the agent is cut off: the SDK shuts
+    Claude Code down, and the run ends as it stands.
+    """
     started = time.monotonic()
+    stream = _Stream()
     if api_key(settings) is None:
-        return _result(run, _Stream(), settings, started)
+        return _result(run, stream, settings, started)
     with (
         TemporaryDirectory(prefix="designer-cwd-") as cwd,
         TemporaryDirectory(prefix="designer-config-") as config_dir,
     ):
         options = agent_options(settings, run.server(), Path(cwd), Path(config_dir))
-        stream = await _read(user_prompt(run.request), options)
+        with run.limited(settings.designer_deadline_seconds) as limit:
+            await _read(user_prompt(run.request), options, stream)
+    if limit.cancel_called and stream.result is None:
+        stream.cut_off = "interrupted" if run.stopped else "deadline"
     return _result(run, stream, settings, started)
 
 

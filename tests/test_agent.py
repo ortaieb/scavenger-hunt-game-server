@@ -1,9 +1,13 @@
 """The hunt-designer agent: its tools without the SDK, its sandbox, and its outcomes with the
-SDK's agent loop (`_run_query`) replaced by a scripted message stream."""
+SDK's agent loop (`_run_query`) replaced by a scripted message stream, or the SDK driving a
+fake Claude Code."""
 
 import asyncio
+import dataclasses
 import json
 import logging
+import os
+import sys
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -22,6 +26,7 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
+    query,
 )
 from pydantic import SecretStr
 from pytest_mock import MockerFixture
@@ -42,7 +47,7 @@ from game_server.designer.agent import (
     system_prompt,
     user_prompt,
 )
-from game_server.designer.osm import Area, MapDataError, Place
+from game_server.designer.osm import Area, MapDataError, MapErrorCode, Place
 from game_server.designer.rules import check_draft
 from game_server.drafts import BoundingBox, DraftRequest
 from game_server.models import Location
@@ -117,7 +122,14 @@ def steps() -> list[tuple[str, str]]:
 
 @pytest.fixture
 def run(maps: FakeMaps, steps: list[tuple[str, str]]) -> HuntRun:
-    return HuntRun(REQUEST, maps, on_progress=lambda step, summary: steps.append((step, summary)))
+    async def record(step: str, summary: str) -> None:
+        steps.append((step, summary))
+
+    return HuntRun(REQUEST, maps, on_progress=record)
+
+
+async def no_progress(step: str, summary: str) -> None:
+    """Progress nobody follows."""
 
 
 def call(run: HuntRun, name: str, args: Mapping[str, object]) -> dict[str, object]:
@@ -356,7 +368,7 @@ def test_a_clean_draft_is_accepted(run: HuntRun, steps: list[tuple[str, str]]) -
     assert run.accepted.area == AREA.draft_area()
     assert [c.place.osm for c in run.accepted.checkpoints] == ["node/1", "way/2", "relation/3"]
     assert [c.position for c in run.accepted.checkpoints] == [1, 2, 3]
-    assert steps[-1] == ("check_draft", "No problems")
+    assert steps[-1] == ("submit_draft", "No problems")
 
 
 def test_submit_draft_with_an_unknown_ref_returns_unknown_place(run: HuntRun) -> None:
@@ -423,7 +435,36 @@ def test_a_rejected_draft_lists_its_problems(run: HuntRun, steps: list[tuple[str
             "describe it without its name",
         }
     ]
-    assert steps[-1] == ("check_draft", "1 problems: names_place")
+    assert steps[-1] == ("submit_draft", "1 problem: names_place")
+
+
+def test_a_rejected_draft_is_kept_with_its_problems(run: HuntRun) -> None:
+    found(run)
+    draft = clean_draft()
+    draft["checkpoints"][0]["clue"] = "Find Hogarth by the road."
+
+    call(run, "submit_draft", draft)
+
+    assert run.submitted is not None
+    assert run.submitted.area == AREA.draft_area()
+    assert [c.place.osm for c in run.submitted.checkpoints] == ["node/1", "way/2", "relation/3"]
+    assert [(p.code, p.position) for p in run.submitted.problems] == [("names_place", 1)]
+    assert run.accepted is None
+
+
+def test_a_kept_draft_leaves_out_checkpoints_at_unknown_places(run: HuntRun) -> None:
+    found(run)
+    draft = clean_draft()
+    draft["checkpoints"][1]["ref"] = "node/999"
+
+    call(run, "submit_draft", draft)
+
+    assert run.submitted is not None
+    assert [(c.position, c.place.osm) for c in run.submitted.checkpoints] == [
+        (1, "node/1"),
+        (3, "relation/3"),
+    ]
+    assert ("unknown_place", 2) in [(p.code, p.position) for p in run.submitted.problems]
 
 
 def test_the_last_accepted_draft_stays_after_a_rejected_one(run: HuntRun) -> None:
@@ -464,15 +505,80 @@ def test_each_tool_call_logs_one_line_without_its_text(
     ]
 
 
-def test_the_run_reports_its_progress(run: HuntRun, steps: list[tuple[str, str]]) -> None:
+def test_each_tool_call_is_one_progress_step(run: HuntRun, steps: list[tuple[str, str]]) -> None:
     found(run)
+    call(run, "place_details", {"ref": "node/1"})
     call(run, "measure_route", {"refs": ["node/1", "way/2"]})
+    call(run, "submit_draft", clean_draft())
 
     assert steps == [
-        ("resolve_area", "Chiswick, London, England"),
+        ("find_area", "Chiswick, London, England"),
         ("find_places", "3 candidate places"),
+        ("place_details", "Details of Hogarth's House"),
         ("measure_route", "A loop of 2 places, 800 m"),
+        ("submit_draft", "No problems"),
     ]
+
+
+def test_a_clipped_area_says_so_in_its_step(
+    run: HuntRun, maps: FakeMaps, steps: list[tuple[str, str]]
+) -> None:
+    maps.area = AREA.model_copy(update={"clipped": True})
+
+    call(run, "find_area", {"query": "Chiswick, London"})
+
+    assert steps == [("find_area", "Chiswick, London, England (clipped)")]
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "error", "summary"),
+    [
+        ("find_area", {"query": ""}, None, "Invalid input"),
+        ("find_area", {"query": "Chiswick"}, "map_timeout", "The map data timed out"),
+        ("find_places", {}, "map_unavailable", "The map data is unavailable"),
+        ("find_places", {"kinds": ["amenity=school"]}, None, "A kind that isn't allowed"),
+        ("place_details", {"ref": "node/999"}, None, "Not a candidate place"),
+        ("measure_route", {"refs": ["node/999"]}, None, "Not a candidate place"),
+    ],
+    ids=["invalid", "map-timeout", "map-unavailable", "kind", "details-unknown", "route-unknown"],
+)
+def test_a_failed_tool_call_is_one_step_with_its_outcome(
+    run: HuntRun,
+    maps: FakeMaps,
+    steps: list[tuple[str, str]],
+    name: str,
+    args: Mapping[str, object],
+    error: MapErrorCode | None,
+    summary: str,
+) -> None:
+    run.area = AREA
+    if error is not None:
+        maps.error = MapDataError(error, "the map service failed")
+
+    call(run, name, args)
+
+    assert steps == [(name, summary)]
+
+
+def test_a_tool_called_too_early_says_there_is_no_area_yet(
+    run: HuntRun, steps: list[tuple[str, str]]
+) -> None:
+    call(run, "find_places", {})
+
+    assert steps == [("find_places", "No area yet")]
+
+
+def test_progress_never_shows_a_clue_or_scene(run: HuntRun, steps: list[tuple[str, str]]) -> None:
+    found(run)
+    draft = clean_draft()
+    draft["checkpoints"][0]["clue"] = "Find Hogarth by the road."
+
+    call(run, "submit_draft", draft)
+    call(run, "submit_draft", clean_draft())
+
+    shown = json.dumps(steps)
+    for secret in ("Hogarth by the road", "Clue 1", "Scene 1", "black railings", "51.49"):
+        assert secret not in shown
 
 
 # --- the sandbox ------------------------------------------------------------------------
@@ -561,25 +667,30 @@ QueryFake = Callable[[str, ClaudeAgentOptions], AsyncIterator[Message]]
 @dataclass
 class Replay:
     """Stands in for `_run_query`: plays the tool calls through the run's tools, then ends with
-    the result, an exception, or both, as the SDK does."""
+    the result, an exception, or both, as the SDK does; or, with `hang`, never ends."""
 
     run: HuntRun
     script: Script
     end: ResultMessage | None = None
     raises: Exception | None = None
+    hang: bool = False
     prompts: list[str] = field(default_factory=list)
     tool_results: list[dict[str, object]] = field(default_factory=list)
+    hanging: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def __call__(self, prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]:
         self.prompts.append(prompt)
         for number, (name, args) in enumerate(self.script):
             use = ToolUseBlock(id=f"tool-{number}", name=f"mcp__hunt__{name}", input=dict(args))
-            yield AssistantMessage(content=[use], model=MODEL)
+            yield AssistantMessage(content=[use], model=MODEL, message_id=f"msg-{number}")
             result = await self.run.call(name, args)
             self.tool_results.append(result)
             content = result["content"]
             assert isinstance(content, list)
             yield UserMessage(content=[ToolResultBlock(use.id, content, False)])
+        if self.hang:
+            self.hanging.set()
+            await asyncio.Event().wait()
         if self.end is not None:
             yield self.end
         if self.raises is not None:
@@ -597,8 +708,9 @@ def replay(
     *,
     end: ResultMessage | None = None,
     raises: Exception | None = None,
+    hang: bool = False,
 ) -> Replay:
-    fake = Replay(run, script, end, raises)
+    fake = Replay(run, script, end, raises, hang)
     mocker.patch("game_server.designer.agent._run_query", fake)
     return fake
 
@@ -637,9 +749,17 @@ def test_a_run_stopped_by_a_limit_gives_its_code(
     result = design(run, settings)
 
     assert result.error_code == code
-    assert (result.area, result.checkpoints, result.route) == (None, (), None)
+    assert (result.checkpoints, result.route, result.problems) == ((), None, ())
     assert (result.stats.subtype, result.stats.turns) == (subtype, 7)
     assert result.stats.cost_usd == Decimal("0.42")
+
+
+def test_a_failed_run_keeps_the_area_it_found(
+    mocker: MockerFixture, run: HuntRun, settings: Settings
+) -> None:
+    replay(mocker, run, SEARCH, end=result_message("error_max_turns", is_error=True))
+
+    assert design(run, settings).area == AREA.draft_area()
 
 
 def test_a_limit_without_a_result_message_gives_its_code_from_the_error(
@@ -662,7 +782,24 @@ def test_a_run_without_an_accepted_draft_is_no_valid_draft(
     result = design(run, settings)
 
     assert result.error_code == "no_valid_draft"
-    assert result.checkpoints == ()
+
+
+def test_a_failed_run_keeps_its_last_submitted_draft_and_its_problems(
+    mocker: MockerFixture, run: HuntRun, settings: Settings
+) -> None:
+    first = {"checkpoints": [submitted(HOUSE, 1)]}
+    last = {"checkpoints": [submitted(HOUSE, 1), submitted(CHURCH, 2)]}
+    script = [*SEARCH, ("submit_draft", first), ("submit_draft", last)]
+    replay(mocker, run, script, end=result_message("error_max_budget_usd", is_error=True))
+
+    result = design(run, settings)
+
+    assert result.error_code == "max_budget"
+    assert result.area == AREA.draft_area()
+    assert [c.place.osm for c in result.checkpoints] == ["node/1", "way/2"]
+    assert [c.place.location for c in result.checkpoints] == [HOUSE.location, CHURCH.location]
+    assert [p.code for p in result.problems] == ["wrong_count"]
+    assert result.route == agent.Route(legs_m=(400, 400), loop_m=800)
 
 
 def test_an_accepted_draft_survives_a_limit_hit_afterwards(
@@ -706,6 +843,162 @@ def test_an_api_failure_result_is_agent_unavailable(
     replay(mocker, run, SEARCH, end=result_message("success", is_error=True))
 
     assert design(run, settings).error_code == "agent_unavailable"
+
+
+def test_claude_codes_made_up_messages_are_not_the_model(
+    mocker: MockerFixture, run: HuntRun, settings: Settings
+) -> None:
+    async def api_error(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]:
+        yield AssistantMessage(content=[], model="<synthetic>", message_id="msg-0")
+        yield result_message("success", is_error=True)
+
+    mocker.patch("game_server.designer.agent._run_query", api_error)
+
+    result = design(run, settings)
+
+    assert result.error_code == "agent_unavailable"
+    assert result.stats.model == "claude-test-model"
+
+
+# --- the deadline and stopping ----------------------------------------------------------
+
+
+def test_a_run_past_its_deadline_is_cut_off_with_what_it_had(
+    mocker: MockerFixture, run: HuntRun, settings: Settings
+) -> None:
+    rejected = {"checkpoints": [submitted(HOUSE, 1)]}
+    replay(mocker, run, [*SEARCH, ("submit_draft", rejected)], hang=True)
+    short = settings.model_copy(update={"designer_deadline_seconds": 0.05})
+
+    result = design(run, short)
+
+    assert result.error_code == "deadline"
+    assert [c.place.osm for c in result.checkpoints] == ["node/1"]
+    assert [p.code for p in result.problems] == ["wrong_count"]
+    assert (result.stats.model, result.stats.turns, result.stats.subtype) == (MODEL, 3, None)
+    assert result.stats.cost_usd == Decimal(0)
+    assert result.stats.duration_ms >= 50
+
+
+def test_an_accepted_draft_survives_the_deadline(
+    mocker: MockerFixture, run: HuntRun, settings: Settings
+) -> None:
+    replay(mocker, run, DESIGN, hang=True)
+    short = settings.model_copy(update={"designer_deadline_seconds": 0.05})
+
+    result = design(run, short)
+
+    assert result.error_code is None
+    assert len(result.checkpoints) == 3
+
+
+def test_the_default_deadline_is_five_minutes() -> None:
+    assert Settings().designer_deadline_seconds == 300
+
+
+async def stopped_midway(run: HuntRun, fake: Replay, settings: Settings) -> agent.DesignResult:
+    """Run the agent, and stop it once it's waiting on the model."""
+    task = asyncio.create_task(run_agent(run, settings))
+    await fake.hanging.wait()
+    run.stop()
+    return await task
+
+
+def test_a_stopped_run_is_interrupted_with_what_it_had(
+    mocker: MockerFixture, run: HuntRun, settings: Settings
+) -> None:
+    fake = replay(mocker, run, SEARCH, hang=True)
+
+    result = asyncio.run(stopped_midway(run, fake, settings))
+
+    assert result.error_code == "interrupted"
+    assert result.area == AREA.draft_area()
+    assert result.stats.turns == 2
+
+
+def test_a_run_stopped_before_it_starts_is_interrupted(
+    mocker: MockerFixture, run: HuntRun, settings: Settings
+) -> None:
+    replay(mocker, run, SEARCH, hang=True)
+    run.stop()
+
+    assert design(run, settings).error_code == "interrupted"
+
+
+def test_an_accepted_draft_survives_a_stop(
+    mocker: MockerFixture, run: HuntRun, settings: Settings
+) -> None:
+    fake = replay(mocker, run, DESIGN, hang=True)
+
+    result = asyncio.run(stopped_midway(run, fake, settings))
+
+    assert result.error_code is None
+    assert len(result.checkpoints) == 3
+
+
+# A stand-in for Claude Code: it reports a version, records its pid, never answers, and exits
+# only when its input is closed.
+FAKE_CLAUDE_CODE = """#!{python}
+import os, pathlib, sys
+if sys.argv[1:] in (["-v"], ["--version"]):
+    print("9.9.9 (Claude Code)")
+    sys.exit(0)
+pathlib.Path(os.environ["FAKE_CLAUDE_CODE_PID_FILE"]).write_text(str(os.getpid()))
+for _ in sys.stdin:
+    pass
+"""
+
+
+@pytest.fixture
+def fake_claude_code(tmp_path: Path, mocker: MockerFixture) -> Path:
+    """The real SDK, driving the fake Claude Code; returns where its pid is written."""
+    binary = tmp_path / "claude"
+    binary.write_text(FAKE_CLAUDE_CODE.format(python=sys.executable))
+    binary.chmod(0o755)
+    pid_file = tmp_path / "claude.pid"
+
+    def run_query(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]:
+        env = {**options.env, "FAKE_CLAUDE_CODE_PID_FILE": str(pid_file)}
+        return query(prompt=prompt, options=dataclasses.replace(options, cli_path=binary, env=env))
+
+    mocker.patch("game_server.designer.agent._run_query", run_query)
+    return pid_file
+
+
+def ended(pid_file: Path) -> bool:
+    """Whether the process that wrote the file has exited and been reaped."""
+    try:
+        os.kill(int(pid_file.read_text()), 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+def test_the_deadline_ends_claude_codes_process(
+    run: HuntRun, settings: Settings, fake_claude_code: Path
+) -> None:
+    short = settings.model_copy(update={"designer_deadline_seconds": 1.0})
+
+    result = design(run, short)
+
+    assert result.error_code == "deadline"
+    assert ended(fake_claude_code)
+
+
+def test_stopping_ends_claude_codes_process(
+    run: HuntRun, settings: Settings, fake_claude_code: Path
+) -> None:
+    async def stop_once_started() -> agent.DesignResult:
+        task = asyncio.create_task(run_agent(run, settings))
+        while not fake_claude_code.exists():
+            await asyncio.sleep(0.02)
+        run.stop()
+        return await task
+
+    result = asyncio.run(stop_once_started())
+
+    assert result.error_code == "interrupted"
+    assert ended(fake_claude_code)
 
 
 @pytest.mark.parametrize("key", [None, ""])
@@ -761,7 +1054,7 @@ def test_design_hunt_runs_on_the_given_maps(
 ) -> None:
     fake = mocker.patch("game_server.designer.agent.run_agent", autospec=True)
 
-    asyncio.run(design_hunt(REQUEST, on_progress=lambda step, summary: None, settings=settings))
+    asyncio.run(design_hunt(REQUEST, on_progress=no_progress, settings=settings))
 
     [(run, used)] = [call.args for call in fake.await_args_list]
     assert (run.request, used) == (REQUEST, settings)
@@ -840,9 +1133,7 @@ def test_live_design_passes_the_rules() -> None:  # pragma: no cover - network
         }
     )
 
-    result = asyncio.run(
-        design_hunt(request, on_progress=lambda step, summary: None, settings=settings)
-    )
+    result = asyncio.run(design_hunt(request, on_progress=no_progress, settings=settings))
 
     print(f"designer live run: cost_usd {result.stats.cost_usd} turns {result.stats.turns}")
     assert result.error_code is None, result.error_code

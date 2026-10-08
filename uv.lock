@@ -418,6 +418,7 @@ source = { editable = "." }
 dependencies = [
     { name = "annotated-types" },
     { name = "anthropic" },
+    { name = "anyio" },
     { name = "claude-agent-sdk" },
     { name = "fastapi" },
     { name = "httpx2" },
@@ -443,6 +444,7 @@ dev = [
 requires-dist = [
     { name = "annotated-types", specifier = ">=0.8.0" },
     { name = "anthropic", specifier = ">=1.9.0" },
+    { name = "anyio", specifier = ">=4.15.1" },
     { name = "claude-agent-sdk", specifier = ">=0.2.165" },
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "httpx2", specifier = ">=2.13.1" },

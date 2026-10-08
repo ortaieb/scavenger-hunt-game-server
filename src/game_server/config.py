@@ -17,6 +17,7 @@ DEFAULT_REFEREE_DEADLINE_SECONDS = 8.0
 DEFAULT_REFEREE_TIMEOUT_SECONDS = 8.0
 DEFAULT_REFEREE_MAX_RETRIES = 2
 ORGANISER_KEY_MIN_LENGTH = 24
+DEFAULT_DESIGNER_MIN_SPACING_M = 150.0
 DesignerRunnerName = Literal["stub", "agent"]
 
 
@@ -99,6 +100,8 @@ class Settings(BaseSettings):
     designer_stub_delay_seconds: float = Field(default=1, ge=0)
     # The largest area a walking hunt covers, in km either way: bigger areas are clipped.
     designer_max_area_km: float = Field(default=3, gt=0)
+    # The least distance between two of a draft's checkpoints, in metres.
+    designer_min_spacing_m: float = Field(default=DEFAULT_DESIGNER_MIN_SPACING_M, gt=0)
     # OpenStreetMap: Nominatim finds the area, Overpass the places in it. Public instances by
     # default; their usage policies apply (see docs/api.md, Map data).
     osm_nominatim_url: str = "https://nominatim.openstreetmap.org"

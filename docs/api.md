@@ -1406,6 +1406,39 @@ just no area.
 | `GAME_SERVER_OSM_TIMEOUT_SECONDS` | `30` | Each request's timeout (> 0) |
 | `GAME_SERVER_DESIGNER_MAX_AREA_KM` | `3` | The largest area, in km either way (> 0) |
 
+### Draft rules
+
+What every draft must meet, checked by
+[`designer/rules.py`](../src/game_server/designer/rules.py): pure functions, with no I/O. The
+agent runs them on its own draft and fixes what they find before anyone sees it, and the
+organiser's edits and publishing are held to the same rules. Each broken rule is a problem in the
+draft's `problems`: a `code`, the checkpoint's 1-based `position` (or `null` for the whole
+draft), and a message written for both the agent and the organiser, e.g. "Checkpoints 2 and 3
+are 90 m apart; keep them at least 150 m apart". A message may quote the draft's own text, but
+never coordinates.
+
+| Code | Rule |
+|------|------|
+| `unknown_place` | The checkpoint's place isn't one of this run's candidate places. Coordinates always come from the candidate, never from the model, so such a checkpoint is left out of the distance rules |
+| `duplicate_place` | The same place twice |
+| `wrong_count` | Not the number of checkpoints asked for |
+| `outside_area` | The place is outside the area's box, with a 50 m margin |
+| `too_close` | Two checkpoints, anywhere on the route, less than `GAME_SERVER_DESIGNER_MIN_SPACING_M` (default 150) apart |
+| `route_too_long` | The closed loop is longer than `max-walk-km`. Each team walks a rotation of the loop minus one leg, so no team walks further than this |
+| `names_place` | The clue or the pose contains the place's name, or a distinctive word from it |
+| `empty`, `too_long` | The clue outside 1–300 characters (it must fit a phone screen), or the scene or pose outside the sessions file's limits |
+| `bad_proximity` | `proximity` outside 20–100 m |
+
+**Naming the place.** Compared ignoring case and accents, the clue and the pose may contain
+neither the place's full name nor any word of 5 or more letters from it, unless that word is
+generic: street, road, park, garden, church, house, memorial, statue, fountain, bridge, tower,
+gate, green, river, chapel, school, court, place, square, the. So "Hogarth's House" rules out
+"Hogarth" (and "Hogarth's") but not "house".
+
+**One source for the limits.** The scene and pose limits are read from the sessions file's
+models, so a draft that passes can always be published. A checkpoint's default `proximity` is
+30 m for a point and 50 m for a way or relation (a park, a large building).
+
 ### Drafts (`hunt_drafts`)
 
 Drafts are stored in a `hunt_drafts` table, not scoped to a session:

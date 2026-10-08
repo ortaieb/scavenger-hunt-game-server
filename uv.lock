@@ -251,6 +251,7 @@ name = "game-server"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "annotated-types" },
     { name = "anthropic" },
     { name = "fastapi" },
     { name = "httpx2" },
@@ -274,6 +275,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "annotated-types", specifier = ">=0.8.0" },
     { name = "anthropic", specifier = ">=1.9.0" },
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "httpx2", specifier = ">=2.13.1" },

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict
 
 from game_server.clock import Clock, get_clock, utc_iso
+from game_server.designer.rules import route_legs
 from game_server.designer_runners import DesignerRunner, get_designer_runner
 from game_server.drafts import (
     DesignerBusyError,
@@ -29,7 +30,6 @@ from game_server.drafts import (
     get_draft_store,
 )
 from game_server.errors import ApiError
-from game_server.geo import distance_m
 from game_server.organiser import require_organiser
 
 logger = logging.getLogger(__name__)
@@ -136,8 +136,7 @@ def route_of(checkpoints: Sequence[DraftCheckpoint]) -> RouteOut | None:
     if not checkpoints:
         return None
     ordered = sorted(checkpoints, key=lambda checkpoint: checkpoint.position)
-    places = [checkpoint.place.location for checkpoint in ordered]
-    legs = [round(distance_m(a, b)) for a, b in zip(places, [*places[1:], places[0]], strict=True)]
+    legs = [round(leg) for leg in route_legs([c.place.location for c in ordered])]
     return RouteOut(legs_m=legs, loop_m=sum(legs))
 
 

@@ -90,6 +90,7 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_ORGANISER_KEY` | unset | The [hunt designer's](docs/api.md#hunt-designer) key, at least 24 characters. Unset: nobody can use the designer. Never logged |
 | `GAME_SERVER_DESIGNER_RUNNER` | `agent` | What fills a draft: `agent` (not available yet: starting a design answers `503`) or `stub`, a fixed hunt for building the designer screen |
 | `GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS` | `1` | How long the `stub` runner takes (≥ 0) |
+| `GAME_SERVER_DESIGNER_MIN_SPACING_M` | `150` | The least distance between two of a draft's checkpoints, in metres; see the [draft rules](docs/api.md#draft-rules) |
 | `GAME_SERVER_DESIGNER_MAX_AREA_KM`, `GAME_SERVER_OSM_*` | | The designer's [map data](docs/api.md#map-data): the largest area, and the OpenStreetMap services and timeout |
 | `GAME_SERVER_DB_*` | | PostgreSQL connection and pool: see [Database](#database) |
 | `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](docs/sessions-file.md#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |

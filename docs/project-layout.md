@@ -41,6 +41,7 @@ src/game_server/
   designer/
     routes.py        # `/designer/drafts`: start a design, list and read drafts
     osm.py           # OpenStreetMap: find_area (Nominatim) and find_places (Overpass)
+    rules.py         # check_draft and check_checkpoint: the rules a draft must meet
   drafts.py          # the draft contract's models, and DraftStore (hunt_drafts)
   designer_runners.py  # what fills a draft: StubRunner, and the agent (not available yet)
   ruling.py          # `…/submissions/{submission}/ruling`: the moderator approves or rejects a photo

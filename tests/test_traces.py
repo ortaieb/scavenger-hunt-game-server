@@ -2,7 +2,7 @@
 
 import json
 import random
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -35,7 +35,7 @@ from game_server.referee import (
     prompt_sha256,
     system_prompt,
 )
-from game_server.sessions import get_session_repository, parse_sessions
+from game_server.sessions import SessionRepository, get_session_repository
 from game_server.submissions import NewSubmission, SubmissionStore
 
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
@@ -120,7 +120,9 @@ def session_json(session_id: str, moderator: str, suffix: str = "") -> dict[str,
 
 
 @pytest.fixture
-def client(tmp_path: Path, mocker: MockerFixture) -> Iterator[TestClient]:
+def client(
+    tmp_path: Path, mocker: MockerFixture, load_sessions: Callable[[str], SessionRepository]
+) -> Iterator[TestClient]:
     app = create_app()
     # The real referee, with only the SDK call faked.
     reply = ModelReply(
@@ -132,7 +134,7 @@ def client(tmp_path: Path, mocker: MockerFixture) -> Iterator[TestClient]:
     app.dependency_overrides[get_referee] = lambda: referee
     settings = Settings(image_base_path=tmp_path / "images")
     app.dependency_overrides[get_settings] = lambda: settings
-    sessions = parse_sessions(
+    sessions = load_sessions(
         json.dumps(
             [session_json(SESSION, MODERATOR), session_json(OTHER, OTHER_MODERATOR, "-OTHER")]
         )

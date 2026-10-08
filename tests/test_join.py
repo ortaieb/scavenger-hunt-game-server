@@ -1,6 +1,6 @@
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
@@ -42,12 +42,16 @@ def session(session_id: str, teams: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def repository(*, with_heron: bool = True) -> SessionRepository:
+def sessions_text(*, with_heron: bool = True) -> str:
     teams = [{"name": "Red Foxes", "join-code": FOX, "order": [1, 2, 3]}]
     if with_heron:
         teams.append({"name": "Blue Herons", "join-code": HERON, "order": [2, 3, 1]})
     other = [{"name": "Sentinels", "join-code": SENTINEL_CODE, "order": [3, 1, 2]}]
-    return parse_sessions(json.dumps([session(SESSION, teams), session(OTHER_SESSION, other)]))
+    return json.dumps([session(SESSION, teams), session(OTHER_SESSION, other)])
+
+
+def repository(*, with_heron: bool = True) -> SessionRepository:
+    return parse_sessions(sessions_text(with_heron=with_heron))
 
 
 @pytest.fixture
@@ -56,10 +60,12 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def client(now: list[datetime]) -> Iterator[TestClient]:
+def client(
+    now: list[datetime], load_sessions: Callable[[str], SessionRepository]
+) -> Iterator[TestClient]:
     app = create_app()
     settings = Settings()
-    sessions = repository()
+    sessions = load_sessions(sessions_text())
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: sessions
     app.dependency_overrides[get_clock] = lambda: lambda: now[0]

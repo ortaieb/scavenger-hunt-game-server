@@ -1,6 +1,6 @@
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
@@ -14,7 +14,7 @@ from httpx2 import Response
 from game_server.app import create_app
 from game_server.clock import get_clock
 from game_server.session_runs import SessionRun, session_phase
-from game_server.sessions import get_session_repository, parse_sessions
+from game_server.sessions import SessionRepository, get_session_repository
 from game_server.submissions import SubmissionStore
 
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
@@ -52,9 +52,11 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def client(now: list[datetime]) -> Iterator[TestClient]:
+def client(
+    now: list[datetime], load_sessions: Callable[[str], SessionRepository]
+) -> Iterator[TestClient]:
     app = create_app()
-    repository = parse_sessions(json.dumps([session(SESSION, CODE), session(OTHER, OTHER_CODE)]))
+    repository = load_sessions(json.dumps([session(SESSION, CODE), session(OTHER, OTHER_CODE)]))
     app.dependency_overrides[get_session_repository] = lambda: repository
     app.dependency_overrides[get_clock] = lambda: lambda: now[0]
     with TestClient(app) as test_client:

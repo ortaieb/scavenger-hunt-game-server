@@ -2,7 +2,7 @@ import json
 import logging
 import re
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from itertools import count
@@ -36,7 +36,7 @@ FOX = "FOX-7Q2K"
 POSE = "Arms raised, facing the camera, with the landmark behind you."
 
 
-def repository() -> SessionRepository:
+def sessions_text() -> str:
     def checkpoint(sequence: int, **extra: Any) -> dict[str, Any]:
         return {
             "sequence": sequence,
@@ -47,34 +47,36 @@ def repository() -> SessionRepository:
             **extra,
         }
 
-    return parse_sessions(
-        json.dumps(
-            [
-                {
-                    "id": SESSION,
-                    "name": "Hunt",
-                    "location": "Here",
-                    "start-time": START.isoformat(),
-                    "end-time": END.isoformat(),
-                    "checkpoints": [
-                        checkpoint(1, challenge={"scene": "A fountain", "pose": POSE}),
-                        checkpoint(2),  # no challenge: pose null
-                        checkpoint(
-                            3,
-                            window={
-                                "opens-at": WINDOW_OPENS.isoformat(),
-                                "closes-at": END.isoformat(),
-                            },
-                        ),
-                    ],
-                    "teams": [
-                        {"name": "Red Foxes", "join-code": FOX, "order": [1, 2, 3]},
-                        {"name": "Blue Herons", "join-code": "HERON-4MXP", "order": [3, 1, 2]},
-                    ],
-                }
-            ]
-        )
+    return json.dumps(
+        [
+            {
+                "id": SESSION,
+                "name": "Hunt",
+                "location": "Here",
+                "start-time": START.isoformat(),
+                "end-time": END.isoformat(),
+                "checkpoints": [
+                    checkpoint(1, challenge={"scene": "A fountain", "pose": POSE}),
+                    checkpoint(2),  # no challenge: pose null
+                    checkpoint(
+                        3,
+                        window={
+                            "opens-at": WINDOW_OPENS.isoformat(),
+                            "closes-at": END.isoformat(),
+                        },
+                    ),
+                ],
+                "teams": [
+                    {"name": "Red Foxes", "join-code": FOX, "order": [1, 2, 3]},
+                    {"name": "Blue Herons", "join-code": "HERON-4MXP", "order": [3, 1, 2]},
+                ],
+            }
+        ]
     )
+
+
+def repository() -> SessionRepository:
+    return parse_sessions(sessions_text())
 
 
 @pytest.fixture
@@ -83,11 +85,13 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def client(now: list[datetime], store: SubmissionStore) -> Iterator[TestClient]:
+def client(
+    now: list[datetime], store: SubmissionStore, load_sessions: Callable[[str], SessionRepository]
+) -> Iterator[TestClient]:
     store.start_run(UUID(SESSION), START)
     app = create_app()
     settings = Settings(arrival_code_ttl_seconds=TTL)
-    sessions = repository()
+    sessions = load_sessions(sessions_text())
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: sessions
     app.dependency_overrides[get_clock] = lambda: lambda: now[0]

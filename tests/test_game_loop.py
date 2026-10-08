@@ -1,7 +1,7 @@
 """Day 4's finish line: a whole hunt played through the API (with a fake referee)."""
 
 import json
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from pathlib import Path
@@ -21,7 +21,11 @@ from game_server.referee import (
     VisualCheckJudgement,
     get_referee,
 )
-from game_server.sessions import VisualChallenge, get_session_repository, parse_sessions
+from game_server.sessions import (
+    SessionRepository,
+    VisualChallenge,
+    get_session_repository,
+)
 
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
@@ -94,10 +98,12 @@ def clock() -> list[datetime]:
 
 
 @pytest.fixture
-def client(tmp_path: Path, clock: list[datetime]) -> Iterator[TestClient]:
+def client(
+    tmp_path: Path, clock: list[datetime], load_sessions: Callable[[str], SessionRepository]
+) -> Iterator[TestClient]:
     app = create_app()
     settings = Settings(image_base_path=tmp_path / "images")
-    sessions = parse_sessions(sessions_file())
+    sessions = load_sessions(sessions_file())
     referee = PassingReferee()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: sessions

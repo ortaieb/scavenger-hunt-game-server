@@ -1,5 +1,5 @@
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -85,8 +85,12 @@ def session_json(session_id: str) -> dict[str, Any]:
     }
 
 
+def sessions_text() -> str:
+    return json.dumps([session_json(SESSION), session_json(OTHER_SESSION)])
+
+
 def repository() -> SessionRepository:
-    return parse_sessions(json.dumps([session_json(SESSION), session_json(OTHER_SESSION)]))
+    return parse_sessions(sessions_text())
 
 
 def game_session() -> GameSession:
@@ -217,11 +221,13 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def client(now: list[datetime], store: SubmissionStore) -> Iterator[TestClient]:
+def client(
+    now: list[datetime], store: SubmissionStore, load_sessions: Callable[[str], SessionRepository]
+) -> Iterator[TestClient]:
     store.start_run(UUID(SESSION), START)
     app = create_app()
     settings = Settings()
-    sessions = repository()
+    sessions = load_sessions(sessions_text())
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: sessions
     app.dependency_overrides[get_clock] = lambda: lambda: now[0]

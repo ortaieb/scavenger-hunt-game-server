@@ -27,8 +27,14 @@ from game_server.database import Database
 from game_server.designer_runners import StubRunner, get_designer_runner
 from game_server.drafts import DraftStore
 from game_server.models import VerdictStatus
+from game_server.published_sessions import PublishedSessionRows
 from game_server.referee import ClaudeReferee, ModelReply, get_referee, system_prompt
-from game_server.sessions import get_session_repository, parse_sessions
+from game_server.sessions import (
+    GameSession,
+    SessionRepository,
+    get_session_repository,
+    parse_sessions,
+)
 from game_server.submissions import NewSubmission, SubmissionStore
 
 SENTINEL = "SENTINEL-SCENE-4b1d"
@@ -98,8 +104,24 @@ def designer(database: Database) -> Iterator[StubRunner]:
     runner.stop()
 
 
+def published_sentinels() -> list[GameSession]:
+    """The sentinel sessions as published: no reference photos, which have no files there."""
+    sessions = json.loads(SESSIONS_JSON)
+    for session in sessions:
+        for checkpoint in session["checkpoints"]:
+            checkpoint.pop("reference-photos", None)
+    return [GameSession.model_validate(session) for session in sessions]
+
+
 @pytest.fixture
-def client(tmp_path: Path, mocker: MockerFixture, designer: StubRunner) -> Iterator[TestClient]:
+def client(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    designer: StubRunner,
+    session_source: str,
+    database: Database,
+) -> Iterator[TestClient]:
+    """The app, with the sentinel session in the sessions file or published to the database."""
     app = create_app()
     app.dependency_overrides[get_designer_runner] = lambda: designer
     # The real referee, with only the SDK call faked: its traces hold the scene and reasons.
@@ -114,8 +136,13 @@ def client(tmp_path: Path, mocker: MockerFixture, designer: StubRunner) -> Itera
     app.dependency_overrides[get_settings] = lambda: settings
     (tmp_path / "reference").mkdir()
     (tmp_path / "reference" / f"{PHOTO_NAME}.jpg").write_bytes(jpeg(scene(4, (64, 48))))
-    repository = parse_sessions(SESSIONS_JSON, reference_dir=tmp_path)
-    assert repository.reference_photos(UUID(SESSION), 1)  # really loaded
+    if session_source == "file":
+        repository = parse_sessions(SESSIONS_JSON, reference_dir=tmp_path)
+        assert repository.reference_photos(UUID(SESSION), 1)  # really loaded
+    else:
+        repository = SessionRepository().beside(PublishedSessionRows(database))
+        for session in published_sentinels():
+            repository.publish_session(session)
     app.dependency_overrides[get_session_repository] = lambda: repository
     app.dependency_overrides[get_clock] = lambda: lambda: NOW
     with TestClient(app) as test_client:
@@ -482,7 +509,9 @@ def test_no_route_ever_returns_the_scene(
         assert REASON in trace["judgement"]["scene_matches"]["reason"]
 
 
-def test_the_calls_cover_success_and_error_paths(client: TestClient, designer: StubRunner) -> None:
+def test_the_calls_cover_success_and_error_paths(
+    client: TestClient, designer: StubRunner, session_source: str
+) -> None:
     statuses = {
         route: sorted({r.status_code for r in rs})
         for route, rs in every_route_response(client, designer).items()
@@ -501,7 +530,9 @@ def test_the_calls_cover_success_and_error_paths(client: TestClient, designer: S
     assert statuses[RULING] == [200, 201, 401, 404, 422]
     assert statuses[REVIEW] == [200, 401, 404]
     assert statuses[SUBMISSION_PHOTO] == [200, 401, 404, 422]
-    assert statuses[REFERENCE_PHOTO] == [200, 401, 404, 422]
+    # A published session has no reference photos.
+    found = [200] if session_source == "file" else []
+    assert statuses[REFERENCE_PHOTO] == [*found, 401, 404, 422]
     assert statuses[("POST", "/sessions/{session}/participants/{participant}/arrive")] == [
         200,
         201,
@@ -672,7 +703,7 @@ def test_the_review_reveals_no_coordinates_codes_or_participants(client: TestCli
         assert REASON not in response.text
 
 
-def test_only_the_moderator_gets_the_photos(client: TestClient) -> None:
+def test_only_the_moderator_gets_the_photos(client: TestClient, session_source: str) -> None:
     client.post(f"/sessions/{SESSION}/start", headers=MODERATOR)
     testers = client.post("/join", json={"code": JOIN_CODE, "consent": True}).json()
     client.post(
@@ -681,10 +712,12 @@ def test_only_the_moderator_gets_the_photos(client: TestClient) -> None:
     submitted = submit(client, metadata(participant=testers["participant"]))
     assert submitted.status_code == 202
     [photo] = client.get(f"/sessions/{SESSION}/review", headers=MODERATOR).json()["to-review"]
-    urls = [
-        f"/sessions/{SESSION}/submissions/{photo['submission']}/photo",
-        f"/sessions/{SESSION}/checkpoints/1/reference-photos/0",
-    ]
+    reference = f"/sessions/{SESSION}/checkpoints/1/reference-photos/0"
+    urls = [f"/sessions/{SESSION}/submissions/{photo['submission']}/photo"]
+    if session_source == "file":
+        urls.append(reference)
+    else:  # a published session has no reference photos
+        assert client.get(reference, headers=MODERATOR).status_code == 404
 
     for url in urls:
         assert client.get(url, headers=MODERATOR).headers["content-type"] == "image/jpeg"

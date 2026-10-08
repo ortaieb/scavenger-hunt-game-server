@@ -23,9 +23,12 @@ from game_server import (
     session_control,
     traces,
 )
+from game_server.clock import get_clock
 from game_server.config import get_settings
 from game_server.database import close_databases, database_config, open_database
 from game_server.designer import routes as designer_routes
+from game_server.designer_runners import AgentRunner, interrupt_left_running
+from game_server.drafts import DraftStore
 from game_server.logging_config import configure_logging
 from game_server.sessions import load_session_repository
 
@@ -33,16 +36,24 @@ GREETING = "Hello, World!"
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Open the database's connection pool before serving, and close it on shutdown.
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Open the database's connection pool and the designer's agent runner before serving;
+    on shutdown, stop any design run, then close the pool.
 
     The pool connects in the background, so an unreachable database doesn't stop startup:
-    `/health` reports it unavailable until it answers.
+    `/health` reports it unavailable until it answers. Drafts a previous process left
+    `running` are failed with `interrupted` first.
     """
-    open_database(database_config(get_settings()))
+    settings = get_settings()
+    store = DraftStore(open_database(database_config(settings)))
+    await interrupt_left_running(store, get_clock())
+    runner = AgentRunner(store, get_clock(), settings)
+    runner.open()
+    app.state.agent_runner = runner
     try:
         yield
     finally:
+        await runner.close()
         close_databases()
 
 

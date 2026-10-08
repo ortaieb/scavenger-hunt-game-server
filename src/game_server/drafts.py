@@ -283,6 +283,17 @@ class DraftStore:
             )
             return updated.rowcount == 1
 
+    def interrupt_running(self, now: datetime) -> tuple[UUID, ...]:
+        """Fail every `running` draft with `interrupted`: their runs died with the process
+        that started them. The drafts' ids."""
+        with self._database.transaction() as conn:
+            rows = conn.execute(
+                "UPDATE hunt_drafts SET status = 'failed', error_code = 'interrupted',"
+                " finished_at = %s WHERE status = 'running' RETURNING id",
+                (now,),
+            ).fetchall()
+        return tuple(row[0] for row in rows)
+
 
 def get_draft_store(database: Annotated[Database, Depends(get_database)]) -> DraftStore:
     """Dependency providing the draft store on the configured database's pool."""

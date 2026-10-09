@@ -31,11 +31,14 @@ from pytest_mock import MockerFixture
 from game_server.config import Settings
 from game_server.database import Database
 from game_server.designer.agent import AgentUnavailableError
+from game_server.designer.review import candidate
+from game_server.designer.rules import check_draft
 from game_server.designer_runners import (
     AgentRunner,
     StubRunner,
     get_designer_runner,
     interrupt_left_running,
+    stub_area,
     stub_checkpoints,
 )
 from game_server.drafts import Draft, DraftRequest, DraftResult, DraftStore
@@ -433,3 +436,12 @@ READY = DraftResult(
     cost_usd=Decimal(0),
     duration_ms=0,
 )
+
+
+def test_the_stub_hunt_passes_the_draft_rules() -> None:
+    """So a stub draft can be reviewed and published end to end."""
+    request = DraftRequest.model_validate({"area": "Chiswick", "theme": "Brewing"})
+    checkpoints = stub_checkpoints()
+    candidates = [candidate(c.place) for c in checkpoints]
+
+    assert check_draft(checkpoints, candidates, request, stub_area(request)) == []

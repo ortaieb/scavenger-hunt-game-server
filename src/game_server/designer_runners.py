@@ -247,12 +247,33 @@ async def interrupt_left_running(store: DraftStore, clock: Clock) -> None:
         logger.info("Draft %s finished status failed error interrupted", draft_id)
 
 
-# The stub's fixed hunt: fictional places around a fixed point.
+# The stub's fixed hunt: fictional places around a fixed point, and text the rules accept.
 STUB_CENTRE = Location(lat=51.4900, long=-0.2600)
 STUB_PLACES = (
-    ("node/9000000001", "Stub Lantern Gate", "historic=memorial", 0.0012, -0.0020),
-    ("node/9000000002", "Stub Riverside Bench", "leisure=park", -0.0025, 0.0015),
-    ("node/9000000003", "Stub Brewers' Arch", "historic=building", 0.0018, 0.0030),
+    (
+        "node/9000000001",
+        "Stub Lantern Gate",
+        "historic=memorial",
+        0.0012,
+        -0.0020,
+        "Where old lamps once lit the way in.",
+    ),
+    (
+        "node/9000000002",
+        "Stub Riverside Bench",
+        "leisure=park",
+        -0.0025,
+        0.0015,
+        "A seat with a view of the water.",
+    ),
+    (
+        "node/9000000003",
+        "Stub Brewers' Arch",
+        "historic=building",
+        0.0018,
+        0.0030,
+        "Pass under the curve where barrels once rolled.",
+    ),
 )
 STUB_PROGRESS = (
     ("resolve_area", "Stub area around a fixed point"),
@@ -263,7 +284,7 @@ STUB_PROGRESS = (
 
 
 def stub_checkpoints() -> tuple[DraftCheckpoint, ...]:
-    """The stub's three checkpoints. Their text is within the sessions file's limits."""
+    """The stub's three checkpoints. Their text passes the draft rules, so it can be published."""
     return tuple(
         DraftCheckpoint(
             position=position,
@@ -273,7 +294,7 @@ def stub_checkpoints() -> tuple[DraftCheckpoint, ...]:
                 kind=kind,
                 location=Location(lat=STUB_CENTRE.lat + d_lat, long=STUB_CENTRE.long + d_long),
             ),
-            clue=f"A stub clue: find the {name.removeprefix('Stub ').lower()}.",
+            clue=clue,
             challenge=DraftChallenge(
                 scene=f"The {name.removeprefix('Stub ').lower()}, seen from the path.",
                 pose="Point at it with both hands",
@@ -281,7 +302,7 @@ def stub_checkpoints() -> tuple[DraftCheckpoint, ...]:
             proximity=40,
             rationale="A fixed stub checkpoint, for building the designer screen.",
         )
-        for position, (osm, name, kind, d_lat, d_long) in enumerate(STUB_PLACES, start=1)
+        for position, (osm, name, kind, d_lat, d_long, clue) in enumerate(STUB_PLACES, start=1)
     )
 
 

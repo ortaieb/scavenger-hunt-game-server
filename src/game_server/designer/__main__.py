@@ -1,13 +1,13 @@
 """Design a hunt from the command line: `uv run python -m game_server.designer --area ...`.
 
-Runs the hunt-designer agent as the API will, with the same prompt, tools, sandbox and limits,
-so its prompt can be tuned without the server or the web app. It needs only
-`GAME_SERVER_ANTHROPIC_API_KEY` and network access: no database and no running server. Each run
-calls the real API and costs money.
+Runs the hunt-designer agent as the API does, with the same prompt, tools, sandbox and limits
+(the deadline included), so its prompt can be tuned without the server or the web app. It needs
+only `GAME_SERVER_ANTHROPIC_API_KEY` and network access: no database and no running server. Each
+run calls the real API and costs money.
 
-Prints the draft, or the error, and the run's stats; `--json` prints them in the API's draft
-shape. Progress goes to stderr. `--self-check` only starts the bundled Claude Code binary and
-prints its version.
+Prints the draft, or the error with the last draft submitted and its problems, and the run's
+stats; `--json` prints them in the API's draft shape. Progress goes to stderr. `--self-check`
+only starts the bundled Claude Code binary and prints its version.
 
 Exit status: 0 when a draft is accepted, 1 when the run ends without one, 2 for a setup
 problem (no key, an invalid request, or a failed self-check).
@@ -29,7 +29,7 @@ from game_server.designer.agent import (
     cli_version,
     design_hunt,
 )
-from game_server.drafts import DraftArea, DraftCheckpoint, DraftRequest, RunErrorCode
+from game_server.drafts import DraftArea, DraftCheckpoint, DraftRequest, Problem, RunErrorCode
 from game_server.logging_config import configure_logging
 
 
@@ -64,11 +64,13 @@ class RunOut(_KebabModel):
 
 
 class DesignOut(_KebabModel):
-    """The draft as `--json` prints it: the area, checkpoints and route in the API's shape."""
+    """The draft as `--json` prints it: the area, checkpoints, route and problems in the API's
+    shape."""
 
     area: DraftArea | None
     checkpoints: list[DraftCheckpoint]
     route: RouteOut | None
+    problems: list[Problem]
     run: RunOut
 
 
@@ -80,6 +82,7 @@ def design_out(result: DesignResult) -> DesignOut:
         area=result.area,
         checkpoints=list(result.checkpoints),
         route=RouteOut(legs_m=list(route.legs_m), loop_m=route.loop_m) if route else None,
+        problems=list(result.problems),
         run=RunOut(
             model=stats.model,
             turns=stats.turns,
@@ -111,6 +114,8 @@ def render(result: DesignResult) -> str:
     if result.route is not None:
         legs = ", ".join(f"{leg} m" for leg in result.route.legs_m)
         lines += [f"Route: {legs}; {result.route.loop_m / 1000:.1f} km round the loop", ""]
+    for problem in result.problems:
+        lines.append(f"Problem: {problem.message} ({problem.code})")
     if result.error_code is not None:
         lines.append(f"Error: {result.error_code}")
     stats = result.stats
@@ -169,7 +174,7 @@ def self_check() -> int:
     return 0
 
 
-def _progress(step: str, summary: str) -> None:
+async def _progress(step: str, summary: str) -> None:
     print(f"[{step}] {summary}", file=sys.stderr)
 
 

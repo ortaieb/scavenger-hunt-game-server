@@ -88,18 +88,20 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS` | `10` | Minimum seconds between [proximity hints](docs/api.md#post-checkpointproximity) per (session, participant) (> 0) |
 | `GAME_SERVER_PHASH_MAX_DISTANCE` | `6` | Hamming distance (0–32 of 64 bits) at or below which a photo is a [duplicate](docs/api.md#submission-checks) of an accepted one |
 | `GAME_SERVER_ORGANISER_KEY` | unset | The [hunt designer's](docs/api.md#hunt-designer) key, at least 24 characters. Unset: nobody can use the designer. Never logged |
-| `GAME_SERVER_DESIGNER_RUNNER` | `agent` | What fills a draft: `agent` (not available yet: starting a design answers `503`) or `stub`, a fixed hunt for building the designer screen |
+| `GAME_SERVER_DESIGNER_RUNNER` | `agent` | What fills a draft: `agent`, the [hunt designer](#hunt-designer) (needs `GAME_SERVER_ANTHROPIC_API_KEY`: without it, starting a design answers `503`), or `stub`, a fixed hunt for local development and the web app's tests |
 | `GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS` | `1` | How long the `stub` runner takes (≥ 0) |
 | `GAME_SERVER_DESIGNER_MIN_SPACING_M` | `150` | The least distance between two of a draft's checkpoints, in metres; see the [draft rules](docs/api.md#draft-rules) |
 | `GAME_SERVER_DESIGNER_MODEL` | `claude-sonnet-5-5` | Model the [hunt-designer agent](docs/api.md#the-agent) runs on |
 | `GAME_SERVER_DESIGNER_MAX_TURNS` | `30` | Most turns one design run may take (> 0); past it the run fails with `max_turns` |
 | `GAME_SERVER_DESIGNER_MAX_BUDGET_USD` | `1.00` | Most one design run may spend, in US dollars (> 0); past it the run fails with `max_budget` |
+| `GAME_SERVER_DESIGNER_DEADLINE_SECONDS` | `300` | Longest one design run may take, in seconds (> 0); past it the run is cut off and fails with `deadline` |
 | `GAME_SERVER_DESIGNER_MAX_AREA_KM`, `GAME_SERVER_OSM_*` | | The designer's [map data](docs/api.md#map-data): the largest area, and the OpenStreetMap services and timeout |
 | `GAME_SERVER_DB_*` | | PostgreSQL connection and pool: see [Database](#database) |
 | `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](docs/sessions-file.md#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |
 
-**On Railway**, turn the referee on by adding `GAME_SERVER_ANTHROPIC_API_KEY` as a sealed
-service variable; see [Deploying on Railway](#deploying-on-railway).
+**On Railway**, turn the referee and the hunt designer on by adding
+`GAME_SERVER_ANTHROPIC_API_KEY` as a sealed service variable; see
+[Deploying on Railway](#deploying-on-railway).
 
 To use a `.env` file:
 
@@ -202,6 +204,32 @@ the run still in progress for the same PR.
   it is what catches a native library missing from the distroless runtime.
 
 CI does not auto-fix. Run `make check` locally before pushing to catch the same issues.
+
+## Hunt designer
+
+The [hunt designer](docs/api.md#hunt-designer) turns an area and a theme into a draft hunt for
+the organiser to review: an agent on the Claude Agent SDK picks real places from OpenStreetMap,
+orders them into a walkable loop, and writes their clues and challenges. The web app's designer
+screen drives it through the API:
+
+```bash
+curl -X POST http://localhost:8000/designer/drafts \
+  -H "Authorization: Bearer $GAME_SERVER_ORGANISER_KEY" -H 'Content-Type: application/json' \
+  -d '{"area": "Chiswick, London", "theme": "Painters, brewers and the river"}'
+# 202 {"id": "…", "status": "running"}: follow GET /designer/drafts/{id} until it's ready or failed
+```
+
+It needs `GAME_SERVER_ORGANISER_KEY` and `GAME_SERVER_ANTHROPIC_API_KEY`. A run takes minutes
+and costs up to `GAME_SERVER_DESIGNER_MAX_BUDGET_USD` (default $1). It's bounded by its turns,
+its budget and `GAME_SERVER_DESIGNER_DEADLINE_SECONDS` (default 5 minutes), and one runs at a
+time. Players' requests are served as usual while it runs. A draft whose run is cut short by a
+restart or a shutdown fails with `interrupted`; the
+[statuses and error codes](docs/api.md#statuses-and-errors) say what each outcome means for the
+organiser. `GAME_SERVER_DESIGNER_RUNNER=stub` swaps the agent for a fixed hunt, with no key and
+no API calls, for local development and the web app's tests.
+
+At startup, with a key set, the server checks that the Claude Code binary bundled with the Agent
+SDK starts, and logs `Hunt designer self-check: <version>`, or why it failed.
 
 ### Designing a hunt from the command line
 
@@ -323,9 +351,21 @@ Set these up once in the dashboard (they can't be declared in `railway.toml`):
    - `GAME_SERVER_SESSIONS_FILE` pointing at a sessions file on the volume, e.g.
      `/app/data/hunt/sessions.json`. Upload it with `railway volume` or the dashboard.
    - Optionally `GAME_SERVER_ANTHROPIC_API_KEY` (sealed) to turn on the
-     [referee](docs/api.md#referee-visual-challenge).
+     [referee](docs/api.md#referee-visual-challenge) and the [hunt designer](#hunt-designer).
    - Optionally `GAME_SERVER_ORGANISER_KEY` (sealed) to open the
      [hunt designer](docs/api.md#hunt-designer) to the organiser.
+   - Optionally the hunt designer's model, limits and deadline, if the defaults don't suit:
+     `GAME_SERVER_DESIGNER_MODEL`, `GAME_SERVER_DESIGNER_MAX_TURNS`,
+     `GAME_SERVER_DESIGNER_MAX_BUDGET_USD` and `GAME_SERVER_DESIGNER_DEADLINE_SECONDS`.
+
+**The hunt designer on Railway.** Each design run starts a Claude Code process next to the
+server. Anthropic suggests allowing about 1 GiB of memory per agent run, so keep the service's
+memory limit well above what the server uses on its own (Claude Code takes about 230 MiB once
+started, and grows with the run). The image has no shell to run `--self-check` in: the deploy
+logs show the startup's `Hunt designer self-check` line instead. A deploy or restart during a
+design run fails its draft with `interrupted`: stopping Claude Code and marking the draft takes
+the server about 5 s after `SIGTERM`, and if it's killed sooner, the new deploy marks the draft
+when it starts.
 
 **Reference photos** go on the volume next to the sessions file, which they're resolved
 against. The referee sends them to the model provider (Anthropic) with each photo judged at

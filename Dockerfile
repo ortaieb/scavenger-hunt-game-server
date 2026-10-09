@@ -42,6 +42,9 @@ RUN mkdir -p /app/data/images
 
 # System libraries that binary wheels link against but distroless/cc doesn't ship.
 # numpy's wheel needs zlib. Check with ldd over the venv's *.so when adding native deps.
+# The Claude Code binary bundled with claude-agent-sdk (the hunt designer's agent) needs only
+# glibc (libc, libm, librt, libdl, libpthread), which distroless/cc has: nothing to copy. Check
+# it with `python -m game_server.designer --self-check` in the built image.
 RUN mkdir -p /runtime-libs && cp -L "/lib/$(uname -m)-linux-gnu/libz.so.1" /runtime-libs/
 
 # ---------------------------------------------------------------------------

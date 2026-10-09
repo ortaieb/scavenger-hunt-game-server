@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     # The hunt-designer agent's limits and model: a run stops at whichever limit comes first.
     designer_max_turns: int = Field(default=30, gt=0)
     designer_max_budget_usd: float = Field(default=1.0, gt=0)
+    # The SDK has no session timeout of its own: past this, the run is cut off.
+    designer_deadline_seconds: float = Field(default=300, gt=0)
     designer_model: str = "claude-sonnet-5-5"
     # OpenStreetMap: Nominatim finds the area, Overpass the places in it. Public instances by
     # default; their usage policies apply (see docs/api.md, Map data).

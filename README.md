@@ -157,7 +157,9 @@ psql "$DATABASE_URL" -f src/game_server/schema.sql   # or straight from psql
 ```
 
 Without `--yes` the command refuses to run. Run it once against a new database, and again
-whenever `schema.sql` changes (which deletes the data).
+whenever `schema.sql` changes. It deletes the data, **published hunts included**
+([published sessions](docs/sessions-file.md#published-sessions) live in the database), so never
+run it during a hunt.
 
 ## Development
 

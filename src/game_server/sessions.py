@@ -1,10 +1,16 @@
-"""Game sessions and checkpoints, loaded read-only from a moderator-authored JSON file.
+"""Game sessions and checkpoints: from a moderator-authored JSON file, and published ones.
+
+Sessions come from the sessions file, read once at startup, and from the database, where the
+hunt designer publishes them (`publish_session`). Every lookup serves both, the same way.
 
 Secrecy: a checkpoint's `location` is the answer to its clue. Nothing here may be returned
 by an endpoint in a way that reveals checkpoint coordinates or distances to them.
 """
 
+import copy
+import threading
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path, PurePath
@@ -24,8 +30,10 @@ from pydantic import (
 )
 
 from game_server.config import DEFAULT_MAX_IMAGE_BYTES, Settings, get_settings
+from game_server.database import Database, get_database
 from game_server.imaging import UndecodableImageError, open_upright
 from game_server.models import Location
+from game_server.published_sessions import AlreadyPublishedError, CodeKind, PublishedSessionRows
 from game_server.session_runs import SessionRun
 
 
@@ -288,6 +296,43 @@ def _check_reference_photo(
     return path, None
 
 
+_Claim = tuple[str, CodeKind, str]  # normalised code, its kind, its path
+
+
+def _code_claims(session: GameSession) -> list[_Claim]:
+    """Every code the session uses, normalised, with its kind and path."""
+    claims: list[_Claim] = []
+    if session.moderator_code is not None:
+        claims.append((normalise_join_code(session.moderator_code), "moderator", "moderator-code"))
+    for index, team in enumerate(session.teams):
+        claims.append((normalise_join_code(team.join_code), "join", f"teams[{index}].join-code"))
+    return claims
+
+
+def _repeated_codes(claims: Sequence[_Claim]) -> list[str]:
+    """A code the session uses twice, at the later use, saying what it repeats."""
+    first: dict[str, CodeKind] = {}
+    problems = []
+    for code, kind, path in claims:
+        earlier = first.get(code)
+        if earlier is None:
+            first[code] = kind
+        elif earlier == kind:
+            problems.append(f"{path}: duplicate {kind} code")
+        else:
+            problems.append(f"{path}: same as a {earlier} code")
+    return problems
+
+
+def _no_reference_photos(session: GameSession) -> list[str]:
+    """A published session has no reference photos: there are no files to resolve."""
+    return [
+        f"checkpoints[{index}].reference-photos: a published session has no reference photos"
+        for index, checkpoint in enumerate(session.checkpoints)
+        if checkpoint.reference_photos
+    ]
+
+
 def _require_unique(values: Iterable[object], what: str) -> None:
     seen: set[object] = set()
     for value in values:
@@ -300,6 +345,38 @@ class SessionsFileError(ValueError):
     """The sessions file could not be read or is invalid."""
 
 
+class SessionPublishError(ValueError):
+    """A session can't be published: one `path: problem` line per problem, no values."""
+
+    def __init__(self, problems: Sequence[str]) -> None:
+        self.problems = list(problems)
+        lines = [f"{len(problems)} validation error(s)", *(f"  {p}" for p in problems)]
+        super().__init__("\n".join(lines))
+
+
+@dataclass(frozen=True)
+class _Indexed:
+    """A published session, with the lookups the repository serves."""
+
+    session: GameSession
+    checkpoints: dict[int, Checkpoint]
+    teams_by_name: dict[str, Team]
+    # Credentials: kept out of the repr.
+    join_codes: dict[str, Team] = field(repr=False)
+    moderator_code: str | None = field(repr=False)
+
+    @classmethod
+    def of(cls, session: GameSession) -> "_Indexed":
+        moderator = session.moderator_code
+        return cls(
+            session=session,
+            checkpoints={checkpoint.sequence: checkpoint for checkpoint in session.checkpoints},
+            teams_by_name={team.name.casefold(): team for team in session.teams},
+            join_codes={normalise_join_code(team.join_code): team for team in session.teams},
+            moderator_code=normalise_join_code(moderator) if moderator is not None else None,
+        )
+
+
 class SessionRepository:
     """Read-only lookup of game sessions and their checkpoints."""
 
@@ -309,6 +386,7 @@ class SessionRepository:
         *,
         reference_dir: Path | None = None,
         max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+        published: PublishedSessionRows | None = None,
     ) -> None:
         sessions = list(sessions)
         _require_unique((session.id for session in sessions), "session id")
@@ -323,33 +401,150 @@ class SessionRepository:
             for session in sessions
         }
         self._reference_photos = _resolve_reference_photos(sessions, reference_dir, max_image_bytes)
+        self._rows = published
+        self._published: dict[UUID, _Indexed] = {}
+        self._published_codes: dict[str, UUID] = {}
+        self._lock = threading.Lock()
 
     def __len__(self) -> int:
+        """The number of sessions in the file (published ones are counted where they live)."""
         return len(self._sessions)
+
+    def __repr__(self) -> str:
+        return f"SessionRepository({len(self._sessions)} from the file)"
+
+    def beside(self, published: PublishedSessionRows) -> "SessionRepository":
+        """These file sessions, and the published sessions in the database beside them."""
+        both = copy.copy(self)
+        both._rows = published
+        both._published, both._published_codes = {}, {}
+        both._lock = threading.Lock()
+        return both
 
     def get_session(self, session_id: UUID) -> GameSession | None:
         """Return the session with this id, if any."""
-        return self._sessions.get(session_id)
+        found = self._sessions.get(session_id)
+        if found is not None:
+            return found
+        published = self._published_session(session_id)
+        return published.session if published else None
 
     def get_checkpoint(self, session_id: UUID, sequence: int) -> Checkpoint | None:
         """Return the session's checkpoint with this sequence number, if any."""
-        return self._checkpoints.get(session_id, {}).get(sequence)
+        if session_id in self._sessions:
+            return self._checkpoints[session_id].get(sequence)
+        published = self._published_session(session_id)
+        return published.checkpoints.get(sequence) if published else None
 
     def find_team(self, join_code: str) -> tuple[GameSession, Team] | None:
         """The session and team a join code belongs to (ignoring case and spaces), if any."""
-        return self._teams_by_code.get(normalise_join_code(join_code))
+        code = normalise_join_code(join_code)
+        found = self._teams_by_code.get(code)
+        if found is not None:
+            return found
+        published = self._published_by_code(code, "join")
+        if published is None or code not in published.join_codes:
+            return None
+        return published.session, published.join_codes[code]
 
     def get_team(self, session_id: UUID, name: str) -> Team | None:
         """The session's team with this name (ignoring case), if any."""
-        return self._teams_by_name.get(session_id, {}).get(name.casefold())
+        if session_id in self._sessions:
+            return self._teams_by_name[session_id].get(name.casefold())
+        published = self._published_session(session_id)
+        return published.teams_by_name.get(name.casefold()) if published else None
 
     def moderator_code(self, session_id: UUID) -> str | None:
         """The session's moderator code, normalised; None if it can't be moderated."""
-        return self._moderator_codes.get(session_id)
+        if session_id in self._sessions:
+            return self._moderator_codes.get(session_id)
+        published = self._published_session(session_id)
+        return published.moderator_code if published else None
 
     def reference_photos(self, session_id: UUID, sequence: int) -> tuple[Path, ...]:
-        """The checkpoint's reference photos, resolved and checked at load, in file order."""
+        """The checkpoint's reference photos, resolved and checked at load, in file order.
+
+        A published session has none: there are no files to resolve.
+        """
         return self._reference_photos.get((session_id, sequence), ())
+
+    def _published_session(self, session_id: UUID) -> _Indexed | None:
+        """A published session, from memory or else one indexed query; never changes."""
+        if self._rows is None:
+            return None
+        with self._lock:
+            cached = self._published.get(session_id)
+        if cached is not None:
+            return cached
+        document = self._rows.document(session_id)
+        if document is None:
+            return None
+        return self._remember(GameSession.model_validate(document))
+
+    def _published_by_code(self, code: str, kind: CodeKind) -> _Indexed | None:
+        """The published session a normalised code belongs to, if any."""
+        if self._rows is None:
+            return None
+        with self._lock:
+            session_id = self._published_codes.get(code)
+        if session_id is None:
+            session_id = self._rows.session_for_code(code, kind)
+        return self._published_session(session_id) if session_id is not None else None
+
+    def _remember(self, session: GameSession) -> _Indexed:
+        indexed = _Indexed.of(session)
+        with self._lock:
+            self._published[session.id] = indexed
+            for code in indexed.join_codes:
+                self._published_codes[code] = session.id
+            if indexed.moderator_code is not None:
+                self._published_codes[indexed.moderator_code] = session.id
+        return indexed
+
+    def publish_session(self, session: GameSession, draft: UUID | None = None) -> None:
+        """Publish a session into the database, playable at once; final once published.
+
+        Held to the sessions file's rules, with no reference photos (no files to resolve), an
+        unused id, and codes unused by the file and by every published session. Raises
+        `SessionPublishError`, each problem at its path and never with a value; then nothing
+        is stored. The database refuses a taken code even if two publishes race.
+        """
+        if self._rows is None:
+            raise RuntimeError("publishing needs the database: use a repository beside it")
+        document = session.model_dump(mode="json", by_alias=True)
+        try:
+            checked = GameSession.model_validate(document)
+        except ValidationError as exc:
+            raise SessionPublishError(_error_lines(exc)) from None
+        claims = _code_claims(checked)
+        problems = _no_reference_photos(checked) + self._taken(checked.id, claims)
+        if problems:
+            raise SessionPublishError(problems)
+        codes = [(code, kind) for code, kind, _ in claims]
+        try:
+            self._rows.insert(checked.id, document, draft, codes)
+        except AlreadyPublishedError:
+            # Lost a race: report what's taken now, at its path.
+            raise SessionPublishError(
+                self._taken(checked.id, claims) or ["(root): already in use"]
+            ) from None
+        self._remember(checked)
+
+    def _taken(self, session_id: UUID, claims: Sequence[_Claim]) -> list[str]:
+        """Problems with ids and codes: repeated in the session, or already in use."""
+        problems = _repeated_codes(claims)
+        if session_id in self._sessions or (
+            self._rows is not None and self._rows.document(session_id) is not None
+        ):
+            problems.insert(0, "id: already in use")
+        file_codes = set(self._teams_by_code) | set(self._moderator_codes.values())
+        published = self._rows.codes_in_use({c for c, _, _ in claims}) if self._rows else set()
+        problems += [
+            f"{path}: already in use"
+            for code, _, path in claims
+            if code in file_codes or code in published
+        ]
+        return problems
 
     @staticmethod
     def effective_window(
@@ -404,18 +599,26 @@ def _describe_errors(exc: ValidationError) -> str:
     checkpoint coordinates into the server logs.
     """
     lines = [f"{exc.error_count()} validation error(s)"]
+    lines += [f"  {line}" for line in _error_lines(exc)]
+    return "\n".join(lines)
+
+
+def _error_lines(exc: ValidationError) -> list[str]:
+    """`path: message` for each error, never with the input."""
+    lines = []
     for error in exc.errors(include_url=False, include_input=False):
         loc, message = tuple(error["loc"]), error["msg"]
         located = error.get("ctx", {}).get("error")
         if isinstance(located, LocatedValueError):
             loc, message = loc + located.loc, located.message
-        lines.append(f"  {_path(loc) or '(root)'}: {message}")
-    return "\n".join(lines)
+        lines.append(f"{_path(loc) or '(root)'}: {message}")
+    return lines
 
 
 def _path(loc: Sequence[str | int]) -> str:
-    """`[0].teams[1].order` from `(0, "teams", 1, "order")`."""
-    return "".join(f"[{part}]" if isinstance(part, int) else f".{part}" for part in loc)
+    """`[0].teams[1].order` from `(0, "teams", 1, "order")`; `teams[1]` from `("teams", 1)`."""
+    path = "".join(f"[{part}]" if isinstance(part, int) else f".{part}" for part in loc)
+    return path.removeprefix(".")
 
 
 @lru_cache
@@ -439,8 +642,17 @@ def load_session_repository(
         raise SessionsFileError(f"invalid sessions file {path}: {exc}") from None
 
 
+@lru_cache
+def sessions_beside(file_sessions: SessionRepository, database: Database) -> SessionRepository:
+    """The file's sessions and the database's published ones: one repository per process,
+    so published sessions stay cached."""
+    return file_sessions.beside(PublishedSessionRows(database))
+
+
 def get_session_repository(
     settings: Annotated[Settings, Depends(get_settings)],
+    database: Annotated[Database, Depends(get_database)],
 ) -> SessionRepository:
-    """Dependency providing the sessions loaded from the configured file."""
-    return load_session_repository(settings.sessions_file, settings.max_image_bytes)
+    """Dependency providing the sessions: the configured file's, and the published ones."""
+    file_sessions = load_session_repository(settings.sessions_file, settings.max_image_bytes)
+    return sessions_beside(file_sessions, database)

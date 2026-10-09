@@ -5,7 +5,8 @@ Back to the [README](../README.md).
 A **game session** is one hunt. It has a region, a start and end time, and an ordered list of
 **checkpoints**. Each checkpoint is a place participants must find from a clue and photograph.
 Moderators write sessions by hand in a JSON file that the server loads at startup (see
-`GAME_SERVER_SESSIONS_FILE`). A moderator API will come later.
+`GAME_SERVER_SESSIONS_FILE`), and the hunt designer publishes them into the database while the
+server runs ([Published sessions](#published-sessions)). Every route serves both the same way.
 
 The file is a JSON list of sessions. Abridged from [`sessions.example.json`](../sessions.example.json):
 
@@ -168,6 +169,37 @@ while it runs), narrowed by the checkpoint's `window` if it has one. Before the 
 none. A `window` that closes before a late start is never open; one that opens after an early
 stop never opens. The planned `start-time` and `end-time` play no part.
 
+## Published sessions
+
+A hunt approved in the [hunt designer](api.md#hunt-designer) is **published** straight into the
+running server, where teams can join it at once. Published sessions live in the database beside
+the file, in two tables:
+
+| Table | Content |
+|-------|---------|
+| `published_sessions` | `id` (the session's UUID), `document` (the session in exactly the sessions-file shape), `draft` (the designer draft it came from, if any) and `published_at` |
+| `session_codes` | Every published join and moderator `code`, normalised (upper case, no surrounding spaces), with its `session` and `kind` (`join` or `moderator`). The code is the primary key, so the database refuses a code used twice, even if two publishes race |
+
+**What's checked.** Publishing holds a session to the same rules as the file: times, team
+orders, code formats and unique team names. Also, its id must be unused, and every join code
+and its moderator code must differ from each other and from every code in the file and every
+published code. Each problem is reported at its path, as the file loader does, and never with a
+value, e.g. `teams[1].join-code: already in use`; then nothing is stored.
+
+**No reference photos.** There are no files to resolve, so a published session has none, and the
+referee judges `scene_matches` from the written scene alone. A session that names reference
+photos is refused (`checkpoints[0].reference-photos: …`). Uploading them is a follow-up.
+
+**Final once published.** A published session can't be edited or deleted: teams' progress is
+stored under their names.
+
+**Looking one up.** File sessions stay in memory. A published session is read from the database
+on first use (by its id, or by a code), then kept in memory: it never changes. An unknown id
+costs one indexed query, and published sessions are found again after a restart.
+
+**Resetting the database deletes published hunts too.** `make db-reset` drops every table,
+`published_sessions` and `session_codes` included, so never run it during a hunt.
+
 ## Secrecy
 
 A checkpoint's coordinates are the answer to its clue. **No endpoint may return checkpoint
@@ -198,6 +230,11 @@ is added without being covered.
 by an endpoint, never logged, and never echoed by a validation error (the `Authorization`
 header's value included). The every-route secrecy test checks that a sentinel moderator code
 appears in no response and no log line.
+
+**Published sessions** are as secret as the file's: no coordinates, scenes, orders or codes in
+any response or log line, and the repository never puts a code in a `repr`, a log line or an
+error. The every-route secrecy test runs with the sentinel session in each source: in the file,
+and published to the database.
 
 **Reference photos** show what the place looks like, so they're secret like `challenge.scene`.
 No endpoint returns a reference photo's path, and no participant endpoint returns a reference

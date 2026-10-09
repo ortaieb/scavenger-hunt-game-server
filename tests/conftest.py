@@ -1,17 +1,26 @@
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Literal
 
 import psycopg
 import pytest
 from psycopg.rows import DictRow, dict_row
+from pydantic import TypeAdapter
 
 from game_server.config import get_settings
 from game_server.database import Database, close_databases, database_config, open_database
 from game_server.db_reset import reset_schema
 from game_server.proximity import hint_rate_limiter
+from game_server.published_sessions import PublishedSessionRows
 from game_server.referee import build_referee
 from game_server.referee_references import build_reference_photos
+from game_server.sessions import (
+    GameSession,
+    SessionRepository,
+    parse_sessions,
+    sessions_beside,
+)
 from game_server.submissions import SubmissionStore
 
 # The suite needs a PostgreSQL database it may wipe: `make db-up` starts one in Docker.
@@ -75,10 +84,17 @@ def isolated_storage(
     monkeypatch.setenv("GAME_SERVER_DB_SSLMODE", "prefer")  # CI's server has no TLS
     monkeypatch.setenv("GAME_SERVER_IMAGE_BASE_PATH", str(tmp_path / "default-images"))
     db.execute(
-        "TRUNCATE hunt_drafts, rulings, referee_traces, referee_prompts, blocked_attempts,"
-        " session_runs, arrivals, participants, submissions RESTART IDENTITY"
+        "TRUNCATE session_codes, published_sessions, hunt_drafts, rulings, referee_traces,"
+        " referee_prompts, blocked_attempts, session_runs, arrivals, participants, submissions"
+        " RESTART IDENTITY"
     )
-    caches = (get_settings, hint_rate_limiter, build_referee, build_reference_photos)
+    caches = (
+        get_settings,
+        hint_rate_limiter,
+        build_referee,
+        build_reference_photos,
+        sessions_beside,
+    )
     for cache in caches:
         cache.cache_clear()
     yield
@@ -96,3 +112,35 @@ def database() -> Database:
 @pytest.fixture
 def store(database: Database) -> SubmissionStore:
     return SubmissionStore(database)
+
+
+SessionSource = Literal["file", "published"]
+_SESSIONS = TypeAdapter(list[GameSession])
+
+
+@pytest.fixture(params=["file", "published"])
+def session_source(request: pytest.FixtureRequest) -> SessionSource:
+    """Where a test's sessions come from: the sessions file, or published to the database."""
+    source: SessionSource = request.param
+    return source
+
+
+@pytest.fixture
+def load_sessions(
+    session_source: SessionSource, database: Database
+) -> Callable[[str], SessionRepository]:
+    """Turns sessions-file JSON into a repository, from the parametrised source.
+
+    Published: the sessions are published into the database and served from there, by a
+    repository with an empty file, so every route sees them exactly as the server would.
+    """
+
+    def load(raw: str) -> SessionRepository:
+        if session_source == "file":
+            return parse_sessions(raw)
+        repository = SessionRepository().beside(PublishedSessionRows(database))
+        for session in _SESSIONS.validate_json(raw):
+            repository.publish_session(session)
+        return SessionRepository().beside(PublishedSessionRows(database))  # cold: read back
+
+    return load

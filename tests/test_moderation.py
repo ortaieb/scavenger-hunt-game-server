@@ -3,7 +3,7 @@
 import json
 import logging
 import secrets
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -15,7 +15,11 @@ from pytest_mock import MockerFixture
 
 from game_server import moderation
 from game_server.moderation import UNAUTHORISED_BODY, require_moderator
-from game_server.sessions import GameSession, get_session_repository, parse_sessions
+from game_server.sessions import (
+    GameSession,
+    SessionRepository,
+    get_session_repository,
+)
 
 SESSION_A = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 SESSION_B = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
@@ -47,10 +51,10 @@ def session(session_id: str, moderator_code: str | None) -> dict[str, Any]:
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
+def client(load_sessions: Callable[[str], SessionRepository]) -> Iterator[TestClient]:
     app = FastAPI()
     moderation.install(app)
-    repository = parse_sessions(
+    repository = load_sessions(
         json.dumps(
             [session(SESSION_A, CODE_A), session(SESSION_B, CODE_B), session(SESSION_NO_CODE, None)]
         )

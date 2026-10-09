@@ -1,7 +1,7 @@
 """The moderator overview, and the blocked attempts it shows (recorded by join, arrive, photo)."""
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from pathlib import Path
@@ -20,7 +20,7 @@ from game_server.clock import get_clock
 from game_server.config import Settings, get_settings
 from game_server.models import VerdictStatus
 from game_server.rulings import Ruling
-from game_server.sessions import get_session_repository, parse_sessions
+from game_server.sessions import SessionRepository, get_session_repository
 from game_server.submissions import BLOCKED_KEPT, NewSubmission, SubmissionStore
 
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
@@ -69,10 +69,12 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def client(now: list[datetime], tmp_path: Path) -> Iterator[TestClient]:
+def client(
+    now: list[datetime], tmp_path: Path, load_sessions: Callable[[str], SessionRepository]
+) -> Iterator[TestClient]:
     app = create_app()
     settings = Settings(image_base_path=tmp_path / "images")
-    sessions = parse_sessions(
+    sessions = load_sessions(
         json.dumps(
             [session_json(SESSION, MODERATOR), session_json(OTHER, OTHER_MODERATOR, "-OTHER")]
         )

@@ -14,9 +14,11 @@ TABLES = [
     "blocked_attempts",
     "hunt_drafts",
     "participants",
+    "published_sessions",
     "referee_prompts",
     "referee_traces",
     "rulings",
+    "session_codes",
     "session_runs",
     "submissions",
 ]

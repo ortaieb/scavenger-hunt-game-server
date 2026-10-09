@@ -1,7 +1,7 @@
 -- The game server's tables, dropped (if they exist) and created from scratch.
 --
--- DESTRUCTIVE: every submission, referee trace, ruling, participant, arrival and hunt draft is
--- deleted. Meant for
+-- DESTRUCTIVE: every submission, referee trace, ruling, participant, arrival, hunt draft and
+-- published session is deleted. Meant for
 -- development, until schema changes are applied as versioned migrations.
 --
 -- Run it with the server's connection settings:  make db-reset
@@ -13,7 +13,7 @@ BEGIN;
 
 DROP VIEW IF EXISTS ruled_submissions;
 DROP TABLE IF EXISTS
-    hunt_drafts, rulings, referee_traces, referee_prompts, blocked_attempts, session_runs, arrivals,
+    session_codes, published_sessions, hunt_drafts, rulings, referee_traces, referee_prompts, blocked_attempts, session_runs, arrivals,
     participants, submissions
     CASCADE;
 
@@ -220,5 +220,24 @@ CREATE TABLE hunt_drafts (
 CREATE INDEX hunt_drafts_newest ON hunt_drafts (created_at DESC);
 -- One run at a time: an agent run is a separate process using about 1 GiB.
 CREATE UNIQUE INDEX hunt_drafts_one_running ON hunt_drafts ((true)) WHERE status = 'running';
+
+-- Hunts published into the running server, beside the sessions file: each is the session
+-- exactly as the sessions file would hold it. Final once published. Server-only: the document
+-- holds coordinates, scenes, orders and codes.
+CREATE TABLE published_sessions (
+    id           UUID        PRIMARY KEY,
+    document     JSONB       NOT NULL,
+    -- The designer draft it came from, if any.
+    draft        UUID,
+    published_at TIMESTAMPTZ NOT NULL
+);
+
+-- Every published code, normalised (upper case, no spaces): the primary key refuses a code
+-- used twice, even when two publishes race. Credentials: never returned or logged.
+CREATE TABLE session_codes (
+    code    TEXT NOT NULL PRIMARY KEY,
+    session UUID NOT NULL REFERENCES published_sessions (id),
+    kind    TEXT NOT NULL CHECK (kind IN ('join', 'moderator'))
+);
 
 COMMIT;

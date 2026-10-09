@@ -11,6 +11,7 @@ from images import jpeg, scene
 
 from game_server import imaging
 from game_server.config import Settings
+from game_server.database import Database
 from game_server.session_runs import SessionRun
 from game_server.sessions import (
     FOREVER,
@@ -332,13 +333,19 @@ def test_example_file_is_valid() -> None:
     assert len(with_challenge) < len(session.checkpoints)  # at least one without
 
 
-def test_dependency_uses_configured_file(tmp_path: Path) -> None:
+def test_dependency_uses_configured_file(tmp_path: Path, database: Database) -> None:
     sessions_file = tmp_path / "sessions.json"
     sessions_file.write_text(to_json(session_payload()))
 
-    repository = get_session_repository(Settings(sessions_file=sessions_file))
+    repository = get_session_repository(Settings(sessions_file=sessions_file), database)
 
     assert repository.get_session(UUID(SESSION_ID)) is not None
+
+
+def test_the_dependency_is_one_repository_per_process(tmp_path: Path, database: Database) -> None:
+    settings = Settings()
+
+    assert get_session_repository(settings, database) is get_session_repository(settings, database)
 
 
 def test_error_message_gives_path_and_hides_input_values() -> None:
@@ -825,12 +832,13 @@ def test_reference_photos_are_hidden_from_repr(photo_dir: Path) -> None:
     assert PLACE_NAME not in repr(session)
 
 
-def test_dependency_passes_the_image_size_limit(photo_dir: Path) -> None:
+def test_dependency_passes_the_image_size_limit(photo_dir: Path, database: Database) -> None:
     sessions_file = photo_dir / "sessions.json"
     sessions_file.write_text(to_json(with_photos(f"reference/{PLACE_NAME}-0.jpg")))
+    settings = Settings(sessions_file=sessions_file, max_image_bytes=10)
 
     with pytest.raises(SessionsFileError, match="file is larger than 10 bytes"):
-        get_session_repository(Settings(sessions_file=sessions_file, max_image_bytes=10))
+        get_session_repository(settings, database)
 
 
 # --- moderator code (#49) -----------------------------------------------------------

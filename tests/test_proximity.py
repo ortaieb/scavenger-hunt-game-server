@@ -1,6 +1,6 @@
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -43,32 +43,34 @@ BODY: dict[str, Any] = {
 }
 
 
-def sessions_repository() -> SessionRepository:
+def sessions_text() -> str:
     checkpoint = {"name": "Spot", "clue": "Find it", "location": CHECKPOINT_AT, "proximity": 40}
-    return parse_sessions(
-        json.dumps(
-            [
-                {
-                    "id": SESSION,
-                    "name": "Test hunt",
-                    "location": "Somewhere",
-                    "start-time": SESSION_START.isoformat(),
-                    "end-time": SESSION_END.isoformat(),
-                    "checkpoints": [
-                        {**checkpoint, "sequence": 1},
-                        {
-                            **checkpoint,
-                            "sequence": 2,
-                            "window": {
-                                "opens-at": WINDOW_OPENS.isoformat(),
-                                "closes-at": WINDOW_CLOSES.isoformat(),
-                            },
+    return json.dumps(
+        [
+            {
+                "id": SESSION,
+                "name": "Test hunt",
+                "location": "Somewhere",
+                "start-time": SESSION_START.isoformat(),
+                "end-time": SESSION_END.isoformat(),
+                "checkpoints": [
+                    {**checkpoint, "sequence": 1},
+                    {
+                        **checkpoint,
+                        "sequence": 2,
+                        "window": {
+                            "opens-at": WINDOW_OPENS.isoformat(),
+                            "closes-at": WINDOW_CLOSES.isoformat(),
                         },
-                    ],
-                }
-            ]
-        )
+                    },
+                ],
+            }
+        ]
     )
+
+
+def sessions_repository() -> SessionRepository:
+    return parse_sessions(sessions_text())
 
 
 @pytest.fixture
@@ -78,11 +80,13 @@ def now() -> list[datetime]:
 
 
 @pytest.fixture
-def client(now: list[datetime], store: SubmissionStore) -> Iterator[TestClient]:
+def client(
+    now: list[datetime], store: SubmissionStore, load_sessions: Callable[[str], SessionRepository]
+) -> Iterator[TestClient]:
     store.start_run(UUID(SESSION), SESSION_START)
     app = create_app()
     settings = Settings(proximity_hint_interval_seconds=INTERVAL)
-    repository = sessions_repository()
+    repository = load_sessions(sessions_text())
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: repository
     app.dependency_overrides[get_clock] = lambda: lambda: now[0]

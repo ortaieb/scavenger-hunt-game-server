@@ -22,6 +22,9 @@ and managed with [uv](https://docs.astral.sh/uv/).
 | `POST` | [`/designer/drafts`](docs/api.md#post-designerdrafts) | **Organiser:** start designing a hunt for an area and a theme |
 | `GET`  | [`/designer/drafts`](docs/api.md#get-designerdrafts) | **Organiser:** the drafts, newest first |
 | `GET`  | [`/designer/drafts/{draft}`](docs/api.md#get-designerdraftsdraft) | **Organiser:** a draft in full: its checkpoints, route, problems and cost |
+| `PATCH` | [`/designer/drafts/{draft}/checkpoints/{position}`](docs/api.md#patch-designerdraftsdraftcheckpointsposition) | **Organiser:** edit, accept or reject a checkpoint, held to the draft rules |
+| `POST` | [`/designer/drafts/{draft}/publish`](docs/api.md#post-designerdraftsdraftpublish) | **Organiser:** publish the accepted checkpoints as a session, with teams and fresh codes |
+| `GET`  | [`/designer/drafts/{draft}/publication`](docs/api.md#get-designerdraftsdraftpublication) | **Organiser:** a published draft's session and codes, again |
 | `GET`  | [`/health`](#deploying-on-railway) | Readiness: `200 {"status": "ok"}` when the submissions database answers, else `503 {"status": "unavailable"}` |
 | `POST` | [`/challenge`](docs/api.md#post-challenge) | A participant submits a photo for the checkpoint it checked in at |
 | `POST` | [`/checkpoint/proximity`](docs/api.md#post-checkpointproximity) | **Advisory only:** does the player look in range of an open checkpoint? |

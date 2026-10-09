@@ -114,6 +114,7 @@ def test_json_prints_the_draft_in_the_apis_checkpoint_shape(
         "rationale": "Why 1",
         "review": "pending",
         "edited": False,
+        "original": None,
     }
     assert [DraftCheckpoint.model_validate(c) for c in printed["checkpoints"]] == list(CHECKPOINTS)
 

@@ -174,11 +174,12 @@ def test_the_stub_makes_a_ready_draft_with_three_checkpoints(
         "rationale",
         "review",
         "edited",
+        "original",
     }
     assert set(first["place"]) == {"osm", "name", "kind", "location"}
     assert set(first["place"]["location"]) == {"lat", "long"}
     assert set(first["challenge"]) == {"scene", "pose"}
-    assert (first["review"], first["edited"]) == ("pending", False)
+    assert (first["review"], first["edited"], first["original"]) == ("pending", False, None)
     assert len(body["route"]["legs-m"]) == 3
     assert body["route"]["loop-m"] == sum(body["route"]["legs-m"])
     assert body["problems"] == []

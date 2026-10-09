@@ -137,8 +137,9 @@ def client(
     (tmp_path / "reference").mkdir()
     (tmp_path / "reference" / f"{PHOTO_NAME}.jpg").write_bytes(jpeg(scene(4, (64, 48))))
     if session_source == "file":
-        repository = parse_sessions(SESSIONS_JSON, reference_dir=tmp_path)
-        assert repository.reference_photos(UUID(SESSION), 1)  # really loaded
+        file_sessions = parse_sessions(SESSIONS_JSON, reference_dir=tmp_path)
+        assert file_sessions.reference_photos(UUID(SESSION), 1)  # really loaded
+        repository = file_sessions.beside(PublishedSessionRows(database))  # as in production
     else:
         repository = SessionRepository().beside(PublishedSessionRows(database))
         for session in published_sentinels():
@@ -269,6 +270,9 @@ ORGANISER = {"Authorization": f"Bearer {ORGANISER_KEY}"}
 DRAFTS = ("POST", "/designer/drafts")
 DRAFT_LIST = ("GET", "/designer/drafts")
 DRAFT = ("GET", "/designer/drafts/{draft}")
+EDIT = ("PATCH", "/designer/drafts/{draft}/checkpoints/{position}")
+PUBLISH = ("POST", "/designer/drafts/{draft}/publish")
+PUBLICATION = ("GET", "/designer/drafts/{draft}/publication")
 
 
 def designer_responses(
@@ -294,11 +298,58 @@ def designer_responses(
         client.get("/designer/drafts/not-a-uuid", headers=ORGANISER),  # 422
     ]
     assert reads[1].json()["status"] == "ready"  # not vacuous: the full draft was read
+    reviewing = review_responses_for(client, draft)
     lists = [
         client.get("/designer/drafts", headers=ORGANISER),
         client.get("/designer/drafts", headers={"Authorization": f"Bearer {MODERATOR_CODE}"}),
     ]
-    return {DRAFTS: starts, DRAFT_LIST: lists, DRAFT: reads}
+    return {DRAFTS: starts, DRAFT_LIST: lists, DRAFT: reads, **reviewing}
+
+
+def review_responses_for(client: TestClient, draft: str) -> dict[tuple[str, str], list[Response]]:
+    """The organiser reviewing the draft, publishing it, and reading the publication back."""
+    url = f"/designer/drafts/{draft}"
+    publication = f"{url}/publication"
+    hunt = {
+        "name": "Published hunt",
+        "start-time": "2026-10-11T10:00:00+01:00",
+        "end-time": "2026-10-11T12:00:00+01:00",
+        "teams": ["Red Foxes", "Blue Herons"],
+    }
+    unpublished = [
+        client.get(publication, headers=ORGANISER),  # 404 not published
+        client.get(publication),  # 401
+    ]
+    edits = [
+        client.patch(f"{url}/checkpoints/1", json={"review": "accepted"}),  # 401
+        client.patch(f"{url}/checkpoints/9", json={"review": "accepted"}, headers=ORGANISER),
+        client.patch(  # 422: names the place
+            f"{url}/checkpoints/1", json={"clue": "Find the lantern."}, headers=ORGANISER
+        ),
+        *(
+            client.patch(f"{url}/checkpoints/{n}", json={"review": "accepted"}, headers=ORGANISER)
+            for n in (1, 2, 3)
+        ),
+    ]
+    publishes = [
+        client.post(f"{url}/publish", json=hunt),  # 401
+        client.post(f"{url}/publish", json={**hunt, "teams": []}, headers=ORGANISER),  # 422
+        client.post(f"{url}/publish", json=hunt, headers=ORGANISER),  # 201, with the codes
+        client.post(f"{url}/publish", json=hunt, headers=ORGANISER),  # 409: already published
+    ]
+    assert publishes[2].status_code == 201  # not vacuous: the codes were returned
+    edits.append(  # 409: a published draft can't be edited
+        client.patch(f"{url}/checkpoints/1", json={"review": "rejected"}, headers=ORGANISER)
+    )
+    published = [client.get(publication, headers=ORGANISER), *unpublished]
+    return {EDIT: edits, PUBLISH: publishes, PUBLICATION: published}
+
+
+def published_codes(responses: dict[tuple[str, str], list[Response]]) -> list[str]:
+    """The codes the publish returned: credentials, for the organiser only."""
+    [published] = [r for r in responses[PUBLISH] if r.status_code == 201]
+    body = published.json()
+    return [body["moderator-code"], *(team["join-code"] for team in body["teams"])]
 
 
 def moderator_post(
@@ -495,7 +546,7 @@ def test_no_route_ever_returns_the_scene(
                 assert not content_type.startswith("image/"), f"{route} served a photo"
             assert MODERATOR_CODE not in response.text, f"{route} leaked the moderator code"
             assert ORGANISER_KEY not in response.text, f"{route} leaked the organiser key"
-    for secret in (MODERATOR_CODE, JOIN_CODE, ORGANISER_KEY):
+    for secret in (MODERATOR_CODE, JOIN_CODE, ORGANISER_KEY, *published_codes(responses)):
         assert secret not in caplog.text.upper(), "a credential reached the logs"
     assert SENTINEL not in caplog.text, "the scene reached the logs"
     assert NOTE not in caplog.text, "a ruling's note reached the logs"
@@ -526,6 +577,9 @@ def test_the_calls_cover_success_and_error_paths(
     assert statuses[DRAFTS] == [202, 401, 409, 422]
     assert statuses[DRAFT_LIST] == [200, 401]
     assert statuses[DRAFT] == [200, 401, 404, 422]
+    assert statuses[EDIT] == [200, 401, 404, 409, 422]
+    assert statuses[PUBLISH] == [201, 401, 409, 422]
+    assert statuses[PUBLICATION] == [200, 401, 404]
     assert statuses[TRACES] == [200, 401, 404, 422]
     assert statuses[RULING] == [200, 201, 401, 404, 422]
     assert statuses[REVIEW] == [200, 401, 404]

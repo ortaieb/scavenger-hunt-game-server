@@ -231,6 +231,14 @@ by an endpoint, never logged, and never echoed by a validation error (the `Autho
 header's value included). The every-route secrecy test checks that a sentinel moderator code
 appears in no response and no log line.
 
+**The one deliberate exception: publishing.** When the organiser publishes a designer draft,
+[`POST /designer/drafts/{draft}/publish`](api.md#post-designerdraftsdraftpublish) returns the
+new session's join codes and moderator code, and
+[`GET …/publication`](api.md#get-designerdraftsdraftpublication) returns them again, so the
+organiser can hand them out. These are the only responses with codes in them, and only for the
+organiser's key; the codes are still never logged. The every-route secrecy test covers both and
+checks they never contain the file session's sentinel codes.
+
 **Published sessions** are as secret as the file's: no coordinates, scenes, orders or codes in
 any response or log line, and the repository never puts a code in a `repr`, a log line or an
 error. The every-route secrecy test runs with the sentinel session in each source: in the file,

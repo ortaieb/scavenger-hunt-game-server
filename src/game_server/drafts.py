@@ -6,7 +6,8 @@ coordinates and scenes, the answers to its clues, so only the organiser reads it
 JSON columns hold the models as the API shows them (kebab-case keys).
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -14,8 +15,8 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import Depends
+from psycopg import Connection, sql
 from psycopg import errors as pg_errors
-from psycopg import sql
 from psycopg.rows import TupleRow
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -93,8 +94,21 @@ class DraftChallenge(_KebabModel):
     pose: str
 
 
+class DraftOriginal(_KebabModel):
+    """The agent's text for each field the organiser edited; None where it wasn't edited."""
+
+    clue: str | None = None
+    scene: str | None = None
+    pose: str | None = None
+    proximity: int | None = None
+
+
 class DraftCheckpoint(_KebabModel):
-    """A proposed checkpoint, with why the agent picked it and the organiser's review."""
+    """A proposed checkpoint, with why the agent picked it and the organiser's review.
+
+    `original` keeps the agent's version of every field the organiser edited, from the
+    first edit on, so the two can be compared.
+    """
 
     position: int
     place: DraftPlace
@@ -104,6 +118,7 @@ class DraftCheckpoint(_KebabModel):
     rationale: str
     review: Review = "pending"
     edited: bool = False
+    original: DraftOriginal | None = None
 
 
 class Problem(_KebabModel):
@@ -170,6 +185,29 @@ class DesignerBusyError(Exception):
     """Another draft is still running: one run at a time."""
 
 
+class LockedDraft:
+    """A draft read for update: no one else edits or publishes it until the transaction ends."""
+
+    def __init__(self, conn: Connection[TupleRow], draft: Draft) -> None:
+        self._conn = conn
+        self.draft = draft
+
+    def save_checkpoints(self, checkpoints: Sequence[DraftCheckpoint]) -> None:
+        """Replace the draft's checkpoints."""
+        self._conn.execute(
+            "UPDATE hunt_drafts SET checkpoints = %s WHERE id = %s",
+            (_json(checkpoints), self.draft.id),
+        )
+
+    def mark_published(self, session: UUID, at: datetime) -> None:
+        """The draft became this session."""
+        self._conn.execute(
+            "UPDATE hunt_drafts SET status = 'published', published_session = %s,"
+            " published_at = %s WHERE id = %s",
+            (session, at, self.draft.id),
+        )
+
+
 def _json(models: Sequence[BaseModel]) -> Jsonb:
     return Jsonb([model.model_dump(mode="json", by_alias=True) for model in models])
 
@@ -227,6 +265,19 @@ class DraftStore:
                 )
         except pg_errors.UniqueViolation as exc:  # hunt_drafts_one_running
             raise DesignerBusyError from exc
+
+    @contextmanager
+    def locked(self, draft_id: UUID) -> Iterator[LockedDraft | None]:
+        """The draft, locked for update until the block ends; None if there's no such draft.
+
+        The block's writes commit when it ends, and roll back if it raises.
+        """
+        with self._database.transaction() as conn:
+            row = conn.execute(
+                sql.SQL("SELECT {} FROM hunt_drafts WHERE id = %s FOR UPDATE").format(_COLUMNS),
+                (draft_id,),
+            ).fetchone()
+            yield LockedDraft(conn, _draft(row)) if row is not None else None
 
     def get(self, draft_id: UUID) -> Draft | None:
         """The draft, or None if there's no such draft."""

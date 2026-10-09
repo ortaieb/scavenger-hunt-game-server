@@ -1287,7 +1287,8 @@ One draft, in full:
       "proximity": 40,
       "rationale": "Why the agent picked it, for the organiser",
       "review": "pending",
-      "edited": false
+      "edited": false,
+      "original": null
     }
   ],
   "route": { "legs-m": [420, 610, 380], "loop-m": 1410 },
@@ -1366,30 +1367,86 @@ step doesn't end the run. The `stub` runner reports four fixed steps of its own.
 
 ### Reviewing and publishing
 
-Defined here so the designer screen can be built against them; **not served yet**.
+The organiser reviews a `ready` draft checkpoint by checkpoint, editing, accepting or rejecting
+each, then publishes the accepted ones as a session in the running server, playable at once.
+Every edit is held to the same [draft rules](#draft-rules) as the agent.
 
-**`PATCH /designer/drafts/{draft}/checkpoints/{position}`** edits one checkpoint. The body has
-any of `clue`, `pose`, `scene`, `proximity` and `review` (`accepted`, `rejected` or `pending`).
+#### `PATCH /designer/drafts/{draft}/checkpoints/{position}`
+
+Edit, accept or reject one checkpoint (`position` as in the draft):
+
+```json
+{ "clue": "…", "pose": "…", "scene": "…", "proximity": 40, "review": "accepted" }
+```
+
+Every field is optional, but at least one is needed, and none may be `null`. `review` is
+`accepted`, `rejected` or `pending`; `proximity` is an integer. Unknown fields are rejected.
+
+Edited text and proximity go through the per-checkpoint rules (`names_place`, `empty`,
+`too_long`, `bad_proximity`); if the edit breaks one, nothing is saved. The first time a field
+is edited, the agent's version is kept in the checkpoint's `original`
+(`{"clue", "scene", "pose", "proximity"}`, `null` for a field never edited), and `edited` turns
+`true`, so the two can be compared. Changing only the `review`, or setting a field to what it
+already is, isn't an edit. Edits to different checkpoints at once are all kept.
 
 | Status | When |
 |--------|------|
-| `200`  | The updated checkpoint, in the shape above |
-| `409`  | `{"detail": …, "code": "draft_not_editable"}` unless the draft is `ready` |
-| `422`  | `{"detail": "draft problems", "problems": [...]}` when the edit breaks a rule, with the problems in the shape above |
+| `200`  | The updated checkpoint, in the draft's shape |
+| `404`  | `{"detail": "unknown draft"}` or `{"detail": "unknown checkpoint"}` |
+| `409`  | `{"detail": "draft can't be edited", "code": "draft_not_editable"}` unless the draft is `ready` |
+| `422`  | Invalid body; or `{"detail": "draft problems", "problems": [...]}` when the edit breaks a rule, with the problems in the draft's shape |
 
-**`POST /designer/drafts/{draft}/publish`** turns the accepted checkpoints into a session:
+#### `POST /designer/drafts/{draft}/publish`
+
+Turn the accepted checkpoints into a session:
 
 ```json
-{ "name": "Chiswick Hunt", "start-time": "2026-10-11T10:00:00+01:00", "end-time": "2026-10-11T13:00:00+01:00", "teams": ["Red Foxes", "Blue Herons"] }
+{ "name": "Chiswick river hunt", "start-time": "2026-10-11T10:00:00+01:00", "end-time": "2026-10-11T12:00:00+01:00", "teams": ["Red Foxes", "Blue Herons"] }
 ```
+
+| Field | Rules |
+|-------|-------|
+| `name` | 1–100 characters |
+| `start-time`, `end-time` | ISO 8601 with a UTC offset; the end after the start. The planned window: the moderator still starts and stops the session |
+| `teams` | 1–10 names, each 1–40 characters (trimmed), unique ignoring case |
+
+It needs a `ready` draft with **no checkpoint still `pending`** and **at least 3 `accepted`**.
+The accepted checkpoints are then checked again as a whole draft, in route order and without
+the rejected ones: their spacing, and the loop's length against `max-walk-km`.
+
+The session it publishes, with [published sessions](sessions-file.md#published-sessions):
+
+- a new id, the body's `name` and times, and the area's name as its `location`;
+- the accepted checkpoints numbered 1…n in route order, each with its clue, its place's name
+  and coordinates (from the map data, never the model), its proximity and its
+  `challenge {scene, pose}`, and no reference photos;
+- the teams in the body's order, team *i* starting at checkpoint *i* (mod n) of the route and
+  going round it, so teams spread out;
+- **fresh codes**, from `secrets`: each team's join code is a short word and four characters
+  that can't be misread (no `0`/`O`, `1`/`I`/`L`), e.g. `FOX-7Q2K`; the moderator code is `MOD-`
+  and twelve such characters. A code already in use, by the file or a published session, is
+  drawn again.
+
+The draft becomes `published`, with `published: {session, at}`.
 
 | Status | When |
 |--------|------|
 | `201`  | `{"session", "name", "moderator-code", "teams": [{"name", "join-code"}]}` |
-| `409`  | `{"detail": …, "code": "draft_not_ready"}` while any checkpoint is still `pending`, when fewer than 3 are `accepted`, or when the draft is already published |
+| `404`  | `{"detail": "unknown draft"}` |
+| `409`  | `{"detail": …, "code": "draft_not_ready"}`, the `detail` saying which: the draft isn't `ready`, a checkpoint is still `pending`, fewer than 3 are `accepted`, or it's already published |
+| `422`  | Invalid body; or `{"detail": "draft problems", "problems": [...]}` when the accepted checkpoints break a rule (`too_close`, `route_too_long`, …) |
 
-**`GET /designer/drafts/{draft}/publication`** returns the same body as the publish response,
-for a published draft.
+Each publish is logged once (draft, session, number of teams and of checkpoints), never the
+codes.
+
+#### `GET /designer/drafts/{draft}/publication`
+
+The same body as the publish response, for a published draft, so the codes can be shown again
+if the page was closed. `404 {"detail": "not published"}` for a draft that isn't published, and
+`404 {"detail": "unknown draft"}` for one that doesn't exist.
+
+**These two responses are the only ones that return join codes or a moderator code**, and only
+to the organiser: see *Secrecy* in [the sessions file](sessions-file.md#secrecy).
 
 ### Map data
 

@@ -40,9 +40,10 @@ src/game_server/
   traces.py          # `…/traces`: the moderator's verdicts with their referee traces and spend
   organiser.py       # require_organiser: the organiser key (Bearer), for the hunt designer
   designer/
-    routes.py        # `/designer/drafts`: start a design, list and read drafts
+    routes.py        # `/designer/drafts`: start a design, read drafts, review and publish them
     osm.py           # OpenStreetMap: find_area (Nominatim) and find_places (Overpass)
     rules.py         # check_draft and check_checkpoint: the rules a draft must meet
+    review.py        # the organiser's edits, publishing a draft as a session, and its codes
     agent.py         # design_hunt: the hunt-designer agent on the Claude Agent SDK, its tools and sandbox
     __main__.py      # `python -m game_server.designer`: design a hunt from the command line
   designer_prompt.md # the hunt-designer agent's system prompt

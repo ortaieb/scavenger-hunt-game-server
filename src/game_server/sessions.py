@@ -501,6 +501,13 @@ class SessionRepository:
                 self._published_codes[indexed.moderator_code] = session.id
         return indexed
 
+    def code_in_use(self, code: str) -> bool:
+        """Whether any session, in the file or published, uses this code, of either kind."""
+        normalised = normalise_join_code(code)
+        if normalised in self._teams_by_code or normalised in self._moderator_codes.values():
+            return True
+        return self._rows is not None and bool(self._rows.codes_in_use({normalised}))
+
     def publish_session(self, session: GameSession, draft: UUID | None = None) -> None:
         """Publish a session into the database, playable at once; final once published.
 

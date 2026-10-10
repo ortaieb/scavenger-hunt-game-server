@@ -56,7 +56,7 @@ and managed with [uv](https://docs.astral.sh/uv/).
 make install     # uv sync: create .venv from uv.lock
 make db-up       # PostgreSQL in Docker, on localhost:5432
 cp .env.example .env   # its database settings match `make db-up`
-make db-reset    # create the tables
+make db-migrate db-migrate-test   # create the tables with Flyway (needs Docker)
 make run         # start on http://localhost:8000
 curl localhost:8000/
 # Hello, World!
@@ -148,23 +148,39 @@ The pool connects in the background, so an unreachable database doesn't stop the
 starting. [`GET /health`](#deploying-on-railway) answers `503` until the database answers and
 has its tables.
 
-#### Creating the tables
+#### Database migrations
 
-Until schema changes are applied as versioned migrations, the tables are created by
-[`schema.sql`](src/game_server/schema.sql). It **drops** the game server's tables if they exist
-(with all their data) and creates them from scratch, in one transaction: if anything fails,
-the database is left as it was. Other tables in the database aren't touched.
+The schema is a series of versioned [Flyway](https://documentation.red-gate.com/flyway)
+migrations in [`db/migrations/`](db/migrations): `V1__baseline.sql`, then one
+`V<n>__<what_it_does>.sql` per change, each applied **once** per database, in order, and
+recorded in its `flyway_schema_history` table. Flyway refuses to run if a migration that was
+already applied has since been edited. [`db/flyway.toml`](db/flyway.toml) holds the shared
+settings (never credentials): `clean` is disabled, and a database that has tables but no
+Flyway history is refused rather than adopted. The server never changes the schema itself.
+
+Flyway runs in Docker, from one exactly pinned `flyway/flyway` image set in the Makefile, so
+local runs and CI use the same version:
 
 ```bash
-make db-reset                                   # uses the server's settings (env / .env), TLS included
-uv run python -m game_server.db_reset --yes     # the same, without make
-psql "$DATABASE_URL" -f src/game_server/schema.sql   # or straight from psql
+make db-migrate         # apply pending migrations to FLYWAY_URL (the local game_server by default)
+make db-migrate-test    # the same, on game_server_test (make test and make check run it first)
+make db-info            # which migrations are applied, and which are pending
+make db-new-migration NAME=add_something   # start db/migrations/V<next>__add_something.sql
+make db-reset           # DESTRUCTIVE, local only: drop everything, then migrate both databases
 ```
 
-Without `--yes` the command refuses to run. Run it once against a new database, and again
-whenever `schema.sql` changes. It deletes the data, **published hunts included**
-([published sessions](docs/sessions-file.md#published-sessions) live in the database), so never
-run it during a hunt.
+By default Flyway reaches the `make db-up` container (`FLYWAY_NETWORK`, `FLYWAY_URL`,
+`FLYWAY_TEST_URL`, `FLYWAY_USER` and `FLYWAY_PASSWORD` override that). The URL is JDBC, e.g.
+`jdbc:postgresql://host:5432/db?sslmode=require`; credentials are passed to the container by
+name, never on a command line. `make db-reset` is the only target allowed to `clean`, and it's
+hard-wired to the local container's two databases, whatever those variables say.
+
+**After pulling this change**, run `make db-reset` once: databases created by the old
+`schema.sql` have no Flyway history, so `migrate` refuses them.
+
+Production doesn't migrate yet: until migrations run on deploy, **hold any new migration**.
+Never reset a database that holds a hunt: it deletes the data, **published hunts included**
+([published sessions](docs/sessions-file.md#published-sessions) live in the database).
 
 ## Development
 
@@ -175,8 +191,9 @@ run it during a hunt.
 | Format (ruff)                     | `make format`      |
 | Type-check (mypy, strict)         | `make typecheck`   |
 | Start / stop a local PostgreSQL (Docker) | `make db-up` / `make db-down` |
-| Drop and recreate the tables (**deletes all data**) | `make db-reset` |
-| Tests (pytest; needs PostgreSQL)  | `make test`        |
+| Apply migrations / to the test database / show them | `make db-migrate` / `make db-migrate-test` / `make db-info` |
+| Drop and rebuild the local databases (**deletes all data**) | `make db-reset` |
+| Tests (pytest; needs PostgreSQL; migrates the test database first) | `make test` |
 | Live tests: the referee and the designer (real API calls, cost money; need `GAME_SERVER_ANTHROPIC_API_KEY`) | `uv run pytest -m live` |
 | Design a hunt from the command line (real API calls; see [below](#designing-a-hunt-from-the-command-line)) | `uv run python -m game_server.designer --area ... --theme ...` |
 | Referee eval on your test photos (real API calls; see [Referee evals](docs/api.md#referee-evals)) | `make eval-referee EVAL_DIR=...` |
@@ -185,8 +202,10 @@ run it during a hunt.
 
 The tests need a PostgreSQL database they may wipe. They use
 `postgresql://postgres:postgres@localhost:5432/game_server_test` (what `make db-up` creates), or
-`GAME_SERVER_TEST_DB_URL` if set. The suite recreates the tables with the
-[reset script](#creating-the-tables) when it starts, and empties them before every test.
+`GAME_SERVER_TEST_DB_URL` if set. The suite never creates the schema: `make test` migrates
+the test database with [Flyway](#database-migrations) first, and the suite stops with what to do
+if the database isn't at the newest migration. It empties the tables before every test,
+never Flyway's history.
 
 Dependencies are managed with uv only: `uv add <pkg>` / `uv add --dev <pkg>`; never edit `uv.lock`
 by hand. See [CLAUDE.md](CLAUDE.md) for the full conventions.
@@ -200,10 +219,12 @@ the run still in progress for the same PR.
 - **validate**: installs uv, installs the Python pinned in `.python-version` (uv-managed only,
   no caches, so every run starts clean), creates a fresh virtualenv with `uv sync --locked`,
   then runs `ruff check`, `ruff format --check`, `mypy`, `uv build` and `pytest` with coverage.
-  The tests run against a PostgreSQL 16 service container.
-- **docker**: builds the Docker image without pushing it, creates the tables in a PostgreSQL
-  container with the image's own reset script, then starts the image the way Railway does (with
-  an injected `PORT`, connecting over TLS) and waits for `GET /health` to answer `ok`. Starting
+  The tests run against a PostgreSQL 16 service container, which Flyway migrates first, twice:
+  the second run must apply nothing.
+- **docker**: builds the Docker image without pushing it, migrates a PostgreSQL container with
+  Flyway over TLS (a self-signed certificate, like Railway's), checks the image carries no
+  schema of its own, then starts the image the way Railway does (with an injected `PORT`,
+  connecting over TLS) and waits for `GET /health` to answer `ok`. Starting
   it is what catches a native library missing from the distroless runtime.
 
 CI does not auto-fix. Run `make check` locally before pushing to catch the same issues.
@@ -284,14 +305,9 @@ The image is a multi-stage build:
   it and distroless/cc doesn't ship it. When adding a dependency with native code, run `ldd`
   over the venv's `*.so` files in the builder and copy in anything the runtime lacks.
 
-The image needs a PostgreSQL database: pass its [settings](#database) with `-e` or
-`--env-file`. To create the tables from the image (it has no shell, so override the
-entrypoint):
-
-```bash
-docker run --rm --env-file .env --entrypoint /app/.venv/bin/python game-server:dev \
-  -m game_server.db_reset --yes
-```
+The image needs a PostgreSQL database with its tables: pass its [settings](#database) with
+`-e` or `--env-file`, and create the tables with [Flyway](#database-migrations) (`make
+db-migrate`). The image carries no schema and never migrates.
 
 From inside a container, `localhost` is the container itself: reach a database on your machine
 at `host.docker.internal` (add `--add-host=host.docker.internal:host-gateway` on Linux).
@@ -340,14 +356,10 @@ Set these up once in the dashboard (they can't be declared in `railway.toml`):
    server set `GAME_SERVER_DB_URL` to the reference variable `${{Postgres.DATABASE_URL}}`
    (the private-network URL). TLS stays on: `GAME_SERVER_DB_SSLMODE` defaults to `require`.
    Railway's PostgreSQL presents a self-signed certificate, so `verify-ca`/`verify-full` don't
-   apply unless you supply its CA. Create the tables once, from your machine, against the
-   database's **public** URL (`DATABASE_PUBLIC_URL` in the PostgreSQL service's variables):
-
-   ```bash
-   GAME_SERVER_DB_URL='postgresql://...' make db-reset   # DESTRUCTIVE: drops existing tables
-   ```
-
-   Until then `/health` answers `503` and the deploy doesn't take traffic.
+   apply unless you supply its CA. The tables come from [Flyway migrations](#database-migrations),
+   run inside Railway's private network on deploy (being set up: production doesn't migrate
+   yet, and the database won't be reachable from outside). Until a database has its tables,
+   `/health` answers `503` and the deploy doesn't take traffic.
 2. **A volume mounted at `/app/data`.** Photos (`images/`) and the sessions file live there.
    Without a volume they're lost on every deploy.
 3. **`RAILWAY_RUN_UID=0` as a service variable.** Railway mounts volumes owned by root, and

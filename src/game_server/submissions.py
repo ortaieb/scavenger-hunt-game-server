@@ -1,6 +1,7 @@
 """Record of challenge submissions and of the teams that joined, scoped by session.
 
-Stored in the external PostgreSQL database; the tables are defined in `schema.sql`.
+Stored in the external PostgreSQL database; the tables are defined by the Flyway migrations in
+`db/migrations/`.
 """
 
 from collections.abc import Callable, Iterator, Sequence

@@ -197,8 +197,9 @@ stored under their names.
 on first use (by its id, or by a code), then kept in memory: it never changes. An unknown id
 costs one indexed query, and published sessions are found again after a restart.
 
-**Resetting the database deletes published hunts too.** `make db-reset` drops every table,
-`published_sessions` and `session_codes` included, so never run it during a hunt.
+**Resetting the database deletes published hunts too.** `make db-reset` (local only) drops
+every table, `published_sessions` and `session_codes` included, so never reset a database that
+holds a hunt.
 
 ## Secrecy
 

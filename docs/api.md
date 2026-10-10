@@ -412,7 +412,7 @@ The attempt number is allocated and the row inserted in one transaction that hol
 session's advisory lock, so concurrent submissions can't share an attempt number. A unique
 constraint backs this up. Every row carries its `session`, so all of a session's data can be
 deleted together when the session closes. The tables are defined in
-[`schema.sql`](../src/game_server/schema.sql); see [Database](../README.md#database) for how they're created.
+the [Flyway migrations](../db/migrations); see [Database migrations](../README.md#database-migrations) for how they're applied.
 
 ### Referee traces
 
@@ -467,7 +467,7 @@ and the traces rely on. Posting again adds a row rather than updating one, so ea
 stay as the audit trail.
 
 What follows from a submission's latest ruling is defined once, by the `ruled_submissions`
-view in [`schema.sql`](../src/game_server/schema.sql), which scoring, progress, the
+view in the [migrations](../db/migrations), which scoring, progress, the
 duplicate-photo check, the overview and the traces all read:
 
 - **Effective verdict:** `approve` → `pass`, `reject` → `failed`, no ruling → the referee's

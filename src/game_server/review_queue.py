@@ -2,7 +2,7 @@
 
 A photo waits for the moderator while its effective verdict is `pending`: the referee
 couldn't decide, and nobody has ruled on it yet (see the `ruled_submissions` view in
-`schema.sql`). Server-side only: the checks' `detail` holds the referee's reasons, which
+`db/migrations/`). Server-side only: the checks' `detail` holds the referee's reasons, which
 describe the photo. Only the moderator reads it back (`GET …/review`).
 """
 

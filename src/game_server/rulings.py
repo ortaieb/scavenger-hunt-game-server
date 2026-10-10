@@ -3,7 +3,7 @@
 A ruling approves or rejects one submission. The latest ruling per submission wins; earlier
 ones stay as the audit trail. What follows from a ruling (the effective verdict, and whether
 the photo completes its checkpoint) is defined once, by the `ruled_submissions` view in
-`schema.sql`, which scoring, progress, the duplicate check, the overview and the traces read.
+`db/migrations/`, which scoring, progress, the duplicate check, the overview and the traces read.
 """
 
 from dataclasses import dataclass

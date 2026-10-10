@@ -1,0 +1,4 @@
+# The migrations image needs only Flyway's settings and the migrations.
+*
+!db/flyway.toml
+!db/migrations/

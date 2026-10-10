@@ -1,0 +1,26 @@
+# check=skip=InvalidDefaultArgInFrom
+# The migrations image: Flyway and this commit's migrations, nothing else. It runs the schema
+# migrations from inside a private network (on Railway, its own service), so the database never
+# needs a public endpoint, and the app's distroless image never needs Java.
+#
+# Build it through make, which passes the one exactly pinned Flyway image:
+#   make migrations-image
+# Run it with the connection in the environment (never baked in):
+#   docker run --rm -e FLYWAY_URL -e FLYWAY_USER -e FLYWAY_PASSWORD <image>         # migrate
+#   docker run --rm -e FLYWAY_URL -e FLYWAY_USER -e FLYWAY_PASSWORD <image> info    # or another command
+
+# No default, deliberately (hence the check skipped on the first line): the pin lives in the
+# Makefile (FLYWAY_IMAGE), so it can't drift from local runs.
+ARG FLYWAY_IMAGE
+FROM ${FLYWAY_IMAGE}
+
+# The same layout the Makefile mounts, so db/flyway.toml's locations hold in both.
+COPY db/flyway.toml /flyway/project/flyway.toml
+COPY db/migrations/ /flyway/project/migrations/
+
+# Unprivileged: Flyway only reads the migrations and talks to the database.
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin migrator
+USER 10001:10001
+
+ENTRYPOINT ["flyway", "-configFiles=/flyway/project/flyway.toml"]
+CMD ["migrate"]

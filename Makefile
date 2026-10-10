@@ -3,7 +3,7 @@ TAG   ?= dev
 PORT  ?= 8000
 
 .DEFAULT_GOAL := help
-.PHONY: help install run dev lint format typecheck test coverage check db-up db-down db-migrate db-migrate-test db-info db-reset db-new-migration migration-guard eval-referee docker-build docker-run clean
+.PHONY: help install run dev lint format typecheck test coverage check db-up db-down db-migrate db-migrate-test db-info db-reset db-new-migration migration-guard migrations-image flyway-image eval-referee docker-build docker-run clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -82,6 +82,13 @@ DB_RESET_FLYWAY = docker run --rm --network container:$(DB_CONTAINER) \
 db-reset: ## DESTRUCTIVE, local only: drop everything in the local databases, then migrate
 	$(DB_RESET_FLYWAY) -url=jdbc:postgresql://localhost:5432/game_server clean migrate
 	$(DB_RESET_FLYWAY) -url=jdbc:postgresql://localhost:5432/game_server_test clean migrate
+
+migrations-image: ## Build the migrations image (Flyway + db/), $(IMAGE)-migrations:$(TAG)
+	docker build -f Dockerfile.migrations --build-arg FLYWAY_IMAGE=$(FLYWAY_IMAGE) \
+		-t $(IMAGE)-migrations:$(TAG) .
+
+flyway-image: ## Print the pinned Flyway image (for CI and the deploy)
+	@echo $(FLYWAY_IMAGE)
 
 migration-guard: ## The CI guard-rails for migrations, against BASE (default origin/main)
 	uv run python tools/check_migrations.py --base $(or $(BASE),origin/main)

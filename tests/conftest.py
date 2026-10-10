@@ -5,12 +5,12 @@ from typing import Literal
 
 import psycopg
 import pytest
+from migration_files import applied_version, newest_version
 from psycopg.rows import DictRow, dict_row
 from pydantic import TypeAdapter
 
 from game_server.config import get_settings
 from game_server.database import Database, close_databases, database_config, open_database
-from game_server.db_reset import reset_schema
 from game_server.proximity import hint_rate_limiter
 from game_server.published_sessions import PublishedSessionRows
 from game_server.referee import build_referee
@@ -47,7 +47,11 @@ DB_SETTINGS = (
 
 @pytest.fixture(scope="session")
 def db() -> Iterator[psycopg.Connection[DictRow]]:
-    """A connection to the test database, with the schema freshly created by `db_reset`."""
+    """A connection to the test database, which Flyway has migrated to the newest version.
+
+    The suite never creates the schema itself: `make test` (and `make check`) run
+    `make db-migrate-test` first. Each test empties the tables, never `flyway_schema_history`.
+    """
     try:
         conn = psycopg.connect(TEST_DB_URL, autocommit=True, row_factory=dict_row)
     except psycopg.OperationalError as exc:
@@ -57,8 +61,25 @@ def db() -> Iterator[psycopg.Connection[DictRow]]:
             returncode=pytest.ExitCode.USAGE_ERROR,
         )
     with conn:
-        reset_schema(conn)
+        _require_migrated(conn)
         yield conn
+
+
+def _require_migrated(conn: psycopg.Connection[DictRow]) -> None:
+    """Stop the run, with what to do, unless the test database is at the newest migration."""
+    applied, newest = applied_version(conn), newest_version()
+    if applied == newest:
+        return
+    if applied is None or applied < newest:
+        what = f"at V{applied}" if applied is not None else "not migrated"
+        advice = "Run `make db-migrate-test`."
+    else:
+        what = f"at V{applied}, ahead of the migrations here (another branch?)"
+        advice = "Run `make db-reset` to rebuild the local databases."
+    pytest.exit(
+        f"The test database is {what}; the newest migration is V{newest}. {advice}",
+        returncode=pytest.ExitCode.USAGE_ERROR,
+    )
 
 
 @pytest.fixture(autouse=True)

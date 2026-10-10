@@ -264,9 +264,11 @@ the run still in progress for the same PR.
   then runs `ruff check`, `ruff format --check`, `mypy`, `uv build` and `pytest` with coverage.
   The tests run against a PostgreSQL 16 service container, which Flyway migrates first, twice:
   the second run must apply nothing.
-- **docker**: builds the Docker image without pushing it, migrates a PostgreSQL container with
-  Flyway over TLS (a self-signed certificate, like Railway's), checks the image carries no
-  schema of its own, then starts the image the way Railway does (with an injected `PORT`,
+- **docker**: builds the Docker image and the [migrations image](#the-migrations-image) without
+  pushing them, checks the migrations image runs as non-root with no credentials in it, migrates
+  a PostgreSQL container by running that image over TLS (a self-signed certificate, like
+  Railway's), twice (the second run must apply nothing), checks the app image carries no schema
+  of its own, then starts the image the way Railway does (with an injected `PORT`,
   connecting over TLS) and waits for `GET /health` to answer `ok`. Starting
   it is what catches a native library missing from the distroless runtime.
 
@@ -354,7 +356,29 @@ The image is a multi-stage build:
 
 The image needs a PostgreSQL database with its tables: pass its [settings](#database) with
 `-e` or `--env-file`, and create the tables with [Flyway](#database-migrations) (`make
-db-migrate`). The image carries no schema and never migrates.
+db-migrate`, or the migrations image below). The image carries no schema and never migrates.
+
+### The migrations image
+
+[`Dockerfile.migrations`](Dockerfile.migrations) builds a second, separate image: Flyway (the
+Makefile's exactly pinned `FLYWAY_IMAGE`, passed as a build argument; there's no other pin) and
+this commit's `db/flyway.toml` and `db/migrations/`, nothing else
+([`Dockerfile.migrations.dockerignore`](Dockerfile.migrations.dockerignore)). It runs as an
+unprivileged user (uid 10001), and its default command is `migrate`. It's how production will
+migrate, from inside Railway's private network, so the database needs no public endpoint and
+the app's distroless image never needs Java.
+
+```bash
+make migrations-image                       # builds game-server-migrations:dev
+docker run --rm -e FLYWAY_URL -e FLYWAY_USER -e FLYWAY_PASSWORD game-server-migrations:dev        # migrate
+docker run --rm -e FLYWAY_URL -e FLYWAY_USER -e FLYWAY_PASSWORD game-server-migrations:dev info   # or any Flyway command
+```
+
+The connection comes only from `FLYWAY_URL` (JDBC, e.g.
+`jdbc:postgresql://host:5432/db?sslmode=require`), `FLYWAY_USER` and `FLYWAY_PASSWORD` at run
+time: none is baked into the image. Every merge to `main` pushes it to GHCR as
+`ghcr.io/<repo>-migrations`, tagged `latest` and the short SHA like the app image; nothing
+deploys it yet.
 
 From inside a container, `localhost` is the container itself: reach a database on your machine
 at `host.docker.internal` (add `--add-host=host.docker.internal:host-gateway` on Linux).

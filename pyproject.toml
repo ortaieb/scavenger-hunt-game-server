@@ -57,11 +57,13 @@ python_version = "3.13"
 strict = true
 warn_unreachable = true
 mypy_path = "src"
-files = ["src", "tests"]
+files = ["src", "tests", "tools"]
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# tools/ holds scripts CI runs without installing the project; their tests import them.
+pythonpath = ["tools"]
 # Live tests call real services (the Claude API, OpenStreetMap): opt in with `uv run pytest -m live`.
 addopts = "-ra -m 'not live'"
 markers = ["live: calls a real external service (the Claude API, which needs GAME_SERVER_ANTHROPIC_API_KEY, or OpenStreetMap)"]

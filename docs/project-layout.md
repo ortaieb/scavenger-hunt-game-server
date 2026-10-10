@@ -66,6 +66,7 @@ evals/referee/       # eval manifest schema and example (no photos in the repo)
   rate_limit.py      # in-memory per-key RateLimiter
   config.py          # Settings (env / .env)
   logging_config.py  # stderr logging for the app's own loggers
+Dockerfile.migrations  # the migrations image: pinned Flyway + db/, non-root (and its .dockerignore)
 db/
   flyway.toml        # Flyway's shared settings (no credentials)
   migrations/        # V1__baseline.sql, then one V<n>__<what_it_does>.sql per change

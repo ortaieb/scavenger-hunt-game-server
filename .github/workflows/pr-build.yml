@@ -99,15 +99,36 @@ jobs:
           load: true
           tags: game-server:pr-${{ github.event.pull_request.number }}
 
+      - name: Build the migrations image (not pushed)
+        # The image production migrates with: Flyway (the Makefile's pin) and db/.
+        run: make migrations-image IMAGE=game-server TAG=pr-${{ github.event.pull_request.number }}
+
+      - name: Check the migrations image holds no credentials and runs as non-root
+        env:
+          MIGRATIONS: game-server-migrations:pr-${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          user=$(docker image inspect "$MIGRATIONS" --format '{{.Config.User}}')
+          echo "User: ${user}"
+          case "$user" in ""|0|0:*|root|root:*) echo "The migrations image runs as root" >&2; exit 1 ;; esac
+          if docker image inspect "$MIGRATIONS" --format '{{json .Config.Env}}' | grep -q FLYWAY_; then
+            echo "The migrations image has FLYWAY_ settings baked in" >&2; exit 1
+          fi
+
       # A successful build doesn't prove native libraries resolve at runtime (distroless
       # ships few), so start the server and wait for it to answer.
       - name: Smoke-test the image
         # Like Railway: inject PORT, reach PostgreSQL over TLS (sslmode=require, the default)
-        # and wait for the health check. Flyway migrates the database first, over TLS too,
-        # which proves its JDBC driver accepts a self-signed certificate like Railway's.
+        # and wait for the health check. The migrations image migrates the database first,
+        # over TLS too, which proves its JDBC driver accepts a self-signed certificate like
+        # Railway's; run again, it must apply nothing.
         env:
           IMAGE: game-server:pr-${{ github.event.pull_request.number }}
+          MIGRATIONS: game-server-migrations:pr-${{ github.event.pull_request.number }}
           DB_URL: postgresql://postgres:smoke@db:5432/postgres
+          FLYWAY_URL: jdbc:postgresql://db:5432/postgres?sslmode=require
+          FLYWAY_USER: postgres
+          FLYWAY_PASSWORD: smoke
         run: |
           docker network create smoke
           # The postgres image ships a self-signed (snakeoil) certificate: enough for TLS.
@@ -119,8 +140,14 @@ jobs:
             docker exec db pg_isready -h localhost -U postgres && break
             sleep 1
           done
-          make db-migrate FLYWAY_NETWORK=smoke FLYWAY_PASSWORD=smoke \
-            FLYWAY_URL='jdbc:postgresql://db:5432/postgres?sslmode=require'
+          migrate() {
+            docker run --rm --network smoke -e FLYWAY_URL -e FLYWAY_USER -e FLYWAY_PASSWORD \
+              "$MIGRATIONS"  # its default command: migrate
+          }
+          migrate
+          again=$(migrate 2>&1)
+          echo "$again"
+          grep -q "is up to date. No migration necessary" <<<"$again"
           # The image carries no schema of its own: migrations run only through Flyway.
           docker run --rm --entrypoint /app/.venv/bin/python "$IMAGE" -c \
             "from importlib.resources import files; assert not files('game_server').joinpath('schema.sql').is_file()"

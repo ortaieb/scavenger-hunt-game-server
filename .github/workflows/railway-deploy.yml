@@ -14,6 +14,9 @@
 # Railway may not read railway.toml for image deploys, so the dashboard
 # settings aren't relied on. No railway.toml: the health check is left as is.
 #
+# If the repo has a Dockerfile.migrations, the build also pushes the migrations
+# image (pinned Flyway + db/), as `<image>-migrations`, with the same tags.
+#
 # Needs, in the GitHub environment "production" of each repo:
 #   secret   RAILWAY_TOKEN           Railway project token (production env)
 #   variable RAILWAY_SERVICE_ID      ID of this repo's Railway service
@@ -116,6 +119,26 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build and push migrations image
+        # Flyway and this commit's migrations, for running them on Railway's private network.
+        if: steps.meta.outputs.build == 'true' && hashFiles('Dockerfile.migrations') != ''
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}-migrations
+          TAG: ${{ steps.meta.outputs.tag }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The one Flyway pin, from the Makefile, as for local runs and PR CI.
+          flyway_image=$(make -s flyway-image)
+          echo "Flyway: ${flyway_image}"
+          docker buildx build --platform linux/amd64 --push \
+            -f Dockerfile.migrations --build-arg FLYWAY_IMAGE="$flyway_image" \
+            --label org.opencontainers.image.source="$SOURCE" \
+            --label org.opencontainers.image.revision="$REVISION" \
+            -t "${IMAGE}:latest" -t "${IMAGE}:${TAG}" .
+          echo "### Pushed \`${IMAGE}:${TAG}\` (Flyway ${flyway_image})" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deploy image to Railway
         if: vars.RAILWAY_SERVICE_ID != ''

@@ -496,8 +496,12 @@ it exits.
   ```
   The migrations image is public on GHCR, so no registry credentials are needed.
 - Set its ID as the `RAILWAY_MIGRATIONS_SERVICE_ID` variable in the GitHub `production`
-  environment. Until it's set, deploys don't migrate. Production's first run is a one-off
-  reset onto V1 (#103), because its tables predate Flyway.
+  environment. Until it's set, deploys don't migrate.
+
+**A new environment** (an empty database) needs nothing more: set up the service as above, and
+the next deploy's `migrate` builds the schema from V1. No `clean`, no `baseline`. A database
+that already has tables but no Flyway history is refused (`baselineOnMigrate = false`): that's
+the one-off below.
 
 **Rollbacks** (a manual run with a `tag`) don't migrate: the database stays ahead of the code
 it rolls back to, which is safe because migrations are
@@ -508,6 +512,34 @@ database is as it was and the old deploy keeps serving. Correct that same migrat
 PR labelled `fix-unapplied-migration` (the [migration guard](#writing-migrations) allows the edit
 only with it), and merge to retry. `flyway repair` is only for a history row left in a failed
 state, which a PostgreSQL migration doesn't leave.
+
+**Production's one-off reset onto V1.** Production's tables were created by the old
+`schema.sql`, with no Flyway history, so `migrate` refuses them. While still in development, its
+data **isn't kept**: it's wiped once and rebuilt from V1 (#103). Done once; from then on every
+change is an incremental migration and data is kept. **Never run this on a database whose data matters.**
+
+1. **Announce it, and check no hunt is running.** Every submission, arrival, trace, ruling,
+   participant, draft and published hunt is deleted.
+2. **Clean and migrate, for one deployment only.** On the `db-migrations` service (set up as
+   above, but with `RAILWAY_MIGRATIONS_SERVICE_ID` **not yet set**, so no deploy races it):
+   - Source image: `ghcr.io/<repo>-migrations:<short SHA of the current main>`.
+   - Add the temporary service variable `FLYWAY_CLEAN_DISABLED=false` (it overrides
+     `cleanDisabled = true` in `flyway.toml`).
+   - Pre-deploy command: `flyway -configFiles=/flyway/project/flyway.toml clean migrate`;
+     start command `true`; restart policy *never*.
+   - Deploy, and check the deployment log: `Successfully cleaned schema "public"` and
+     `Successfully applied 1 migration to schema "public", now at version v1`.
+3. **Disable `clean` again at once.** Delete `FLYWAY_CLEAN_DISABLED`, set the pre-deploy
+   command back to `flyway -configFiles=/flyway/project/flyway.toml migrate`, redeploy, and
+   check the log says `Schema "public" is up to date. No migration necessary.`
+4. **Turn on migrations on deploy:** set `RAILWAY_MIGRATIONS_SERVICE_ID` in the GitHub
+   `production` environment. From now on the deploy sets the service's image and commands
+   itself.
+5. **Check the app:** `GET /health` answers `200` and the sessions file's hunts are playable.
+   Published hunts and drafts start empty: republish any that are needed.
+
+Afterwards `flyway_schema_history` has V1 as *Success* (applied, not baselined), and the next
+merge to `main` migrates (nothing to apply) before it deploys the app.
 
 **Reference photos** go on the volume next to the sessions file, which they're resolved
 against. The referee sends them to the model provider (Anthropic) with each photo judged at

@@ -21,8 +21,6 @@ src/game_server/
     duplicate_photo.py  # duplicate_photo
     visual.py        # scene_matches, pose_correct (from the referee's report)
   database.py        # Database: PostgreSQL connection pool and its settings
-  schema.sql         # the tables: dropped and created from scratch (destructive)
-  db_reset.py        # `python -m game_server.db_reset --yes`: runs schema.sql
   submissions.py     # SubmissionStore: submissions, attempts, participants, arrivals, rulings
   referee_traces.py  # record_trace: one row per referee call, with its submission; read_traces
   rulings.py         # record_ruling: the moderator's rulings, beside the referee's verdict

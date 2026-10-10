@@ -1,0 +1,15 @@
+# Flyway's shared settings: every caller (make, PR CI, the deploy) uses this file.
+# Never put credentials here: the URL, user and password come from FLYWAY_URL, FLYWAY_USER
+# and FLYWAY_PASSWORD. db/ is mounted at /flyway/project in the Flyway container.
+[flyway]
+locations = ["filesystem:/flyway/project/migrations"]
+# A misnamed migration is an error, not silently skipped.
+validateMigrationNaming = true
+# `clean` (drop everything) is refused; only `make db-reset`, on the local container, overrides it.
+cleanDisabled = true
+# An existing database without Flyway history is an error, never silently adopted.
+baselineOnMigrate = false
+# SQL containing ${...} is left alone.
+placeholderReplacement = false
+# Versions must arrive in order.
+outOfOrder = false

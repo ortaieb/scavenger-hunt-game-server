@@ -23,7 +23,8 @@ jobs:
     name: Lint, type-check, build and test
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # The tests run against a real PostgreSQL, wiped and recreated by the suite.
+    # The tests run against a real PostgreSQL, migrated by Flyway (make db-migrate-test) and
+    # emptied by the suite before each test.
     services:
       postgres:
         image: postgres:16
@@ -67,6 +68,15 @@ jobs:
       - name: Build package
         run: uv build
 
+      - name: Migrate the test database (Flyway), twice
+        # The second run must apply nothing: migrations run once per database.
+        run: |
+          set -euo pipefail
+          make db-migrate-test FLYWAY_NETWORK=host
+          again=$(make db-migrate-test FLYWAY_NETWORK=host 2>&1)
+          echo "$again"
+          grep -q "is up to date. No migration necessary" <<<"$again"
+
       - name: Test (pytest)
         run: uv run pytest --cov=src --cov-report=term-missing
 
@@ -93,8 +103,8 @@ jobs:
       # ships few), so start the server and wait for it to answer.
       - name: Smoke-test the image
         # Like Railway: inject PORT, reach PostgreSQL over TLS (sslmode=require, the default)
-        # and wait for the health check. The database gets its schema from the image's own
-        # reset script, so that runs in the distroless runtime too.
+        # and wait for the health check. Flyway migrates the database first, over TLS too,
+        # which proves its JDBC driver accepts a self-signed certificate like Railway's.
         env:
           IMAGE: game-server:pr-${{ github.event.pull_request.number }}
           DB_URL: postgresql://postgres:smoke@db:5432/postgres
@@ -109,8 +119,11 @@ jobs:
             docker exec db pg_isready -h localhost -U postgres && break
             sleep 1
           done
-          docker run --rm --network smoke -e GAME_SERVER_DB_URL="$DB_URL" \
-            --entrypoint /app/.venv/bin/python "$IMAGE" -m game_server.db_reset --yes
+          make db-migrate FLYWAY_NETWORK=smoke FLYWAY_PASSWORD=smoke \
+            FLYWAY_URL='jdbc:postgresql://db:5432/postgres?sslmode=require'
+          # The image carries no schema of its own: migrations run only through Flyway.
+          docker run --rm --entrypoint /app/.venv/bin/python "$IMAGE" -c \
+            "from importlib.resources import files; assert not files('game_server').joinpath('schema.sql').is_file()"
           docker run -d --name smoke --network smoke -e PORT=8123 -p 8123:8123 \
             -e GAME_SERVER_DB_URL="$DB_URL" "$IMAGE"
           for _ in $(seq 30); do

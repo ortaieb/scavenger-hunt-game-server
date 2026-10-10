@@ -1,7 +1,8 @@
 """The referee's traces: one row per call, written in its submission's transaction.
 
 A trace keeps what the referee was sent and what came back, so a verdict stays explainable
-after the prompt changes, and what the call cost. The tables are defined in `schema.sql`.
+after the prompt changes, and what the call cost. The tables are defined by the migrations in
+`db/migrations/`.
 Server-side only: a trace holds the scene (the answer to the clue) and the model's
 description of the photo. Only the moderator reads them back (`read_traces`).
 """

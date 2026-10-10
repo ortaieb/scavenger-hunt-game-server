@@ -1,21 +1,10 @@
--- The game server's tables, dropped (if they exist) and created from scratch.
+-- V1: the game server's tables, as `src/game_server/schema.sql` created them at c626547.
 --
--- DESTRUCTIVE: every submission, referee trace, ruling, participant, arrival, hunt draft and
--- published session is deleted. Meant for
--- development, until schema changes are applied as versioned migrations.
+-- Today's schema.sql with only its destructive header, BEGIN/COMMIT (Flyway runs each
+-- PostgreSQL migration in its own transaction) and the DROP lines removed. Every CREATE is
+-- unchanged, so the constraint names PostgreSQL generates match databases built by schema.sql.
 --
--- Run it with the server's connection settings:  make db-reset
--- or with psql:                                   psql "$DATABASE_URL" -f src/game_server/schema.sql
---
--- One transaction: if any statement fails, the database is left as it was.
-
-BEGIN;
-
-DROP VIEW IF EXISTS ruled_submissions;
-DROP TABLE IF EXISTS
-    session_codes, published_sessions, hunt_drafts, rulings, referee_traces, referee_prompts, blocked_attempts, session_runs, arrivals,
-    participants, submissions
-    CASCADE;
+-- Never edit this file once it's on main: change the schema in a new V<n> migration.
 
 -- A team's check-ins at a checkpoint, each with a one-time code. Not used for scoring: the
 -- order of arrival is set by the accepted photo's received_at. A photo is held to its team's
@@ -239,5 +228,3 @@ CREATE TABLE session_codes (
     session UUID NOT NULL REFERENCES published_sessions (id),
     kind    TEXT NOT NULL CHECK (kind IN ('join', 'moderator'))
 );
-
-COMMIT;

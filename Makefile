@@ -3,10 +3,10 @@ TAG   ?= dev
 PORT  ?= 8000
 
 .DEFAULT_GOAL := help
-.PHONY: help install run dev lint format typecheck test coverage check db-up db-down db-reset eval-referee docker-build docker-run clean
+.PHONY: help install run dev lint format typecheck test coverage check db-up db-down db-migrate db-migrate-test db-info db-reset db-new-migration eval-referee docker-build docker-run clean
 
 help: ## Show this help
-	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 install: ## Create/sync the virtualenv from uv.lock (incl. dev deps)
 	uv sync
@@ -26,10 +26,10 @@ format: ## Format with ruff
 typecheck: ## Type-check with mypy
 	uv run mypy .
 
-test: ## Run the test suite
+test: db-migrate-test ## Run the test suite (migrates the test database first)
 	uv run pytest
 
-coverage: ## Run tests with a coverage report
+coverage: db-migrate-test ## Run tests with a coverage report
 	uv run pytest --cov=src --cov-report=term-missing
 
 check: lint format typecheck test ## Lint, format, type-check and test
@@ -46,8 +46,49 @@ db-up: ## Start a local PostgreSQL in Docker (game_server and game_server_test d
 db-down: ## Stop and remove the local PostgreSQL (its data goes with it)
 	docker rm -f $(DB_CONTAINER)
 
-db-reset: ## DESTRUCTIVE: drop the configured database's tables and recreate them
-	uv run python -m game_server.db_reset --yes
+# Flyway: one exactly pinned image for every caller (local, PR CI, the deploy).
+FLYWAY_IMAGE    ?= flyway/flyway:13.10.0
+# Where Flyway runs: by default inside the `make db-up` container's network, so localhost is
+# that PostgreSQL (on macOS and Linux alike). CI passes FLYWAY_NETWORK=host or its own network.
+FLYWAY_NETWORK  ?= container:$(DB_CONTAINER)
+FLYWAY_URL      ?= jdbc:postgresql://localhost:5432/game_server
+FLYWAY_TEST_URL ?= jdbc:postgresql://localhost:5432/game_server_test
+FLYWAY_USER     ?= postgres
+FLYWAY_PASSWORD ?= postgres
+export FLYWAY_USER FLYWAY_PASSWORD
+# Credentials go in as `-e NAME`, never as values on a command line or in a log.
+FLYWAY_RUN = docker run --rm --network $(FLYWAY_NETWORK) -e FLYWAY_URL -e FLYWAY_USER \
+	-e FLYWAY_PASSWORD -v "$(CURDIR)/db:/flyway/project:ro" $(FLYWAY_IMAGE) \
+	-configFiles=/flyway/project/flyway.toml
+FLYWAY      = FLYWAY_URL='$(FLYWAY_URL)' $(FLYWAY_RUN)
+FLYWAY_TEST = FLYWAY_URL='$(FLYWAY_TEST_URL)' $(FLYWAY_RUN)
+
+db-migrate: ## Apply pending migrations (FLYWAY_URL: the local database by default)
+	$(FLYWAY) migrate
+
+db-migrate-test: ## Apply pending migrations to the test database (what the tests use)
+	$(FLYWAY_TEST) migrate
+
+db-info: ## Show applied and pending migrations (FLYWAY_URL)
+	$(FLYWAY) info
+
+# The only place clean is allowed, and always on the local container's databases, whatever
+# FLYWAY_URL, FLYWAY_USER, FLYWAY_PASSWORD or FLYWAY_NETWORK say.
+DB_RESET_FLYWAY = docker run --rm --network container:$(DB_CONTAINER) \
+	-e FLYWAY_USER=postgres -e FLYWAY_PASSWORD=postgres \
+	-v "$(CURDIR)/db:/flyway/project:ro" $(FLYWAY_IMAGE) -configFiles=/flyway/project/flyway.toml \
+	-cleanDisabled=false
+
+db-reset: ## DESTRUCTIVE, local only: drop everything in the local databases, then migrate
+	$(DB_RESET_FLYWAY) -url=jdbc:postgresql://localhost:5432/game_server clean migrate
+	$(DB_RESET_FLYWAY) -url=jdbc:postgresql://localhost:5432/game_server_test clean migrate
+
+db-new-migration: ## Start the next migration: NAME=add_something → db/migrations/V<next>__add_something.sql
+	@echo "$(NAME)" | grep -Eq '^[a-z0-9]+(_[a-z0-9]+)*$$' || { echo "Usage: make db-new-migration NAME=lower_snake_case" >&2; exit 2; }
+	@next=$$(( $$(ls db/migrations | sed -nE 's/^V([0-9]+)__.*\.sql$$/\1/p' | sort -n | tail -1) + 1 )); \
+	file="db/migrations/V$${next}__$(NAME).sql"; \
+	printf -- '-- V%s: %s.\n--\n-- Never edit this file once it'"'"'s on main: change the schema in a new migration.\n\n' "$$next" "$(NAME)" > "$$file"; \
+	echo "Created $$file"
 
 RUNS ?= 1
 

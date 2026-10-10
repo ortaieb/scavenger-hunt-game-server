@@ -27,6 +27,28 @@ Answers to the [open questions](#open-questions), and what they change. The issu
   waits for, before the app (#102). The sections below that describe option A's deploy step
   are kept for history.
 
+### Spike results (#102, on a throwaway Railway project)
+
+How the deploy can tell whether a migration on Railway succeeded, from the API's deployment
+status (no `COMPLETED` status exists):
+
+| Run as | Outcome | Statuses seen |
+|---|---|---|
+| One-shot service (`migrate`, restart *never*) | exits 0 | `INITIALIZING` → `DEPLOYING` → `SUCCESS` |
+| One-shot service | exits non-zero at once | → `DEPLOYING` → `CRASHED` |
+| One-shot service | **exits 3 after 45 s** | → `DEPLOYING` → **`SUCCESS` at 12 s** → `CRASHED` at 59 s |
+| Pre-deploy command, main `sleep infinity` | Flyway succeeds | `INITIALIZING` (while it runs) → `DEPLOYING` → `SUCCESS` |
+| Pre-deploy command | exits 3 after 45 s | `INITIALIZING` for 64 s → `FAILED`, never `SUCCESS` |
+| Pre-deploy command | Flyway fails (auth; a broken V2) | `INITIALIZING` → `FAILED`; V2 rolled back, no history row |
+| Pre-deploy command, main `true` | Flyway succeeds | → `SUCCESS`, and stays (`deploymentStopped: true`) |
+
+So a one-shot service's `SUCCESS` only means its container started: a slow failure would pass.
+**Decision: Flyway runs as the `db-migrations` service's pre-deploy command**, with a main
+command that exits at once (no idle container). Also confirmed: Flyway reaches PostgreSQL at
+`RAILWAY_PRIVATE_DOMAIN` over the private network as is (no IPv6 setting needed), with TLS; a
+start command replaces the image's entrypoint; `deploymentLogs` returns the pre-deploy output;
+the public GHCR image needs no registry credentials.
+
 ## Why
 
 Today every schema change means dropping and recreating every table

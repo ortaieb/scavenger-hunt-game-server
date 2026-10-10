@@ -1,0 +1,51 @@
+name: Migration guard
+
+# Flyway migrations already on the base branch are never modified, renamed or deleted, and new
+# versions come after the highest one there (tools/check_migrations.py). Also re-runs when a
+# label changes, for the escape hatch: the `fix-unapplied-migration` label allows correcting a
+# merged migration that failed in production, so was never applied.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  UV_PYTHON_PREFERENCE: only-managed
+
+jobs:
+  guard:
+    name: Check the migrations against the base branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out (with history, to compare with the base branch)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0  # no floating major tag is published
+        with:
+          enable-cache: false
+          cache-python: false
+
+      - name: Check the migrations
+        env:
+          BASE: origin/${{ github.base_ref }}
+          ALLOW_MODIFIED: ${{ contains(github.event.pull_request.labels.*.name, 'fix-unapplied-migration') }}
+        run: |
+          set -euo pipefail
+          # Standard library only: no need to install the project.
+          if [ "$ALLOW_MODIFIED" = "true" ]; then
+            echo "Label fix-unapplied-migration: correcting a merged migration is allowed."
+            uv run --no-project python tools/check_migrations.py --base "$BASE" --allow-modified
+          else
+            uv run --no-project python tools/check_migrations.py --base "$BASE"
+          fi

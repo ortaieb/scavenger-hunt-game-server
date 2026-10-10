@@ -70,6 +70,52 @@ Run this before treating any task as finished:
 uv run ruff check . --fix && uv run ruff format . && uv run mypy . && uv run pytest
 ```
 
+## Database migrations
+
+The schema is Flyway migrations in `db/migrations/` (see the README's *Database migrations*).
+Never create or change tables any other way: no DDL in Python, no edits to applied files.
+
+| Task | Command |
+|---|---|
+| Start the next migration | `make db-new-migration NAME=what_it_does` |
+| Apply them locally / to the test database | `make db-migrate` / `make db-migrate-test` |
+| What's applied and pending | `make db-info` |
+| The CI guard-rails, locally | `make migration-guard` |
+
+Rules for Claude (and everyone):
+
+1. **Never edit, rename or delete a migration that's on `main`.** Fix it with a new one. Flyway
+   checksums applied migrations and refuses to run when one has changed, and CI's migration guard
+   refuses the PR. The one exception: a migration on `main` that **failed in production** was
+   rolled back whole and never recorded, so correct that same file, in a PR labelled
+   `fix-unapplied-migration`.
+2. **One change per file:** `V<next integer>__<what_it_does>.sql`, lower-case snake case
+   (`make db-new-migration NAME=what_it_does`). Its version must be greater than the highest on
+   `main`: if another PR took it first, rebase and renumber.
+3. **Backward compatible with the running version (expand, then contract).** The old deploy
+   serves on the new schema for a while, and a rollback runs old code on it indefinitely:
+   - add columns as nullable, or with a default;
+   - a rename or type change is add new → backfill → switch the code → drop old, across
+     separate releases;
+   - drop a column or table only once no deployed code reads it.
+4. **Mind the live game.** DDL takes locks that queue every query behind it. Start migrations
+   that alter busy tables (`submissions`, `arrivals`, `participants`, `referee_traces`) with
+   `SET lock_timeout = '5s';` so they fail fast rather than freeze the game. Don't ship schema
+   changes during a live hunt.
+5. **Recreate `ruled_submissions` when `submissions` or `rulings` change.** The view uses `s.*`,
+   which PostgreSQL expands once, when the view is created: drop and recreate it in the same file,
+   or new columns won't appear in it (and PostgreSQL refuses to drop or alter a column it uses).
+6. **Name new constraints and indexes explicitly.** V1's keep PostgreSQL's generated names
+   (e.g. `hunt_drafts_status_check`); use those names when altering them.
+7. **Content changes are migrations too:** backfills, fixes to existing rows and reference data
+   go in `V<n>` files under the same rules. Data the app owns at runtime (published hunts,
+   drafts, rulings) is only touched to reshape it for a schema change.
+8. **Test against data, not just an empty database.** CI migrates an empty database, which won't
+   catch, say, `ADD COLUMN … NOT NULL` without a default on a populated table. When a migration
+   reshapes existing rows, run it locally against a copy with realistic data before merging.
+9. **The server never migrates itself.** Migrations run only through Flyway: `make db-migrate`
+   locally, and the workflows in CI and production.
+
 ## Project conventions
 
 - Python version: see `requires-python` in `pyproject.toml` — target that version's syntax, not older or newer.

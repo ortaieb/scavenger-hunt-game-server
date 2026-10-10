@@ -185,6 +185,46 @@ Production doesn't migrate yet: until migrations run on deploy, **hold any new m
 Never reset a database that holds a hunt: it deletes the data, **published hunts included**
 ([published sessions](docs/sessions-file.md#published-sessions) live in the database).
 
+#### Writing migrations
+
+CI's [migration guard](.github/workflows/migration-guard.yml)
+([`tools/check_migrations.py`](tools/check_migrations.py), or `make migration-guard` locally)
+fails a pull request that modifies, renames or deletes a migration already on the base branch,
+or adds one whose version isn't greater than the highest there, and says what to do. The rules
+it can't check are just as important (they're also in [CLAUDE.md](CLAUDE.md)):
+
+1. **Never edit, rename or delete a migration that's on `main`.** Fix it with a new one. Flyway
+   checksums applied migrations and refuses to run when one has changed, and CI's migration guard
+   refuses the PR. The one exception: a migration on `main` that **failed in production** was
+   rolled back whole and never recorded, so correct that same file, in a PR labelled
+   `fix-unapplied-migration`.
+2. **One change per file:** `V<next integer>__<what_it_does>.sql`, lower-case snake case
+   (`make db-new-migration NAME=what_it_does`). Its version must be greater than the highest on
+   `main`: if another PR took it first, rebase and renumber.
+3. **Backward compatible with the running version (expand, then contract).** The old deploy
+   serves on the new schema for a while, and a rollback runs old code on it indefinitely:
+   - add columns as nullable, or with a default;
+   - a rename or type change is add new → backfill → switch the code → drop old, across
+     separate releases;
+   - drop a column or table only once no deployed code reads it.
+4. **Mind the live game.** DDL takes locks that queue every query behind it. Start migrations
+   that alter busy tables (`submissions`, `arrivals`, `participants`, `referee_traces`) with
+   `SET lock_timeout = '5s';` so they fail fast rather than freeze the game. Don't ship schema
+   changes during a live hunt.
+5. **Recreate `ruled_submissions` when `submissions` or `rulings` change.** The view uses `s.*`,
+   which PostgreSQL expands once, when the view is created: drop and recreate it in the same file,
+   or new columns won't appear in it (and PostgreSQL refuses to drop or alter a column it uses).
+6. **Name new constraints and indexes explicitly.** V1's keep PostgreSQL's generated names
+   (e.g. `hunt_drafts_status_check`); use those names when altering them.
+7. **Content changes are migrations too:** backfills, fixes to existing rows and reference data
+   go in `V<n>` files under the same rules. Data the app owns at runtime (published hunts,
+   drafts, rulings) is only touched to reshape it for a schema change.
+8. **Test against data, not just an empty database.** CI migrates an empty database, which won't
+   catch, say, `ADD COLUMN … NOT NULL` without a default on a populated table. When a migration
+   reshapes existing rows, run it locally against a copy with realistic data before merging.
+9. **The server never migrates itself.** Migrations run only through Flyway: `make db-migrate`
+   locally, and the workflows in CI and production.
+
 ## Development
 
 | Task                              | Command            |
@@ -229,6 +269,10 @@ the run still in progress for the same PR.
   schema of its own, then starts the image the way Railway does (with an injected `PORT`,
   connecting over TLS) and waits for `GET /health` to answer `ok`. Starting
   it is what catches a native library missing from the distroless runtime.
+
+[`.github/workflows/migration-guard.yml`](.github/workflows/migration-guard.yml) checks every
+pull request's [migrations](#writing-migrations) against its base branch, and runs again when a
+label changes (for `fix-unapplied-migration`).
 
 CI does not auto-fix. Run `make check` locally before pushing to catch the same issues.
 

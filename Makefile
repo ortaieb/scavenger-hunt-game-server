@@ -3,7 +3,7 @@ TAG   ?= dev
 PORT  ?= 8000
 
 .DEFAULT_GOAL := help
-.PHONY: help install run dev lint format typecheck test coverage check db-up db-down db-migrate db-migrate-test db-info db-reset db-new-migration eval-referee docker-build docker-run clean
+.PHONY: help install run dev lint format typecheck test coverage check db-up db-down db-migrate db-migrate-test db-info db-reset db-new-migration migration-guard eval-referee docker-build docker-run clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -82,6 +82,9 @@ DB_RESET_FLYWAY = docker run --rm --network container:$(DB_CONTAINER) \
 db-reset: ## DESTRUCTIVE, local only: drop everything in the local databases, then migrate
 	$(DB_RESET_FLYWAY) -url=jdbc:postgresql://localhost:5432/game_server clean migrate
 	$(DB_RESET_FLYWAY) -url=jdbc:postgresql://localhost:5432/game_server_test clean migrate
+
+migration-guard: ## The CI guard-rails for migrations, against BASE (default origin/main)
+	uv run python tools/check_migrations.py --base $(or $(BASE),origin/main)
 
 db-new-migration: ## Start the next migration: NAME=add_something → db/migrations/V<next>__add_something.sql
 	@echo "$(NAME)" | grep -Eq '^[a-z0-9]+(_[a-z0-9]+)*$$' || { echo "Usage: make db-new-migration NAME=lower_snake_case" >&2; exit 2; }

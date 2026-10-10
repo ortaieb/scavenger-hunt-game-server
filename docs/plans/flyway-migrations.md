@@ -2,10 +2,30 @@
 
 | | |
 |---|---|
-| Status | Proposed. Not implemented yet |
+| Status | In progress: issues #98–#105. M1 is #99 |
 | Written | 2026-10-10, against `main` at `6484f23` |
 | Repos affected | **game-server** only. The web app has no database and doesn't refer to the game server's schema, so it needs no change |
 | Purpose | Agreed design, plus a breakdown into issues ([below](#issue-breakdown)) |
+
+## Decisions (2026-10-10), which supersede parts of this plan
+
+Answers to the [open questions](#open-questions), and what they change. The issues
+(#98–#105) carry the details.
+
+- **Production's data isn't kept on the switch.** We're still in development, so production is
+  **reset once onto V1** (a one-off `clean` + `migrate`, #103) instead of being baselined: M4's
+  backup, comparison and `baseline` are dropped. From then on, data is kept and every change is
+  an incremental migration.
+- **Production's schema matches `schema.sql` on `main`** (open question 2): moot, given the reset.
+- **The health check is config as code** (open question 3): every deploy applies `railway.toml`'s
+  `healthcheckPath` and `healthcheckTimeout` through the Railway API and checks them (#98).
+- **PostgreSQL is private** (open question 4): no public endpoint, reachable only from services
+  on Railway's private network (#105). That rules out option A (Flyway on the GitHub runner,
+  over the public proxy). Option B's Java in the distroless app image stays rejected. Instead,
+  migrations run from **a separate migrations image** (pinned Flyway plus `db/`, #101) deployed
+  as **its own Railway service on the private network**, which the deploy workflow runs, and
+  waits for, before the app (#102). The sections below that describe option A's deploy step
+  are kept for history.
 
 ## Why
 

@@ -175,6 +175,9 @@ By default Flyway reaches the `make db-up` container (`FLYWAY_NETWORK`, `FLYWAY_
 name, never on a command line. `make db-reset` is the only target allowed to `clean`, and it's
 hard-wired to the local container's two databases, whatever those variables say.
 
+Flyway's container mounts the repo's `db/` directory: on Docker Desktop, keep the repo under a
+path shared with Docker (Settings → Resources → File Sharing), or the mount is denied.
+
 **After pulling this change**, run `make db-reset` once: databases created by the old
 `schema.sql` have no Flyway history, so `migrate` refuses them.
 

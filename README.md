@@ -181,7 +181,9 @@ path shared with Docker (Settings → Resources → File Sharing), or the mount 
 **After pulling this change**, run `make db-reset` once: databases created by the old
 `schema.sql` have no Flyway history, so `migrate` refuses them.
 
-Production doesn't migrate yet: until migrations run on deploy, **hold any new migration**.
+Production migrates on every deploy, once its `db-migrations` service is set up
+([Database migrations on Railway](#database-migrations-on-railway)); until then, **hold any new
+migration**.
 Never reset a database that holds a hunt: it deletes the data, **published hunts included**
 ([published sessions](docs/sessions-file.md#published-sessions) live in the database).
 
@@ -377,8 +379,8 @@ docker run --rm -e FLYWAY_URL -e FLYWAY_USER -e FLYWAY_PASSWORD game-server-migr
 The connection comes only from `FLYWAY_URL` (JDBC, e.g.
 `jdbc:postgresql://host:5432/db?sslmode=require`), `FLYWAY_USER` and `FLYWAY_PASSWORD` at run
 time: none is baked into the image. Every merge to `main` pushes it to GHCR as
-`ghcr.io/<repo>-migrations`, tagged `latest` and the short SHA like the app image; nothing
-deploys it yet.
+`ghcr.io/<repo>-migrations`, tagged `latest` and the short SHA like the app image, and the
+deploy runs it on Railway ([Database migrations on Railway](#database-migrations-on-railway)).
 
 From inside a container, `localhost` is the container itself: reach a database on your machine
 at `host.docker.internal` (add `--add-host=host.docker.internal:host-gateway` on Linux).
@@ -428,8 +430,8 @@ Set these up once in the dashboard (they can't be declared in `railway.toml`):
    (the private-network URL). TLS stays on: `GAME_SERVER_DB_SSLMODE` defaults to `require`.
    Railway's PostgreSQL presents a self-signed certificate, so `verify-ca`/`verify-full` don't
    apply unless you supply its CA. The tables come from [Flyway migrations](#database-migrations),
-   run inside Railway's private network on deploy (being set up: production doesn't migrate
-   yet, and the database won't be reachable from outside). Until a database has its tables,
+   run inside Railway's private network on every deploy (see
+   [Database migrations on Railway](#database-migrations-on-railway)). Until a database has its tables,
    `/health` answers `503` and the deploy doesn't take traffic.
 2. **A volume mounted at `/app/data`.** Photos (`images/`) and the sessions file live there.
    Without a volume they're lost on every deploy.
@@ -458,6 +460,54 @@ logs show the startup's `Hunt designer self-check` line instead. A deploy or res
 design run fails its draft with `interrupted`: stopping Claude Code and marking the draft takes
 the server about 5 s after `SIGTERM`, and if it's killed sooner, the new deploy marks the draft
 when it starts.
+
+### Database migrations on Railway
+
+Production migrates on Railway's **private network**, so the database never needs a public
+endpoint. A `db-migrations` service runs the [migrations image](#the-migrations-image), and every
+deploy ([`railway-deploy.yml`](.github/workflows/railway-deploy.yml)) migrates before it deploys
+the app:
+
+1. It points `db-migrations` at the migrations image built from the same commit (the short SHA),
+   with **Flyway's `migrate` as the service's pre-deploy command**, a main command that exits at
+   once (`true`), and restart policy *never*. The workflow sets these on every deploy: they're
+   config as code, never set by hand.
+2. It deploys `db-migrations` and waits. While Flyway runs, the deployment stays
+   `INITIALIZING`. It reaches `SUCCESS` only once the migration succeeded, and `FAILED` if it
+   didn't, then **the app isn't deployed** and the old version keeps serving. Flyway's summary
+   (or, on a failure, its error headers only: this repo's run logs are public, and PostgreSQL's
+   own message can quote row values) goes in the run's step summary; the full log is in the
+   service's deployment on Railway.
+3. Only then does it deploy the app.
+
+**Why a pre-deploy command**, not a one-shot service: tried on Railway, a service whose
+container just runs `migrate` and exits shows `SUCCESS` as soon as the container starts, before
+Flyway has finished, so the workflow can't tell. A pre-deploy command holds the deployment until
+it exits.
+
+**Set it up once** (variables can't be declared in code):
+
+- Add an **empty service** named `db-migrations`, with **no public networking** and no health
+  check. Give it three variables referencing the PostgreSQL service's private connection:
+  ```text
+  FLYWAY_URL=jdbc:postgresql://${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.PGDATABASE}}?sslmode=require
+  FLYWAY_USER=${{Postgres.PGUSER}}
+  FLYWAY_PASSWORD=${{Postgres.PGPASSWORD}}
+  ```
+  The migrations image is public on GHCR, so no registry credentials are needed.
+- Set its ID as the `RAILWAY_MIGRATIONS_SERVICE_ID` variable in the GitHub `production`
+  environment. Until it's set, deploys don't migrate. Production's first run is a one-off
+  reset onto V1 (#103), because its tables predate Flyway.
+
+**Rollbacks** (a manual run with a `tag`) don't migrate: the database stays ahead of the code
+it rolls back to, which is safe because migrations are
+[backward compatible](#writing-migrations).
+
+**When a migration fails**, PostgreSQL rolls it back whole and Flyway records nothing, so the
+database is as it was and the old deploy keeps serving. Correct that same migration file in a
+PR labelled `fix-unapplied-migration` (the [migration guard](#writing-migrations) allows the edit
+only with it), and merge to retry. `flyway repair` is only for a history row left in a failed
+state, which a PostgreSQL migration doesn't leave.
 
 **Reference photos** go on the volume next to the sessions file, which they're resolved
 against. The referee sends them to the model provider (Anthropic) with each photo judged at

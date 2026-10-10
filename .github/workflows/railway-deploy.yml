@@ -8,6 +8,12 @@
 # Manual run ("Run workflow") with a tag = rollback: skips the build and
 # redeploys an existing image tag, e.g. a1b2c3d.
 #
+# The health check is config as code: if the repo has a railway.toml, every
+# deploy (rollbacks too) applies its [deploy] healthcheckPath and
+# healthcheckTimeout to the service and checks Railway reports them back.
+# Railway may not read railway.toml for image deploys, so the dashboard
+# settings aren't relied on. No railway.toml: the health check is left as is.
+#
 # Needs, in the GitHub environment "production" of each repo:
 #   secret   RAILWAY_TOKEN           Railway project token (production env)
 #   variable RAILWAY_SERVICE_ID      ID of this repo's Railway service
@@ -57,8 +63,30 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Check out code
-        if: steps.meta.outputs.build == 'true'
+        # Rollbacks too: they read the health check from railway.toml.
         uses: actions/checkout@v4
+
+      - name: Read the health check from railway.toml
+        id: healthcheck
+        run: |
+          set -euo pipefail
+          if [ ! -f railway.toml ]; then
+            echo "No railway.toml: the service's health check is left as it is."
+            exit 0
+          fi
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import sys, tomllib
+
+          with open("railway.toml", "rb") as f:
+              deploy = tomllib.load(f).get("deploy", {})
+          path, timeout = deploy.get("healthcheckPath"), deploy.get("healthcheckTimeout")
+          if not isinstance(path, str) or not path.startswith("/"):
+              sys.exit("railway.toml: [deploy] healthcheckPath must be a path starting with /")
+          if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+              sys.exit("railway.toml: [deploy] healthcheckTimeout must be a positive integer")
+          print(f"path={path}")
+          print(f"timeout={timeout}")
+          PY
 
       - name: Set up Docker Buildx
         if: steps.meta.outputs.build == 'true'
@@ -96,6 +124,8 @@ jobs:
           SERVICE_ID: ${{ vars.RAILWAY_SERVICE_ID }}
           ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
           IMAGE_REF: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          HEALTHCHECK_PATH: ${{ steps.healthcheck.outputs.path }}
+          HEALTHCHECK_TIMEOUT: ${{ steps.healthcheck.outputs.timeout }}
         run: |
           set -euo pipefail
 
@@ -113,11 +143,34 @@ jobs:
             printf '%s' "$resp"
           }
 
+          # The image, and the health check from railway.toml if there is one.
+          input=$(jq -n --arg img "$IMAGE_REF" '{source: {image: $img}}')
+          if [ -n "${HEALTHCHECK_PATH}" ]; then
+            echo "Health check: ${HEALTHCHECK_PATH}, timeout ${HEALTHCHECK_TIMEOUT}s (from railway.toml)"
+            input=$(jq --arg p "$HEALTHCHECK_PATH" --argjson t "$HEALTHCHECK_TIMEOUT" \
+              '. + {healthcheckPath: $p, healthcheckTimeout: $t}' <<<"$input")
+          fi
+
           echo "Pointing service at ${IMAGE_REF}"
-          api "$(jq -n --arg s "$SERVICE_ID" --arg e "$ENVIRONMENT_ID" --arg img "$IMAGE_REF" '{
+          api "$(jq -n --arg s "$SERVICE_ID" --arg e "$ENVIRONMENT_ID" --argjson input "$input" '{
             query: "mutation($s: String!, $e: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $s, environmentId: $e, input: $input) }",
-            variables: {s: $s, e: $e, input: {source: {image: $img}}}
+            variables: {s: $s, e: $e, input: $input}
           }')" >/dev/null
+
+          if [ -n "${HEALTHCHECK_PATH}" ]; then
+            # Fail before deploying if Railway doesn't report the health check back.
+            applied=$(api "$(jq -n --arg s "$SERVICE_ID" --arg e "$ENVIRONMENT_ID" '{
+              query: "query($s: String!, $e: String!) { serviceInstance(serviceId: $s, environmentId: $e) { healthcheckPath healthcheckTimeout } }",
+              variables: {s: $s, e: $e}
+            }')" | jq -c '.data.serviceInstance')
+            expected=$(jq -nc --arg p "$HEALTHCHECK_PATH" --argjson t "$HEALTHCHECK_TIMEOUT" \
+              '{healthcheckPath: $p, healthcheckTimeout: $t}')
+            if [ "$applied" != "$expected" ]; then
+              echo "Railway reports health check ${applied}, expected ${expected} from railway.toml." >&2
+              exit 1
+            fi
+            echo "Railway reports the health check from railway.toml: ${applied}"
+          fi
 
           echo "Triggering deployment"
           deployment_id=$(api "$(jq -n --arg s "$SERVICE_ID" --arg e "$ENVIRONMENT_ID" '{
@@ -135,7 +188,12 @@ jobs:
             echo "Status: ${status}"
             case "$status" in
               SUCCESS)
-                echo "### Deployed \`${IMAGE_REF}\` to Railway" >> "$GITHUB_STEP_SUMMARY"
+                {
+                  echo "### Deployed \`${IMAGE_REF}\` to Railway"
+                  if [ -n "${HEALTHCHECK_PATH}" ]; then
+                    echo "Health check \`${HEALTHCHECK_PATH}\`, timeout ${HEALTHCHECK_TIMEOUT}s, from \`railway.toml\`."
+                  fi
+                } >> "$GITHUB_STEP_SUMMARY"
                 exit 0 ;;
               FAILED|CRASHED|REMOVED|SKIPPED)
                 echo "Deployment ended with status ${status}. Check the Railway logs." >&2

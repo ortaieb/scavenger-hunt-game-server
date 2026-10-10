@@ -1,5 +1,8 @@
 # Railway config as code: https://docs.railway.com/reference/config-as-code
 # These settings override the same ones in the Railway dashboard.
+# The service is deployed from a GHCR image, and Railway may not read this file for image
+# deploys: .github/workflows/railway-deploy.yml applies [deploy] healthcheckPath and
+# healthcheckTimeout to the service on every deploy, and checks Railway reports them back.
 # Volumes and variables can't be set here: see the README's "Deploying on Railway".
 
 [build]

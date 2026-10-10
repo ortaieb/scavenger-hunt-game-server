@@ -66,6 +66,11 @@ evals/referee/       # eval manifest schema and example (no photos in the repo)
   rate_limit.py      # in-memory per-key RateLimiter
   config.py          # Settings (env / .env)
   logging_config.py  # stderr logging for the app's own loggers
+db/
+  flyway.toml        # Flyway's shared settings (no credentials)
+  migrations/        # V1__baseline.sql, then one V<n>__<what_it_does>.sql per change
+tools/
+  check_migrations.py  # CI's migration guard: merged migrations never change, versions only go up
 tests/          # pytest suite, mirrors src/
 ```
 

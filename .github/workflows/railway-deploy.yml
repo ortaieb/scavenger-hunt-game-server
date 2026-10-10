@@ -16,11 +16,21 @@
 #
 # If the repo has a Dockerfile.migrations, the build also pushes the migrations
 # image (pinned Flyway + db/), as `<image>-migrations`, with the same tags.
+# Once RAILWAY_MIGRATIONS_SERVICE_ID is set, every build then migrates the
+# database before deploying: it points that Railway service at the new
+# migrations image, with Flyway as its pre-deploy command, deploys it on the
+# private network, and deploys the app only if the migration succeeded.
+# Rollbacks don't migrate. Why a pre-deploy command: a one-shot service shows
+# SUCCESS as soon as its container starts, before a migration has finished,
+# while a pre-deploy command holds the deployment at INITIALIZING until it
+# exits, then FAILED or on to SUCCESS (tried on Railway for #102).
 #
 # Needs, in the GitHub environment "production" of each repo:
 #   secret   RAILWAY_TOKEN           Railway project token (production env)
 #   variable RAILWAY_SERVICE_ID      ID of this repo's Railway service
 #   variable RAILWAY_ENVIRONMENT_ID  ID of the Railway production environment
+#   variable RAILWAY_MIGRATIONS_SERVICE_ID  ID of the db-migrations service
+#                                    (optional; until set, nothing migrates)
 # Until RAILWAY_SERVICE_ID is set, the workflow only builds and pushes.
 
 name: Build and deploy to Railway
@@ -139,6 +149,92 @@ jobs:
             --label org.opencontainers.image.revision="$REVISION" \
             -t "${IMAGE}:latest" -t "${IMAGE}:${TAG}" .
           echo "### Pushed \`${IMAGE}:${TAG}\` (Flyway ${flyway_image})" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Migrate the database (Flyway, on Railway's private network)
+        # Every build, before the app; never on a rollback (the database stays ahead, which
+        # migrations' backward compatibility makes safe). Skipped until the service exists.
+        if: >-
+          steps.meta.outputs.build == 'true' && vars.RAILWAY_MIGRATIONS_SERVICE_ID != ''
+          && hashFiles('Dockerfile.migrations') != ''
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          SERVICE_ID: ${{ vars.RAILWAY_MIGRATIONS_SERVICE_ID }}
+          ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+          MIGRATIONS_REF: ${{ steps.meta.outputs.image }}-migrations:${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          api() {
+            local resp
+            resp=$(curl -sS --fail-with-body -X POST https://backboard.railway.com/graphql/v2 \
+              -H "Project-Access-Token: ${RAILWAY_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$1")
+            if jq -e '.errors' >/dev/null <<<"$resp"; then
+              echo "Railway API error: $resp" >&2
+              return 1
+            fi
+            printf '%s' "$resp"
+          }
+
+          # Flyway's own lines, for the public run log and summary. The repo is public, so on
+          # a failure only Flyway's headers: PostgreSQL's Message/Detail can quote row values.
+          flyway_lines() {
+            api "$(jq -n --arg id "$1" '{
+              query: "query($id: String!) { deploymentLogs(deploymentId: $id, limit: 500) { message } }",
+              variables: {id: $id}
+            }')" | jq -r '.data.deploymentLogs[].message' | grep -E "$2" || true
+          }
+
+          # The service as code: this build's migrations image, Flyway as the pre-deploy
+          # command (a failure fails the deployment), and a main command that exits at once.
+          echo "Pointing db-migrations at ${MIGRATIONS_REF}"
+          api "$(jq -n --arg s "$SERVICE_ID" --arg e "$ENVIRONMENT_ID" --arg img "$MIGRATIONS_REF" '{
+            query: "mutation($s: String!, $e: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $s, environmentId: $e, input: $input) }",
+            variables: {s: $s, e: $e, input: {
+              source: {image: $img},
+              preDeployCommand: ["flyway -configFiles=/flyway/project/flyway.toml migrate"],
+              startCommand: "true",
+              restartPolicyType: "NEVER"
+            }}
+          }')" >/dev/null
+
+          deployment_id=$(api "$(jq -n --arg s "$SERVICE_ID" --arg e "$ENVIRONMENT_ID" '{
+            query: "mutation($s: String!, $e: String!) { serviceInstanceDeployV2(serviceId: $s, environmentId: $e) }",
+            variables: {s: $s, e: $e}
+          }')" | jq -r '.data.serviceInstanceDeployV2')
+          echo "Migration deployment ${deployment_id} started"
+
+          # INITIALIZING while Flyway runs; SUCCESS only once it has succeeded.
+          for _ in $(seq 1 90); do
+            status=$(api "$(jq -n --arg id "$deployment_id" '{
+              query: "query($id: String!) { deployment(id: $id) { status } }",
+              variables: {id: $id}
+            }')" | jq -r '.data.deployment.status')
+            echo "Status: ${status}"
+            case "$status" in
+              SUCCESS)
+                {
+                  echo '### Database migrations'
+                  echo '```'
+                  flyway_lines "$deployment_id" '^(Current version|Migrating schema|Successfully applied|Schema .* is up to date)'
+                  echo '```'
+                } | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 0 ;;
+              FAILED|CRASHED|REMOVED|SKIPPED)
+                {
+                  echo "### Database migration failed (${status}): the app was not deployed"
+                  echo '```'
+                  flyway_lines "$deployment_id" '^(ERROR:|Migration .* failed|SQL State|Error Code)'
+                  echo '```'
+                  echo "The full log, with PostgreSQL's message, is in the db-migrations service's deployment on Railway."
+                } | tee -a "$GITHUB_STEP_SUMMARY" >&2
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "Timed out waiting for the migration. Check the Railway dashboard." >&2
+          exit 1
 
       - name: Deploy image to Railway
         if: vars.RAILWAY_SERVICE_ID != ''

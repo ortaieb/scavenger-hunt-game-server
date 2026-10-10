@@ -324,9 +324,15 @@ in it **override the same settings in the Railway dashboard**.
   `GAME_SERVER_PORT` if set, otherwise on `PORT`, otherwise 8000. **Don't set
   `GAME_SERVER_PORT` on Railway**: it would override `PORT` and traffic wouldn't reach the
   server.
-- **Health check.** `railway.toml` sets `healthcheckPath = "/health"`. A new deploy only takes
-  traffic once `GET /health` answers `200`, which needs the database to answer and have its
-  tables.
+- **Health check.** `railway.toml` sets `healthcheckPath = "/health"` and
+  `healthcheckTimeout`. A new deploy only takes traffic once `GET /health` answers `200`, which
+  needs the database to answer and have its tables. **The repo is the source of truth:** the
+  service is deployed from a GHCR image, and Railway may not read `railway.toml` for image
+  deploys, so every deploy ([`railway-deploy.yml`](.github/workflows/railway-deploy.yml),
+  rollbacks included) applies both settings to the service through the Railway API, reads them
+  back, and fails before deploying if Railway doesn't report them. There's no need to set the
+  health check in the dashboard: a dashboard edit is overwritten by the next deploy. To change
+  it, change `railway.toml`; a test checks its path is the app's `GET /health`.
 
 Set these up once in the dashboard (they can't be declared in `railway.toml`):
 

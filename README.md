@@ -146,7 +146,7 @@ database on your own machine, like the one `make db-up` starts.
 
 The pool connects in the background, so an unreachable database doesn't stop the server from
 starting. [`GET /health`](#deploying-on-railway) answers `503` until the database answers and
-has its tables.
+is migrated for this build.
 
 #### Database migrations
 
@@ -226,6 +226,10 @@ it can't check are just as important (they're also in [CLAUDE.md](CLAUDE.md)):
    reshapes existing rows, run it locally against a copy with realistic data before merging.
 9. **The server never migrates itself.** Migrations run only through Flyway: `make db-migrate`
    locally, and the workflows in CI and production.
+10. **Bump `SCHEMA_VERSION`** in `src/game_server/schema_version.py` to the new migration's
+   version, in the same PR. `GET /health` answers `503` while the database is behind it, so a
+   build never takes traffic on a schema it wasn't migrated for; a test fails until it matches
+   the newest migration.
 
 ## Development
 
@@ -415,7 +419,11 @@ in it **override the same settings in the Railway dashboard**.
   server.
 - **Health check.** `railway.toml` sets `healthcheckPath = "/health"` and
   `healthcheckTimeout`. A new deploy only takes traffic once `GET /health` answers `200`, which
-  needs the database to answer and have its tables. **The repo is the source of truth:** the
+  needs the database to answer and be migrated to at least the build's `SCHEMA_VERSION`
+  (Flyway's highest successfully applied version). A database behind the build (a dashboard
+  redeploy of a newer tag, a skipped or failed migration) answers `503`, logs `database schema
+  at V<n>, this build needs V<m>`, and Railway keeps traffic on the old deploy; one ahead of it
+  is a rollback, and fine. **The repo is the source of truth:** the
   service is deployed from a GHCR image, and Railway may not read `railway.toml` for image
   deploys, so every deploy ([`railway-deploy.yml`](.github/workflows/railway-deploy.yml),
   rollbacks included) applies both settings to the service through the Railway API, reads them
@@ -431,8 +439,8 @@ Set these up once in the dashboard (they can't be declared in `railway.toml`):
    Railway's PostgreSQL presents a self-signed certificate, so `verify-ca`/`verify-full` don't
    apply unless you supply its CA. The tables come from [Flyway migrations](#database-migrations),
    run inside Railway's private network on every deploy (see
-   [Database migrations on Railway](#database-migrations-on-railway)). Until a database has its tables,
-   `/health` answers `503` and the deploy doesn't take traffic.
+   [Database migrations on Railway](#database-migrations-on-railway)). Until a database is migrated for
+   the build, `/health` answers `503` and the deploy doesn't take traffic.
 2. **A volume mounted at `/app/data`.** Photos (`images/`) and the sessions file live there.
    Without a volume they're lost on every deploy.
 3. **`RAILWAY_RUN_UID=0` as a service variable.** Railway mounts volumes owned by root, and

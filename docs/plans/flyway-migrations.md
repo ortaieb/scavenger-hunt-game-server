@@ -121,6 +121,11 @@ otherwise have over A.
 use the pre-deploy command, or run a separate migrations image (`FROM flyway/flyway` plus the
 migrations) on Railway. Both are more work than we need today.
 
+> **Revisited (#105): the public endpoint is closed.** Migrations run from the separate
+> migrations image on the private network (#101, #102), PostgreSQL's TCP proxy is removed, and
+> people reach the database through `railway ssh` (README, *Database access without a public
+> endpoint*). Option A, and every `DATABASE_PUBLIC_URL` below, is history.
+
 ## Target design
 
 ### Layout
@@ -441,3 +446,5 @@ scratch database) stops the job before the Railway steps.
    has `/health` as its health check path. M3's gate only protects us if Railway calls it.
 4. **Keep the PostgreSQL public TCP proxy on?** Option A needs it. If it's turned off, revisit
    the decision.
+   **Closed (#105):** turned off, by design. Nothing reaches PostgreSQL from outside Railway's
+   private network.

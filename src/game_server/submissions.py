@@ -27,6 +27,7 @@ from game_server.referee import RefereeReport
 from game_server.referee_traces import TracePage, read_traces, record_trace
 from game_server.review_queue import ReviewQueue, read_review_queue
 from game_server.rulings import RecordedRuling, Ruling, record_ruling
+from game_server.schema_version import SCHEMA_VERSION, check_schema_version
 from game_server.scoring import SessionResults
 from game_server.session_runs import RunChange, SessionRun, session_phase
 
@@ -150,9 +151,17 @@ class SubmissionStore:
             yield SubmissionTransaction(conn)
 
     def ping(self) -> None:
-        """Check the database answers and has its schema; raises `psycopg.Error` if not."""
+        """Check the database answers and is migrated for this build.
+
+        Raises `psycopg.Error` if it doesn't answer or Flyway never ran on it, and
+        `SchemaBehindError` if it's at an older version than `SCHEMA_VERSION`.
+        """
         with self._database.connection(timeout=PING_TIMEOUT_SECONDS) as conn:
-            conn.execute("SELECT 1 FROM submissions LIMIT 1").fetchall()
+            row = conn.execute(
+                "SELECT max(version::integer) FROM flyway_schema_history"
+                " WHERE success AND version IS NOT NULL"
+            ).fetchone()
+        check_schema_version(None if row is None else row[0], SCHEMA_VERSION)
 
     def session_run(self, session: UUID) -> SessionRun | None:
         """The session's run, or None if it was never started."""

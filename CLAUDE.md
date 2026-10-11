@@ -115,6 +115,10 @@ Rules for Claude (and everyone):
    reshapes existing rows, run it locally against a copy with realistic data before merging.
 9. **The server never migrates itself.** Migrations run only through Flyway: `make db-migrate`
    locally, and the workflows in CI and production.
+10. **Bump `SCHEMA_VERSION`** in `src/game_server/schema_version.py` to the new migration's
+   version, in the same PR. `GET /health` answers `503` while the database is behind it, so a
+   build never takes traffic on a schema it wasn't migrated for; a test fails until it matches
+   the newest migration.
 
 ## Project conventions
 

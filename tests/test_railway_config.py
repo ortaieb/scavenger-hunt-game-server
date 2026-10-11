@@ -1,7 +1,10 @@
-"""railway.toml: the health check every deploy applies to the Railway service."""
+"""Railway as code: the health check every deploy applies, and no public database endpoint."""
 
+import re
 import tomllib
 from pathlib import Path
+
+from check_migrations import git
 
 from game_server.app import create_app
 
@@ -29,3 +32,22 @@ def test_the_health_check_timeout_is_a_positive_number_of_seconds() -> None:
     assert isinstance(timeout, int)
     assert not isinstance(timeout, bool)
     assert timeout > 0
+
+
+def test_nothing_reaches_postgresql_through_a_public_endpoint() -> None:
+    # PostgreSQL is private (#105): no workflow, config or doc may use its public TCP proxy.
+    # The plan's history and this test are the only places that may name it.
+    repo = RAILWAY_TOML.parent
+    tracked = git("-C", str(repo), "ls-files").splitlines()
+    allowed = {"docs/plans/flyway-migrations.md", "tests/test_railway_config.py"}
+    public = re.compile(r"DATABASE_PUBLIC_URL|proxy\.rlwy\.net")
+
+    offenders = [
+        name
+        for name in tracked
+        if name not in allowed
+        and (repo / name).is_file()
+        and public.search((repo / name).read_text(errors="ignore"))
+    ]
+
+    assert offenders == []

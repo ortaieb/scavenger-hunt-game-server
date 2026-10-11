@@ -433,9 +433,13 @@ in it **override the same settings in the Railway dashboard**.
 
 Set these up once in the dashboard (they can't be declared in `railway.toml`):
 
-1. **A PostgreSQL database.** Add Railway's PostgreSQL service to the project, then on the game
-   server set `GAME_SERVER_DB_URL` to the reference variable `${{Postgres.DATABASE_URL}}`
-   (the private-network URL). TLS stays on: `GAME_SERVER_DB_SSLMODE` defaults to `require`.
+1. **A private PostgreSQL database.** Add Railway's PostgreSQL service to the project and
+   **remove its public networking** (Settings → Networking: delete the TCP proxy), so it's
+   reachable only on Railway's private network. On the game server, set `GAME_SERVER_DB_URL` to
+   the reference variable `${{Postgres.DATABASE_URL}}` (the private-network URL), and **no other
+   `GAME_SERVER_DB_*` connection variable**: a separate field overrides the same part of the
+   URL, so a leftover `GAME_SERVER_DB_HOST` or `GAME_SERVER_DB_PORT` would win. TLS stays on
+   inside the private network too: `GAME_SERVER_DB_SSLMODE` defaults to `require`.
    Railway's PostgreSQL presents a self-signed certificate, so `verify-ca`/`verify-full` don't
    apply unless you supply its CA. The tables come from [Flyway migrations](#database-migrations),
    run inside Railway's private network on every deploy (see
@@ -548,6 +552,23 @@ change is an incremental migration and data is kept. **Never run this on a datab
 
 Afterwards `flyway_schema_history` has V1 as *Success* (applied, not baselined), and the next
 merge to `main` migrates (nothing to apply) before it deploys the app.
+
+**Database access without a public endpoint.** PostgreSQL has no public URL: only services
+on the project's private network (the game server, `db-migrations`) reach it, at
+`postgres.railway.internal`, over TLS. People get in like this:
+
+- **Backups:** Railway's volume backups on the PostgreSQL service (its volume's *Backups* tab).
+  Keep a schedule on (daily, at least) and check one was taken before any risky change; restore
+  from the same tab. They're the only copy: there's no off-Railway dump.
+- **Ad-hoc queries:** `railway ssh -s Postgres`, then `psql "$DATABASE_URL"` inside it. The
+  PostgreSQL image has `psql` and `pg_dump`, and the connection never leaves the private
+  network. Close the session when done.
+- **A dump:** inside the same session, `pg_dump --format=custom "$DATABASE_URL" -f
+  /tmp/game-server.dump`, then copy it out only if you must, and delete it from `/tmp`. It holds
+  every team's data: don't keep it on a laptop longer than the task.
+- **Break-glass**, if a tool really needs a public endpoint: re-add the TCP proxy for that task
+  only, rotate to a strong password first if in doubt, and delete the proxy straight after.
+  Nothing in this repo or its workflows may depend on it.
 
 **Reference photos** go on the volume next to the sessions file, which they're resolved
 against. The referee sends them to the model provider (Anthropic) with each photo judged at

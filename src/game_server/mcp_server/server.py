@@ -27,8 +27,10 @@ from game_server.drafts import DraftStore
 from game_server.mcp_server.auth import OrganiserGuard
 from game_server.mcp_server.hunts import register_hunt_tools
 from game_server.mcp_server.services import McpServices
+from game_server.mcp_server.submissions import register_submission_tools
 from game_server.session_runs import SessionPhase
 from game_server.sessions import get_session_repository
+from game_server.submissions import SubmissionStore
 
 MCP_PATH = "/mcp"
 # The SDK's loggers stay quiet: at INFO they'd log every request.
@@ -101,6 +103,7 @@ def build_mcp_server(settings: Settings, run: McpServices) -> MCPServer:
         )
 
     register_hunt_tools(server, settings, run)
+    register_submission_tools(server, settings, run)
     return server
 
 
@@ -113,6 +116,7 @@ def app_services(app: FastAPI, settings: Settings, clock: Clock) -> McpServices:
     return McpServices(
         sessions=lambda: get_session_repository(settings, get_database(settings)),
         drafts=drafts,
+        submissions=lambda: SubmissionStore(get_database(settings)),
         runner=lambda: get_designer_runner(settings, drafts(), clock, app_agent_runner(app)),
         codes=SecretCodes(),
         clock=clock,

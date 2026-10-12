@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+import pytest
 from mcp import Client
 from mcp.types import CallToolResult
 from test_designer_review import FixedCodes, file_sessions
@@ -20,6 +21,7 @@ from game_server.mcp_server.server import build_mcp_server
 from game_server.mcp_server.services import McpServices
 from game_server.published_sessions import PublishedSessionRows
 from game_server.sessions import SessionRepository
+from game_server.submissions import SubmissionStore
 
 NOW = START
 STUB_DELAY_SECONDS = 60
@@ -27,7 +29,7 @@ STUB_DELAY_SECONDS = 60
 
 def stub_services(
     database: Database,
-    runner: StubRunner,
+    runner: StubRunner | None = None,
     repository: SessionRepository | None = None,
     codes: FixedCodes | None = None,
 ) -> McpServices:
@@ -39,7 +41,8 @@ def stub_services(
     return McpServices(
         sessions=lambda: sessions,
         drafts=lambda: DraftStore(database),
-        runner=lambda: runner,
+        submissions=lambda: SubmissionStore(database),
+        runner=lambda: runner if runner is not None else pytest.fail("no designer runner"),
         codes=codes or FixedCodes(),
         clock=lambda: NOW,
     )

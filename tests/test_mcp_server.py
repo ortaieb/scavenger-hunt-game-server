@@ -87,6 +87,8 @@ def test_tools_list(client: TestClient) -> None:
         "get_hunt_draft",
         "edit_hunt_checkpoint",
         "publish_hunt",
+        "list_submissions",
+        "get_submission",
     ]
 
 
@@ -156,6 +158,7 @@ def list_sessions(repository: SessionRepository, settings: Settings) -> Any:
     services = McpServices(
         sessions=lambda: repository,
         drafts=lambda: pytest.fail("list_sessions doesn't touch drafts"),
+        submissions=lambda: pytest.fail("list_sessions doesn't touch submissions"),
         runner=lambda: pytest.fail("list_sessions doesn't touch the runner"),
         codes=FixedCodes(),
         clock=lambda: START,
@@ -216,6 +219,7 @@ def no_services() -> McpServices:
     return McpServices(
         sessions=SessionRepository,
         drafts=lambda: pytest.fail("not called"),
+        submissions=lambda: pytest.fail("not called"),
         runner=lambda: pytest.fail("not called"),
         codes=FixedCodes(),
         clock=lambda: START,

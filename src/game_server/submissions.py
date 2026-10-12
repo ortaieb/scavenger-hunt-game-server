@@ -30,6 +30,13 @@ from game_server.rulings import RecordedRuling, Ruling, record_ruling
 from game_server.schema_version import SCHEMA_VERSION, check_schema_version
 from game_server.scoring import SessionResults
 from game_server.session_runs import RunChange, SessionRun, session_phase
+from game_server.submission_views import (
+    SubmissionDetail,
+    SubmissionFilter,
+    SubmissionPage,
+    read_submission,
+    read_submission_list,
+)
 
 # How long the health check waits for a connection before reporting the database unavailable.
 PING_TIMEOUT_SECONDS = 5.0
@@ -316,6 +323,28 @@ class SubmissionStore:
         with self._database.transaction() as conn:
             conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             return read_review_queue(conn, session, recent)
+
+    def list_submissions(
+        self,
+        session: UUID,
+        filter: SubmissionFilter,
+        team: str | None,
+        checkpoint: int | None,
+        limit: int,
+        before: int | None,
+    ) -> SubmissionPage:
+        """A page of the session's submissions matching `filter`, newest first."""
+        with self._database.connection() as conn:
+            return read_submission_list(conn, session, filter, team, checkpoint, limit, before)
+
+    def submission_detail(self, session: UUID, submission: int) -> SubmissionDetail | None:
+        """One submission with its checks and every ruling on it; None if it isn't in the session.
+
+        Read in one read-only snapshot, so the rulings agree with the effective verdict.
+        """
+        with self._database.transaction() as conn:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            return read_submission(conn, session, submission)
 
     def image_id(self, session: UUID, submission: int) -> UUID | None:
         """The stored photo's id of one of the session's submissions; None if there's no such

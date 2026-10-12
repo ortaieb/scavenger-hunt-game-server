@@ -20,7 +20,7 @@ from typing import Annotated, Protocol
 from uuid import UUID
 
 import psycopg
-from fastapi import Depends, Request
+from fastapi import Depends, FastAPI, Request
 
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.config import Settings, get_settings
@@ -401,10 +401,15 @@ def log_finished(draft_id: UUID, result: DraftResult) -> None:
     )
 
 
+def app_agent_runner(app: FastAPI) -> AgentRunner | None:
+    """The app's agent runner, which its lifespan opens; None outside it."""
+    runner = getattr(app.state, "agent_runner", None)
+    return runner if isinstance(runner, AgentRunner) else None
+
+
 def get_agent_runner(request: Request) -> AgentRunner | None:
     """The app's agent runner, which its lifespan opens; None outside it."""
-    runner = getattr(request.app.state, "agent_runner", None)
-    return runner if isinstance(runner, AgentRunner) else None
+    return app_agent_runner(request.app)
 
 
 def get_designer_runner(

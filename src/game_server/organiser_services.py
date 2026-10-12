@@ -1,4 +1,5 @@
-"""What the organiser does, as plain functions: start a design, publish a draft, rule on a photo.
+"""What the organiser does, as plain functions: start a design, edit and publish a draft, rule
+on a photo.
 
 The HTTP routes and the MCP tools both call these, so they do the same thing. They raise domain
 errors; each caller maps them to its own kind of response.
@@ -11,17 +12,26 @@ from uuid import UUID, uuid4
 from game_server.clock import Clock
 from game_server.config import Settings
 from game_server.designer.review import (
+    CheckpointEdit,
     CodeSource,
     DraftNotReadyError,
     DraftProblemsError,
     PublishRequest,
+    apply_edit,
     build_session,
     check_accepted,
     issue_codes,
     readiness,
 )
 from game_server.designer_runners import DesignerRunner
-from game_server.drafts import DesignerBusyError, DraftRequest, DraftStore, LockedDraft, Problem
+from game_server.drafts import (
+    DesignerBusyError,
+    DraftCheckpoint,
+    DraftRequest,
+    DraftStore,
+    LockedDraft,
+    Problem,
+)
 from game_server.rulings import RecordedRuling, Ruling
 from game_server.sessions import GameSession, SessionPublishError, SessionRepository
 from game_server.submissions import SubmissionStore
@@ -33,9 +43,12 @@ PUBLISH_ATTEMPTS = 3
 __all__ = [
     "DesignerBusyError",
     "DesignerDisabledError",
+    "DraftNotEditableError",
     "DraftNotReadyError",
     "DraftProblemsError",
+    "UnknownCheckpointError",
     "UnknownDraftError",
+    "edit_checkpoint",
     "publish_draft",
     "rule",
     "start_design",
@@ -48,6 +61,14 @@ class DesignerDisabledError(Exception):
 
 class UnknownDraftError(Exception):
     """No such draft."""
+
+
+class DraftNotEditableError(Exception):
+    """The draft isn't `ready`: only a ready draft can be edited."""
+
+
+class UnknownCheckpointError(Exception):
+    """The draft has no checkpoint at that position."""
 
 
 def start_design(
@@ -65,6 +86,28 @@ def start_design(
     logger.info("Draft %s created status running runner %s", draft_id, runner.name)
     runner.start(draft_id, request)
     return draft_id
+
+
+def edit_checkpoint(
+    store: DraftStore, draft: UUID, position: int, edit: CheckpointEdit
+) -> DraftCheckpoint:
+    """Edit, accept or reject a checkpoint of a `ready` draft; the checkpoint as saved.
+
+    Edits are held to the rules. Raises `UnknownDraftError`, `DraftNotEditableError`,
+    `UnknownCheckpointError` or `DraftProblemsError`.
+    """
+    with store.locked(draft) as locked:
+        if locked is None:
+            raise UnknownDraftError(str(draft))
+        if locked.draft.status != "ready":
+            raise DraftNotEditableError("draft can't be edited")
+        checkpoints = locked.draft.checkpoints
+        found = next((c for c in checkpoints if c.position == position), None)
+        if found is None:
+            raise UnknownCheckpointError(str(position))
+        edited = apply_edit(found, edit)
+        locked.save_checkpoints([edited if c.position == position else c for c in checkpoints])
+    return edited
 
 
 def publish_draft(

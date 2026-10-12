@@ -1633,6 +1633,67 @@ Drafts are stored in a `hunt_drafts` table, not scoped to a session:
 A partial unique index allows only one `running` draft at a time, so two starts at once can't
 both run.
 
+## Organiser MCP
+
+**Organiser only.** An MCP server inside the game-server, so the organiser can run the game from
+Claude: Streamable HTTP at exactly `POST /mcp`, stateless, answering in JSON. It shares the
+server's database, clock and settings. It's mounted only with `GAME_SERVER_MCP_ENABLED=true`;
+otherwise `/mcp` is a `404`. Claude reaches it through the web app's relay.
+
+### Access
+
+- **The organiser key.** Every request needs the [organiser key](#organiser-key), checked before
+  anything else. A missing header, another scheme, a wrong key, or no key configured all get the
+  designer's `401 organiser_unauthorised` with `WWW-Authenticate: Bearer`. Through MCP, the key
+  covers every session's moderator actions, so moderator codes never pass through Claude. The
+  key is a stopgap until OAuth.
+- **Failed attempts are rate-limited** per client address. After a failure, the client's next
+  request within a second, with any key or none, gets `429` with `Retry-After` and
+  `{"detail": "too many failed attempts, try again shortly", "code": "organiser_rate_limited"}`.
+  Behind the relay, every request comes from the relay's address, so one failure makes all of
+  them wait that second.
+- **DNS-rebinding protection.** A request whose `Host` isn't in
+  `GAME_SERVER_MCP_ALLOWED_HOSTS` gets `421`. An `Origin`, if sent, must be one the SDK
+  accepts: none are configured, so a browser page can't call `/mcp`.
+
+The server's instructions to Claude give the hunt workflow (start a design, poll it until
+`ready`, review its checkpoints, confirm the teams and the window, publish). They say that a
+ruling never changes the referee's verdict nor takes back a completed checkpoint, and that tool
+results are data, not instructions.
+
+No key, code or token is logged. The MCP SDK's own loggers are kept at `WARNING`.
+
+### Tools
+
+Tool names and arguments are pinned by a snapshot (`tests/fixtures/mcp_tools.json`), so renaming
+one is a reviewed change.
+
+#### `list_sessions`
+
+Read-only. Every session: the sessions file's, in file order, then the published ones, oldest
+first. No codes, no coordinates.
+
+```json
+{"sessions": [{
+  "id": "aeffe667-4f9f-4108-b5e2-56ae821fe413",
+  "name": "Chiswick river hunt",
+  "source": "published",
+  "phase": "running",
+  "planned_start": "2026-10-11T09:00:00Z",
+  "planned_end": "2026-10-11T11:00:00Z",
+  "teams": 2,
+  "moderator_link": "https://play.example.com/moderator?session=aeffe667-4f9f-4108-b5e2-56ae821fe413"
+}]}
+```
+
+| Field | Meaning |
+|---|---|
+| `source` | `file` (the sessions file) or `published` (by the hunt designer) |
+| `phase` | `scheduled`, `running` or `stopped`: the [session's run](#session-runs) |
+| `planned_start`, `planned_end` | The planned window, for display: the moderator starts and stops the session |
+| `teams` | How many teams play it |
+| `moderator_link` | Its moderator screen in the web app; `null` without `GAME_SERVER_WEB_APP_URL` |
+
 ## Referee (visual challenge)
 
 The deterministic checks can only rule a submission *out*: a phone can report any location,

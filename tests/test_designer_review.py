@@ -658,7 +658,7 @@ def test_one_line_per_publish_without_the_codes(
     draft, response = published_with_one_rejected(client, store)
 
     body = response.json()
-    lines = [r.getMessage() for r in caplog.records if r.name == "game_server.designer.routes"]
+    lines = [r.getMessage() for r in caplog.records if r.name == "game_server.organiser_services"]
     assert lines == [f"Draft {draft} published as session {body['session']} teams 2 checkpoints 3"]
     for code in (body["moderator-code"], *(t["join-code"] for t in body["teams"])):
         assert code not in caplog.text

@@ -7,9 +7,8 @@ accepted ones as a session, playable at once.
 
 import logging
 from collections.abc import Sequence
-from datetime import UTC
 from typing import Annotated, Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -24,11 +23,7 @@ from game_server.designer.review import (
     DraftProblemsError,
     PublishRequest,
     apply_edit,
-    build_session,
-    check_accepted,
     get_code_source,
-    issue_codes,
-    readiness,
 )
 from game_server.designer.rules import route_legs
 from game_server.designer_runners import DesignerRunner, get_designer_runner
@@ -40,7 +35,6 @@ from game_server.drafts import (
     DraftRequest,
     DraftStatus,
     DraftStore,
-    LockedDraft,
     Problem,
     ProgressEntry,
     RunErrorCode,
@@ -48,9 +42,14 @@ from game_server.drafts import (
 )
 from game_server.errors import ApiError
 from game_server.organiser import require_organiser
+from game_server.organiser_services import (
+    DesignerDisabledError,
+    UnknownDraftError,
+)
+from game_server.organiser_services import publish_draft as publish_service
+from game_server.organiser_services import start_design as start_design_service
 from game_server.sessions import (
     GameSession,
-    SessionPublishError,
     SessionRepository,
     get_session_repository,
 )
@@ -208,21 +207,14 @@ def start_design(
     runner: Annotated[DesignerRunner, Depends(get_designer_runner)],
 ) -> DraftCreatedOut:
     """Start designing a hunt; follow the draft at `Location`. One run at a time."""
-    if not runner.available():
-        raise ApiError(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "the hunt designer is not available",
-            "designer_disabled",
-        )
-    draft_id = uuid4()
     try:
-        store.create(draft_id, body, runner.name, clock().astimezone(UTC))
+        draft_id = start_design_service(store, runner, clock, body)
+    except DesignerDisabledError as exc:
+        raise ApiError(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc), "designer_disabled") from None
     except DesignerBusyError:
         raise ApiError(
             status.HTTP_409_CONFLICT, "a design is already running", "designer_busy"
         ) from None
-    logger.info("Draft %s created status running runner %s", draft_id, runner.name)
-    runner.start(draft_id, body)
     response.headers["Location"] = f"/designer/drafts/{draft_id}"
     return DraftCreatedOut(id=draft_id, status="running")
 
@@ -257,8 +249,6 @@ def read_draft(draft: UUID, store: Annotated[DraftStore, Depends(get_draft_store
 
 
 # --- review and publish -------------------------------------------------------------------
-
-PUBLISH_ATTEMPTS = 3
 
 
 def install(app: FastAPI) -> None:
@@ -353,47 +343,13 @@ def publish_draft(
     codes: Annotated[CodeSource, Depends(get_code_source)],
 ) -> PublicationOut:
     """Publish the accepted checkpoints as a session, playable at once, with fresh codes."""
-    with store.locked(draft) as locked:
-        if locked is None:
-            raise _unknown_draft()
-        session = _publish(locked, body, settings, sessions, codes)
-        locked.mark_published(session.id, clock().astimezone(UTC))
-    logger.info(
-        "Draft %s published as session %s teams %d checkpoints %d",
-        draft,
-        session.id,
-        len(session.teams),
-        len(session.checkpoints),
-    )
-    return PublicationOut.of(session)
-
-
-def _publish(
-    locked: LockedDraft,
-    body: PublishRequest,
-    settings: Settings,
-    sessions: SessionRepository,
-    codes: CodeSource,
-) -> GameSession:
-    """Check the draft, then publish it, drawing new codes if a race took one."""
     try:
-        accepted = readiness(locked.draft)
-        check_accepted(locked.draft, accepted, settings.designer_min_spacing_m)
+        session = publish_service(store, draft, body, settings, sessions, codes, clock)
+    except UnknownDraftError:
+        raise _unknown_draft() from None
     except DraftNotReadyError as exc:
         raise ApiError(status.HTTP_409_CONFLICT, str(exc), "draft_not_ready") from None
-    for _ in range(PUBLISH_ATTEMPTS):
-        join_codes, moderator_code = issue_codes(len(body.teams), codes, sessions.code_in_use)
-        session = build_session(locked.draft, accepted, body, join_codes, moderator_code)
-        try:
-            sessions.publish_session(session, locked.draft.id)
-        except SessionPublishError as exc:
-            if all(p.endswith("code: already in use") for p in exc.problems):
-                continue  # another publish took a code since it was drawn
-            raise DraftProblemsError(
-                [Problem(code="invalid_session", position=None, message=p) for p in exc.problems]
-            ) from None
-        return session
-    raise RuntimeError(f"no unused codes after {PUBLISH_ATTEMPTS} attempts")
+    return PublicationOut.of(session)
 
 
 @router.get(

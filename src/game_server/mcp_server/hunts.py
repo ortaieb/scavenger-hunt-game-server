@@ -1,7 +1,6 @@
 """The hunt tools: design, review and publish a hunt, through the same services as
 `/designer/drafts`. Domain errors become tool errors carrying the API's codes."""
 
-import json
 import time
 from typing import Annotated, Literal
 from uuid import UUID
@@ -24,6 +23,7 @@ from game_server.designer.routes import (
     draft_out,
 )
 from game_server.drafts import DraftCheckpoint, DraftRequest
+from game_server.mcp_server.errors import tool_error
 from game_server.mcp_server.services import McpServices
 
 POLL_SECONDS = 0.5
@@ -35,11 +35,6 @@ class DesignStarted(BaseModel):
     id: UUID
     status: Literal["running"]
     designer_link: str | None
-
-
-def tool_error(code: str, detail: str, **extra: object) -> ToolError:
-    """A tool error whose text is `{"code": ..., "detail": ...}`, the API's error body."""
-    return ToolError(json.dumps({"code": code, "detail": detail, **extra}))
 
 
 def _web_link(settings: Settings, path: str) -> str | None:

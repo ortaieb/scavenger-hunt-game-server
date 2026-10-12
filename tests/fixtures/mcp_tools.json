@@ -1301,5 +1301,543 @@
       "destructiveHint": true,
       "openWorldHint": false
     }
+  },
+  {
+    "name": "list_submissions",
+    "description": "A session's submissions, newest first, as compact rows. No photos.\n\n`filter`: `needs_review` (the default) is every photo the referee couldn't decide and\nnobody has ruled on; `failed` and `passed` go by the effective verdict (what scoring\nuses, the moderator's ruling over the referee's verdict); `overridden` is every photo\nthe moderator ruled on; `all` is everything. Each row has the referee's verdict, the\nlatest ruling, the effective verdict and the codes of the checks that failed. Page with\n`before`: pass the previous page's `next` until it is null. Read a photo's reasons with\n`get_submission`; the organiser views the photo on the moderator screen.\n",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "filter": {
+          "default": "needs_review",
+          "description": "`needs_review` is the moderator's queue",
+          "enum": [
+            "needs_review",
+            "failed",
+            "passed",
+            "overridden",
+            "all"
+          ],
+          "title": "Filter",
+          "type": "string"
+        },
+        "team": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A team's name, ignoring case",
+          "title": "Team"
+        },
+        "checkpoint": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A checkpoint's sequence",
+          "title": "Checkpoint"
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "before": {
+          "anyOf": [
+            {
+              "maximum": 9223372036854775807,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A submission id: the page starts below",
+          "title": "Before"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "list_submissionsArguments"
+    },
+    "outputSchema": {
+      "$defs": {
+        "CheckpointOut": {
+          "description": "The photo's checkpoint. `name` is null if it's no longer in the sessions file.",
+          "properties": {
+            "sequence": {
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Name"
+            }
+          },
+          "required": [
+            "sequence",
+            "name"
+          ],
+          "title": "CheckpointOut",
+          "type": "object"
+        },
+        "SubmissionRow": {
+          "description": "A submission, compactly. `verdict` is the referee's; `ruling` the moderator's latest.",
+          "properties": {
+            "submission": {
+              "title": "Submission",
+              "type": "integer"
+            },
+            "team": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Team"
+            },
+            "checkpoint": {
+              "$ref": "#/$defs/CheckpointOut"
+            },
+            "attempt": {
+              "title": "Attempt",
+              "type": "integer"
+            },
+            "received-at": {
+              "title": "Received-At",
+              "type": "string"
+            },
+            "verdict": {
+              "enum": [
+                "failed",
+                "pending",
+                "pass"
+              ],
+              "title": "Verdict",
+              "type": "string"
+            },
+            "ruling": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "approve",
+                    "reject"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ruling"
+            },
+            "effective-verdict": {
+              "enum": [
+                "failed",
+                "pending",
+                "pass"
+              ],
+              "title": "Effective-Verdict",
+              "type": "string"
+            },
+            "failed-checks": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Failed-Checks",
+              "type": "array"
+            }
+          },
+          "required": [
+            "submission",
+            "team",
+            "checkpoint",
+            "attempt",
+            "received-at",
+            "verdict",
+            "ruling",
+            "effective-verdict",
+            "failed-checks"
+          ],
+          "title": "SubmissionRow",
+          "type": "object"
+        }
+      },
+      "description": "A page of submissions, newest first; pass `next` as `before` for the next page.",
+      "properties": {
+        "submissions": {
+          "items": {
+            "$ref": "#/$defs/SubmissionRow"
+          },
+          "title": "Submissions",
+          "type": "array"
+        },
+        "next": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Next"
+        },
+        "moderator-link": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Moderator-Link"
+        }
+      },
+      "required": [
+        "submissions",
+        "next",
+        "moderator-link"
+      ],
+      "title": "SubmissionList",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_submission",
+    "description": "One submission: why the referee decided as it did, and every ruling on it. No photo.\n\nThe pose the team was given and the scene it should show; each check with its outcome,\nconfidence, the reason the team was told and the detail behind it; the referee's status\nand error code; and every ruling, oldest first (the last is in force). It does not\ninclude the referee's raw trace or prompt. The scene and the details are the answers to\nthe clues: for the organiser only.\n",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "submission_id": {
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "title": "Submission Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id",
+        "submission_id"
+      ],
+      "title": "get_submissionArguments"
+    },
+    "outputSchema": {
+      "$defs": {
+        "CheckpointOut": {
+          "description": "The photo's checkpoint. `name` is null if it's no longer in the sessions file.",
+          "properties": {
+            "sequence": {
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Name"
+            }
+          },
+          "required": [
+            "sequence",
+            "name"
+          ],
+          "title": "CheckpointOut",
+          "type": "object"
+        },
+        "RefereeOut": {
+          "description": "How the referee's call went: with an `error-code` there are no reasons to read.",
+          "properties": {
+            "status": {
+              "enum": [
+                "ok",
+                "error"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "error-code": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "deadline",
+                    "timeout",
+                    "api_error",
+                    "refusal",
+                    "max_tokens",
+                    "invalid_output",
+                    "invalid_image"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error-Code"
+            }
+          },
+          "required": [
+            "status",
+            "error-code"
+          ],
+          "title": "RefereeOut",
+          "type": "object"
+        },
+        "RulingOut": {
+          "description": "A ruling as recorded.",
+          "properties": {
+            "ruling": {
+              "enum": [
+                "approve",
+                "reject"
+              ],
+              "title": "Ruling",
+              "type": "string"
+            },
+            "note": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Note"
+            },
+            "ruled-at": {
+              "title": "Ruled-At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "ruling",
+            "note",
+            "ruled-at"
+          ],
+          "title": "RulingOut",
+          "type": "object"
+        },
+        "StoredCheckOut": {
+          "description": "A check that ran: what the player was told (`reason`), and why (`detail`).",
+          "properties": {
+            "check": {
+              "title": "Check",
+              "type": "string"
+            },
+            "outcome": {
+              "enum": [
+                "passed",
+                "failed",
+                "uncertain",
+                "skipped"
+              ],
+              "title": "Outcome",
+              "type": "string"
+            },
+            "confidence": {
+              "title": "Confidence",
+              "type": "number"
+            },
+            "reason": {
+              "title": "Reason",
+              "type": "string"
+            },
+            "detail": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Detail"
+            }
+          },
+          "required": [
+            "check",
+            "outcome",
+            "confidence",
+            "reason",
+            "detail"
+          ],
+          "title": "StoredCheckOut",
+          "type": "object"
+        }
+      },
+      "description": "A submission in full, but for the photo.",
+      "properties": {
+        "submission": {
+          "title": "Submission",
+          "type": "integer"
+        },
+        "team": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Team"
+        },
+        "checkpoint": {
+          "$ref": "#/$defs/CheckpointOut"
+        },
+        "attempt": {
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "received-at": {
+          "title": "Received-At",
+          "type": "string"
+        },
+        "pose": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pose"
+        },
+        "scene": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Scene"
+        },
+        "verdict": {
+          "enum": [
+            "failed",
+            "pending",
+            "pass"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        },
+        "effective-verdict": {
+          "enum": [
+            "failed",
+            "pending",
+            "pass"
+          ],
+          "title": "Effective-Verdict",
+          "type": "string"
+        },
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/StoredCheckOut"
+          },
+          "title": "Checks",
+          "type": "array"
+        },
+        "referee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefereeOut"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rulings": {
+          "items": {
+            "$ref": "#/$defs/RulingOut"
+          },
+          "title": "Rulings",
+          "type": "array"
+        },
+        "moderator-link": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Moderator-Link"
+        }
+      },
+      "required": [
+        "submission",
+        "team",
+        "checkpoint",
+        "attempt",
+        "received-at",
+        "pose",
+        "scene",
+        "verdict",
+        "effective-verdict",
+        "checks",
+        "referee",
+        "rulings",
+        "moderator-link"
+      ],
+      "title": "SubmissionRead",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
   }
 ]

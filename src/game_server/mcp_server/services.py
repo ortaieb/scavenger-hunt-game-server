@@ -8,6 +8,7 @@ from game_server.designer.review import CodeSource
 from game_server.designer_runners import DesignerRunner
 from game_server.drafts import DraftStore
 from game_server.sessions import SessionRepository
+from game_server.submissions import SubmissionStore
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class McpServices:
 
     sessions: Callable[[], SessionRepository]
     drafts: Callable[[], DraftStore]
+    submissions: Callable[[], SubmissionStore]
     runner: Callable[[], DesignerRunner]
     codes: CodeSource
     clock: Clock

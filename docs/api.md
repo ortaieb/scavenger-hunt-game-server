@@ -1694,6 +1694,39 @@ first. No codes, no coordinates.
 | `teams` | How many teams play it |
 | `moderator_link` | Its moderator screen in the web app; `null` without `GAME_SERVER_WEB_APP_URL` |
 
+#### Hunt tools
+
+Design, review and publish a hunt through the same services as the
+[hunt designer's routes](#hunt-designer): a published session is the one the route would make.
+Results are structured content with output schemas, in the routes' shapes (kebab-case keys).
+
+| Tool | Kind | Arguments | Returns |
+|---|---|---|---|
+| `start_hunt_design` | Write; open-world: reads OpenStreetMap and calls the Claude API, up to $1 a run | `area`, `theme`, `checkpoints` (3–8, default 3), `max_walk_km` (0.5–10, default 3) | `id`, `status: "running"` and `designer_link` (`<web app>/designer?draft=<id>`, `null` without `GAME_SERVER_WEB_APP_URL`) |
+| `list_hunt_drafts` | Read | none | The newest 50, as [`GET /designer/drafts`](#get-designerdrafts) |
+| `get_hunt_draft` | Read | `draft_id`, `wait_seconds` (0–20, default 0) | The draft in full, as [`GET /designer/drafts/{draft}`](#get-designerdraftsdraft). With `wait_seconds` it returns as soon as the status changes, or at the timeout |
+| `edit_hunt_checkpoint` | Write | `draft_id`, `position`, `edit` (as the [`PATCH` body](#patch-designerdraftsdraftcheckpointsposition)) | The checkpoint as saved |
+| `publish_hunt` | Write; **can't be undone** | `draft_id`, `request` (as the [`publish` body](#post-designerdraftsdraftpublish)) | The session, its join codes and its moderator code |
+
+`publish_hunt` is the only tool that returns codes. They are credentials, for their holders
+only, and are never logged; its description tells Claude so.
+
+A domain error is a tool error whose text is the API's error body as JSON,
+`{"code": ..., "detail": ...}`:
+
+| `code` | When |
+|---|---|
+| `designer_disabled` | The designer can't run (no Anthropic key) |
+| `designer_busy` | Another design is running |
+| `unknown_draft`, `unknown_checkpoint` | No such draft, or no checkpoint at that position |
+| `draft_not_editable` | The draft isn't `ready` |
+| `draft_not_ready` | The draft can't be published yet; `detail` says why |
+| `draft_problems` | An edit or the accepted checkpoints break a rule; `problems` lists them |
+| `invalid_request` | A design request the rules refuse after trimming (`start_hunt_design`) |
+
+An argument outside its schema (a `checkpoints` of 9, an empty edit) is refused by the server
+before the tool runs.
+
 ## Referee (visual challenge)
 
 The deterministic checks can only rule a submission *out*: a phone can report any location,

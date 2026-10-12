@@ -36,10 +36,12 @@ src/game_server/
   session_control.py # moderator start and stop, and the session clock
   overview.py        # `…/overview`: the moderator's standings, progress and blocked attempts
   traces.py          # `…/traces`: the moderator's verdicts with their referee traces and spend
-  organiser_services.py  # start a design, publish a draft, rule on a photo: plain functions the routes call
+  organiser_services.py  # start a design, edit a checkpoint, publish a draft, rule on a photo: plain functions the routes and MCP tools call
   organiser.py       # require_organiser: the organiser key (Bearer), for the hunt designer and /mcp
   mcp_server/
     server.py        # build_mcp_server and its tools (list_sessions); mount_mcp: `/mcp` in the app
+    hunts.py         # the hunt tools: start a design, list and read drafts, edit checkpoints, publish
+    services.py      # McpServices: the stores, runner, codes and clock the tools run on
     auth.py          # OrganiserGuard: the organiser key in front of `/mcp`, failures rate-limited
   designer/
     routes.py        # `/designer/drafts`: start a design, read drafts, review and publish them

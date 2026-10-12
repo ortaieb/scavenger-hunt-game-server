@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path, PurePath
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from fastapi import Depends
@@ -34,7 +34,7 @@ from game_server.database import Database, get_database
 from game_server.imaging import UndecodableImageError, open_upright
 from game_server.models import Location
 from game_server.published_sessions import AlreadyPublishedError, CodeKind, PublishedSessionRows
-from game_server.session_runs import SessionRun
+from game_server.session_runs import SessionPhase, SessionRun, session_phase
 
 
 def _kebab(name: str) -> str:
@@ -377,6 +377,15 @@ class _Indexed:
         )
 
 
+@dataclass(frozen=True)
+class ListedSession:
+    """A session in the list: where it comes from and its phase."""
+
+    session: GameSession
+    source: Literal["file", "published"]
+    phase: SessionPhase
+
+
 class SessionRepository:
     """Read-only lookup of game sessions and their checkpoints."""
 
@@ -428,6 +437,24 @@ class SessionRepository:
             return found
         published = self._published_session(session_id)
         return published.session if published else None
+
+    def list_sessions(self) -> list[ListedSession]:
+        """Every session: the file's, in file order, then the published ones, oldest first,
+        each with its phase. Without the database, only the file's, all `scheduled`."""
+        if self._rows is None:
+            return [
+                ListedSession(session, "file", "scheduled") for session in self._sessions.values()
+            ]
+        published = [GameSession.model_validate(doc) for doc in self._rows.documents()]
+        both: list[tuple[GameSession, Literal["file", "published"]]] = [
+            *((session, "file") for session in self._sessions.values()),
+            *((session, "published") for session in published),
+        ]
+        runs = self._rows.runs([session.id for session, _ in both])
+        return [
+            ListedSession(session, source, session_phase(runs.get(session.id)))
+            for session, source in both
+        ]
 
     def get_checkpoint(self, session_id: UUID, sequence: int) -> Checkpoint | None:
         """Return the session's checkpoint with this sequence number, if any."""

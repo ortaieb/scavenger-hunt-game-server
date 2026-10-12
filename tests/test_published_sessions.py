@@ -27,6 +27,7 @@ from game_server.sessions import (
     get_session_repository,
     parse_sessions,
 )
+from game_server.submissions import SubmissionStore
 
 START = datetime(2026, 10, 10, 9, 0, tzinfo=UTC)
 FILE_SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
@@ -501,3 +502,47 @@ def test_the_reference_photo_route_has_none_for_a_published_session(
     )
 
     assert response.status_code == 404
+
+
+# --- listing ------------------------------------------------------------------------------------
+
+
+def test_every_session_is_listed_with_its_source_and_phase(
+    repository: SessionRepository, database: Database
+) -> None:
+    first, second = game_session(), game_session(codes=("PUB-OWL-2A",), moderator=None)
+    repository.publish_session(first)
+    repository.publish_session(second)
+    store = SubmissionStore(database)
+    store.start_run(UUID(FILE_SESSION), START)
+    store.stop_run(UUID(FILE_SESSION), START + timedelta(hours=1))
+    store.start_run(second.id, START)
+
+    listed = repository.list_sessions()
+
+    assert [(s.session.id, s.source, s.phase) for s in listed] == [
+        (UUID(FILE_SESSION), "file", "stopped"),
+        (first.id, "published", "scheduled"),
+        (second.id, "published", "running"),
+    ]
+
+
+def test_a_cold_repository_lists_the_published_sessions(
+    repository: SessionRepository, rows: PublishedSessionRows
+) -> None:
+    published = game_session()
+    repository.publish_session(published)
+
+    listed = SessionRepository().beside(rows).list_sessions()
+
+    assert [(s.session, s.source) for s in listed] == [(published, "published")]
+
+
+def test_without_the_database_only_the_file_is_listed_all_scheduled() -> None:
+    file_session = session_json(FILE_SESSION, codes=(FILE_CODE,), moderator=FILE_MODERATOR)
+
+    listed = parse_sessions(json.dumps([file_session])).list_sessions()
+
+    assert [(str(s.session.id), s.source, s.phase) for s in listed] == [
+        (FILE_SESSION, "file", "scheduled")
+    ]

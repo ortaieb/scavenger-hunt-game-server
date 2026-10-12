@@ -2,10 +2,10 @@
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
 # libpq's sslmode: https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-PROTECTION
@@ -113,6 +113,13 @@ class Settings(BaseSettings):
     osm_nominatim_url: str = "https://nominatim.openstreetmap.org"
     osm_overpass_url: str = "https://overpass-api.de/api/interpreter"
     osm_timeout_seconds: float = Field(default=30, gt=0)
+    # The organiser's MCP endpoint, `/mcp`, behind the organiser key. Off: not mounted.
+    mcp_enabled: bool = False
+    # `Host` values `/mcp` accepts (DNS-rebinding protection), comma-separated; `name:*` takes
+    # any port. Empty: every request is refused.
+    mcp_allowed_hosts: Annotated[list[str], NoDecode] = []
+    # The web app's base URL, for links to its screens. Unset: no links.
+    web_app_url: str | None = None
 
     @field_validator("organiser_key")
     @classmethod
@@ -120,6 +127,13 @@ class Settings(BaseSettings):
         if key is not None and len(key.get_secret_value()) < ORGANISER_KEY_MIN_LENGTH:
             raise ValueError(f"must be at least {ORGANISER_KEY_MIN_LENGTH} characters")
         return key
+
+    @field_validator("mcp_allowed_hosts", mode="before")
+    @classmethod
+    def _split_hosts(cls, hosts: object) -> object:
+        if isinstance(hosts, str):
+            return [host.strip() for host in hosts.split(",") if host.strip()]
+        return hosts
 
     @model_validator(mode="after")
     def _pool_sizes_are_consistent(self) -> Self:

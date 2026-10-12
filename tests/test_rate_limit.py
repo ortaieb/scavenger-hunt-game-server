@@ -68,3 +68,17 @@ def test_concurrent_calls_for_one_key_allow_exactly_one(limiter: RateLimiter) ->
         allowed = list(pool.map(call, range(8)))
 
     assert allowed.count(True) == 1
+
+
+def test_waiting_is_none_for_a_new_key(limiter: RateLimiter) -> None:
+    assert limiter.waiting("a", T0) is None
+
+
+def test_waiting_is_the_time_left_and_records_nothing(limiter: RateLimiter) -> None:
+    limiter.check("a", T0)
+
+    assert limiter.waiting("a", T0 + timedelta(seconds=4)) == timedelta(seconds=6)
+    assert limiter.waiting("a", T0 + INTERVAL) is None
+    assert limiter.check("a", T0 + INTERVAL) is None
+    assert limiter.waiting("b", T0) is None
+    assert len(limiter) == 1

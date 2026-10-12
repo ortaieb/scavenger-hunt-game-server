@@ -29,18 +29,23 @@ class OrganiserUnauthorisedError(ApiError):
         )
 
 
+def organiser_key_matches(settings: Settings, authorization: str | None) -> bool:
+    """Whether an `Authorization` header presents the organiser key.
+
+    False for a missing header, another scheme, a wrong key, or no key configured. The key is
+    compared in constant time and never logged.
+    """
+    token = bearer_token(authorization)
+    if settings.organiser_key is None or token is None:
+        return False
+    expected = settings.organiser_key.get_secret_value()
+    return secrets.compare_digest(token.strip().encode(), expected.encode())
+
+
 def require_organiser(
     settings: Annotated[Settings, Depends(get_settings)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> None:
-    """Pass if the request presents the organiser key; else 401.
-
-    A missing header, another scheme, a wrong key, or no key configured: all the same 401.
-    The key is compared in constant time and never logged.
-    """
-    token = bearer_token(authorization)
-    if settings.organiser_key is None or token is None:
-        raise OrganiserUnauthorisedError
-    expected = settings.organiser_key.get_secret_value()
-    if not secrets.compare_digest(token.strip().encode(), expected.encode()):
+    """Pass if the request presents the organiser key; else the same 401, whatever the reason."""
+    if not organiser_key_matches(settings, authorization):
         raise OrganiserUnauthorisedError

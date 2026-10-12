@@ -37,7 +37,10 @@ src/game_server/
   overview.py        # `…/overview`: the moderator's standings, progress and blocked attempts
   traces.py          # `…/traces`: the moderator's verdicts with their referee traces and spend
   organiser_services.py  # start a design, publish a draft, rule on a photo: plain functions the routes call
-  organiser.py       # require_organiser: the organiser key (Bearer), for the hunt designer
+  organiser.py       # require_organiser: the organiser key (Bearer), for the hunt designer and /mcp
+  mcp_server/
+    server.py        # build_mcp_server and its tools (list_sessions); mount_mcp: `/mcp` in the app
+    auth.py          # OrganiserGuard: the organiser key in front of `/mcp`, failures rate-limited
   designer/
     routes.py        # `/designer/drafts`: start a design, read drafts, review and publish them
     osm.py           # OpenStreetMap: find_area (Nominatim) and find_places (Overpass)

@@ -34,7 +34,8 @@ and managed with [uv](https://docs.astral.sh/uv/).
 - [API reference](docs/api.md): the [game loop](docs/api.md#game-loop) step by step, every
   endpoint, the [submission checks](docs/api.md#submission-checks),
   [scoring](docs/api.md#scoring), the [referee](docs/api.md#referee-visual-challenge) and its
-  [evals](docs/api.md#referee-evals), and the [hunt designer](docs/api.md#hunt-designer)
+  [evals](docs/api.md#referee-evals), the [hunt designer](docs/api.md#hunt-designer) and the
+  [organiser MCP server](docs/api.md#organiser-mcp)
 - [Sessions file](docs/sessions-file.md): defining sessions, checkpoints and teams, and what
   stays [secret](docs/sessions-file.md#secrecy)
 - [Project layout](docs/project-layout.md): what each module does
@@ -98,6 +99,9 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_DESIGNER_MAX_TURNS` | `30` | Most turns one design run may take (> 0); past it the run fails with `max_turns` |
 | `GAME_SERVER_DESIGNER_MAX_BUDGET_USD` | `1.00` | Most one design run may spend, in US dollars (> 0); past it the run fails with `max_budget` |
 | `GAME_SERVER_DESIGNER_DEADLINE_SECONDS` | `300` | Longest one design run may take, in seconds (> 0); past it the run is cut off and fails with `deadline` |
+| `GAME_SERVER_MCP_ENABLED` | `false` | Mount the [organiser MCP server](#organiser-mcp) at `/mcp` |
+| `GAME_SERVER_MCP_ALLOWED_HOSTS` | empty | `Host` values `/mcp` accepts, comma-separated (`name:*` for any port): DNS-rebinding protection. Empty: every request to `/mcp` is refused |
+| `GAME_SERVER_WEB_APP_URL` | unset | The web app's base URL, for the MCP tools' links to its `/moderator` and `/designer` screens. Unset: no links |
 | `GAME_SERVER_DESIGNER_MAX_AREA_KM`, `GAME_SERVER_OSM_*` | | The designer's [map data](docs/api.md#map-data): the largest area, and the OpenStreetMap services and timeout |
 | `GAME_SERVER_DB_*` | | PostgreSQL connection and pool: see [Database](#database) |
 | `GAME_SERVER_SESSIONS_FILE` | unset | JSON file of [game sessions](docs/sessions-file.md#game-sessions-and-checkpoints) to load at startup. Unset: no sessions |
@@ -333,6 +337,25 @@ Progress and the tool-call log lines go to stderr. The exit status is 0 for an a
 
 `uv run python -m game_server.designer --self-check` only starts the Claude Code binary bundled
 with the Agent SDK and prints its version, to check the platform can run it.
+
+## Organiser MCP
+
+The [organiser MCP server](docs/api.md#organiser-mcp) lets the organiser run the game from
+Claude. It's one endpoint, `/mcp`, inside the game-server, behind the organiser key. To turn it
+on, set `GAME_SERVER_MCP_ENABLED=true`, `GAME_SERVER_ORGANISER_KEY` and
+`GAME_SERVER_MCP_ALLOWED_HOSTS`. The allowed hosts are the `Host` the game-server sees: in
+production that's the host Claude's requests arrive on through the web app's relay.
+
+To connect Claude Code to a local server, with the key taken from your shell's environment:
+
+```bash
+GAME_SERVER_MCP_ENABLED=true GAME_SERVER_MCP_ALLOWED_HOSTS='localhost:*,127.0.0.1:*' \
+  uv run python -m game_server   # with GAME_SERVER_ORGANISER_KEY set
+claude mcp add --transport http scavenger-hunt http://localhost:8000/mcp \
+  --header "Authorization: Bearer $GAME_SERVER_ORGANISER_KEY"
+```
+
+`claude mcp add` stores the header as written, key included, in Claude Code's configuration.
 
 ## Docker
 

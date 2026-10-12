@@ -449,3 +449,19 @@ def test_invalid_platform_port_is_rejected(monkeypatch: pytest.MonkeyPatch, valu
 
 def test_port_can_still_be_set_by_name() -> None:
     assert Settings(port=9300).port == 9300
+
+
+def test_mcp_is_off_by_default() -> None:
+    settings = Settings()
+
+    assert (settings.mcp_enabled, settings.mcp_allowed_hosts, settings.web_app_url) == (
+        False,
+        [],
+        None,
+    )
+
+
+def test_mcp_allowed_hosts_are_comma_separated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_MCP_ALLOWED_HOSTS", " game.example , localhost:*,")
+
+    assert Settings().mcp_allowed_hosts == ["game.example", "localhost:*"]

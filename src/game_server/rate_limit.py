@@ -31,6 +31,14 @@ class RateLimiter:
                 self._prune(now)
             return None
 
+    def waiting(self, key: Hashable, now: datetime) -> timedelta | None:
+        """The time left before `key` is allowed again, else `None`; records nothing."""
+        with self._lock:
+            last = self._last_allowed.get(key)
+        if last is not None and now - last < self.interval:
+            return self.interval - (now - last)
+        return None
+
     def __len__(self) -> int:
         return len(self._last_allowed)
 

@@ -98,5 +98,1208 @@
       "readOnlyHint": true,
       "openWorldHint": false
     }
+  },
+  {
+    "name": "start_hunt_design",
+    "description": "Start designing a hunt for an area and theme; it runs for minutes in the background.\n\nIt reads OpenStreetMap and calls the Claude API, costing up to $1 a run, and only one\ndesign runs at a time. Poll the draft with `get_hunt_draft` until it is `ready`.\n",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "area": {
+          "description": "e.g. `Chiswick, London`",
+          "maxLength": 200,
+          "minLength": 3,
+          "title": "Area",
+          "type": "string"
+        },
+        "theme": {
+          "maxLength": 200,
+          "minLength": 3,
+          "title": "Theme",
+          "type": "string"
+        },
+        "checkpoints": {
+          "default": 3,
+          "maximum": 8,
+          "minimum": 3,
+          "title": "Checkpoints",
+          "type": "integer"
+        },
+        "max_walk_km": {
+          "default": 3,
+          "maximum": 10,
+          "minimum": 0.5,
+          "title": "Max Walk Km",
+          "type": "number"
+        }
+      },
+      "required": [
+        "area",
+        "theme"
+      ],
+      "title": "start_hunt_designArguments"
+    },
+    "outputSchema": {
+      "description": "The new draft; follow it with `get_hunt_draft`.",
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "status": {
+          "const": "running",
+          "title": "Status",
+          "type": "string"
+        },
+        "designer_link": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Designer Link"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "designer_link"
+      ],
+      "title": "DesignStarted",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "list_hunt_drafts",
+    "description": "The newest 50 hunt drafts, newest first: status, area, theme, checkpoints and cost.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "title": "list_hunt_draftsArguments"
+    },
+    "outputSchema": {
+      "$defs": {
+        "DraftListItemOut": {
+          "description": "A draft in the list.",
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "running",
+                "ready",
+                "failed",
+                "published"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "area": {
+              "title": "Area",
+              "type": "string"
+            },
+            "theme": {
+              "title": "Theme",
+              "type": "string"
+            },
+            "created-at": {
+              "title": "Created-At",
+              "type": "string"
+            },
+            "finished-at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Finished-At"
+            },
+            "checkpoints": {
+              "title": "Checkpoints",
+              "type": "integer"
+            },
+            "cost-usd": {
+              "title": "Cost-Usd",
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "area",
+            "theme",
+            "created-at",
+            "finished-at",
+            "checkpoints",
+            "cost-usd"
+          ],
+          "title": "DraftListItemOut",
+          "type": "object"
+        }
+      },
+      "description": "The newest drafts, newest first.",
+      "properties": {
+        "drafts": {
+          "items": {
+            "$ref": "#/$defs/DraftListItemOut"
+          },
+          "title": "Drafts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "drafts"
+      ],
+      "title": "DraftListOut",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_hunt_draft",
+    "description": "One hunt draft in full: checkpoints, route, problems, progress and cost.\n\nWith `wait_seconds`, returns as soon as the draft's status changes, or at the timeout.\nA draft holds coordinates and scenes: the answers to its clues, for the organiser only.\n",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "draft_id": {
+          "format": "uuid",
+          "title": "Draft Id",
+          "type": "string"
+        },
+        "wait_seconds": {
+          "default": 0,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Wait Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "draft_id"
+      ],
+      "title": "get_hunt_draftArguments"
+    },
+    "outputSchema": {
+      "$defs": {
+        "BoundingBox": {
+          "description": "The area's extent, in decimal degrees.",
+          "properties": {
+            "south": {
+              "title": "South",
+              "type": "number"
+            },
+            "west": {
+              "title": "West",
+              "type": "number"
+            },
+            "north": {
+              "title": "North",
+              "type": "number"
+            },
+            "east": {
+              "title": "East",
+              "type": "number"
+            }
+          },
+          "required": [
+            "south",
+            "west",
+            "north",
+            "east"
+          ],
+          "title": "BoundingBox",
+          "type": "object"
+        },
+        "DraftArea": {
+          "description": "The area the run resolved; `clipped` if it was cut down to the size limit.",
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "bbox": {
+              "$ref": "#/$defs/BoundingBox"
+            },
+            "clipped": {
+              "title": "Clipped",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name",
+            "bbox",
+            "clipped"
+          ],
+          "title": "DraftArea",
+          "type": "object"
+        },
+        "DraftChallenge": {
+          "description": "What the photo must show (`scene`, the clue's answer) and the pose to strike.",
+          "properties": {
+            "scene": {
+              "title": "Scene",
+              "type": "string"
+            },
+            "pose": {
+              "title": "Pose",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scene",
+            "pose"
+          ],
+          "title": "DraftChallenge",
+          "type": "object"
+        },
+        "DraftCheckpoint": {
+          "description": "A proposed checkpoint, with why the agent picked it and the organiser's review.\n\n`original` keeps the agent's version of every field the organiser edited, from the\nfirst edit on, so the two can be compared.",
+          "properties": {
+            "position": {
+              "title": "Position",
+              "type": "integer"
+            },
+            "place": {
+              "$ref": "#/$defs/DraftPlace"
+            },
+            "clue": {
+              "title": "Clue",
+              "type": "string"
+            },
+            "challenge": {
+              "$ref": "#/$defs/DraftChallenge"
+            },
+            "proximity": {
+              "title": "Proximity",
+              "type": "integer"
+            },
+            "rationale": {
+              "title": "Rationale",
+              "type": "string"
+            },
+            "review": {
+              "default": "pending",
+              "enum": [
+                "pending",
+                "accepted",
+                "rejected"
+              ],
+              "title": "Review",
+              "type": "string"
+            },
+            "edited": {
+              "default": false,
+              "title": "Edited",
+              "type": "boolean"
+            },
+            "original": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DraftOriginal"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "position",
+            "place",
+            "clue",
+            "challenge",
+            "proximity",
+            "rationale"
+          ],
+          "title": "DraftCheckpoint",
+          "type": "object"
+        },
+        "DraftOriginal": {
+          "description": "The agent's text for each field the organiser edited; None where it wasn't edited.",
+          "properties": {
+            "clue": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Clue"
+            },
+            "scene": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Scene"
+            },
+            "pose": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Pose"
+            },
+            "proximity": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Proximity"
+            }
+          },
+          "title": "DraftOriginal",
+          "type": "object"
+        },
+        "DraftPlace": {
+          "description": "A real place from the map data: its OpenStreetMap id, name, kind and location.",
+          "properties": {
+            "osm": {
+              "title": "Osm",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "kind": {
+              "title": "Kind",
+              "type": "string"
+            },
+            "location": {
+              "$ref": "#/$defs/Location"
+            }
+          },
+          "required": [
+            "osm",
+            "name",
+            "kind",
+            "location"
+          ],
+          "title": "DraftPlace",
+          "type": "object"
+        },
+        "DraftRequest": {
+          "additionalProperties": false,
+          "description": "What the organiser asks the designer for.",
+          "properties": {
+            "area": {
+              "description": "Where the hunt is, e.g. `Chiswick, London`",
+              "maxLength": 200,
+              "minLength": 3,
+              "title": "Area",
+              "type": "string"
+            },
+            "theme": {
+              "maxLength": 200,
+              "minLength": 3,
+              "title": "Theme",
+              "type": "string"
+            },
+            "checkpoints": {
+              "default": 3,
+              "maximum": 8,
+              "minimum": 3,
+              "title": "Checkpoints",
+              "type": "integer"
+            },
+            "max-walk-km": {
+              "default": 3,
+              "maximum": 10,
+              "minimum": 0.5,
+              "title": "Max-Walk-Km",
+              "type": "number"
+            }
+          },
+          "required": [
+            "area",
+            "theme"
+          ],
+          "title": "DraftRequest",
+          "type": "object"
+        },
+        "Location": {
+          "additionalProperties": false,
+          "description": "WGS84 coordinates in decimal degrees.",
+          "properties": {
+            "lat": {
+              "maximum": 90,
+              "minimum": -90,
+              "title": "Lat",
+              "type": "number"
+            },
+            "long": {
+              "maximum": 180,
+              "minimum": -180,
+              "title": "Long",
+              "type": "number"
+            }
+          },
+          "required": [
+            "lat",
+            "long"
+          ],
+          "title": "Location",
+          "type": "object"
+        },
+        "Problem": {
+          "description": "A rule the draft breaks; `position` is the checkpoint's, or None for the whole draft.",
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "position": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Position"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "position",
+            "message"
+          ],
+          "title": "Problem",
+          "type": "object"
+        },
+        "ProgressEntry": {
+          "description": "One step of the run, for the organiser to follow; `at` is UTC to the second.",
+          "properties": {
+            "at": {
+              "title": "At",
+              "type": "string"
+            },
+            "step": {
+              "title": "Step",
+              "type": "string"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "string"
+            }
+          },
+          "required": [
+            "at",
+            "step",
+            "summary"
+          ],
+          "title": "ProgressEntry",
+          "type": "object"
+        },
+        "PublishedOut": {
+          "description": "The session the draft became, and when.",
+          "properties": {
+            "session": {
+              "format": "uuid",
+              "title": "Session",
+              "type": "string"
+            },
+            "at": {
+              "title": "At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session",
+            "at"
+          ],
+          "title": "PublishedOut",
+          "type": "object"
+        },
+        "RouteOut": {
+          "description": "Each checkpoint to the next, closing the loop back to the first, in metres.",
+          "properties": {
+            "legs-m": {
+              "items": {
+                "type": "integer"
+              },
+              "title": "Legs-M",
+              "type": "array"
+            },
+            "loop-m": {
+              "title": "Loop-M",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "legs-m",
+            "loop-m"
+          ],
+          "title": "RouteOut",
+          "type": "object"
+        },
+        "RunErrorOut": {
+          "description": "Why the run failed.",
+          "properties": {
+            "code": {
+              "enum": [
+                "max_turns",
+                "max_budget",
+                "deadline",
+                "no_valid_draft",
+                "agent_unavailable",
+                "interrupted"
+              ],
+              "title": "Code",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "title": "RunErrorOut",
+          "type": "object"
+        },
+        "RunOut": {
+          "description": "The run behind the draft and what it cost.",
+          "properties": {
+            "runner": {
+              "title": "Runner",
+              "type": "string"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            },
+            "turns": {
+              "title": "Turns",
+              "type": "integer"
+            },
+            "cost-usd": {
+              "title": "Cost-Usd",
+              "type": "number"
+            },
+            "duration-ms": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Duration-Ms"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RunErrorOut"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "runner",
+            "model",
+            "turns",
+            "cost-usd",
+            "duration-ms",
+            "error"
+          ],
+          "title": "RunOut",
+          "type": "object"
+        }
+      },
+      "description": "A draft in full. Organiser only: it holds coordinates and scenes.",
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "ready",
+            "failed",
+            "published"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/DraftRequest"
+        },
+        "area": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DraftArea"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "progress": {
+          "items": {
+            "$ref": "#/$defs/ProgressEntry"
+          },
+          "title": "Progress",
+          "type": "array"
+        },
+        "checkpoints": {
+          "items": {
+            "$ref": "#/$defs/DraftCheckpoint"
+          },
+          "title": "Checkpoints",
+          "type": "array"
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RouteOut"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "problems": {
+          "items": {
+            "$ref": "#/$defs/Problem"
+          },
+          "title": "Problems",
+          "type": "array"
+        },
+        "run": {
+          "$ref": "#/$defs/RunOut"
+        },
+        "attribution": {
+          "title": "Attribution",
+          "type": "string"
+        },
+        "published": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PublishedOut"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created-at": {
+          "title": "Created-At",
+          "type": "string"
+        },
+        "finished-at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Finished-At"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "request",
+        "area",
+        "progress",
+        "checkpoints",
+        "route",
+        "problems",
+        "run",
+        "attribution",
+        "published",
+        "created-at",
+        "finished-at"
+      ],
+      "title": "DraftOut",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "edit_hunt_checkpoint",
+    "description": "Edit, accept or reject one checkpoint of a `ready` draft; returns it as saved.\n\nSet `review` to `accepted` or `rejected`; only accepted checkpoints are published.\nEdited text is held to the same rules as the designer's: a clue can't name its place.\n",
+    "inputSchema": {
+      "type": "object",
+      "$defs": {
+        "CheckpointEdit": {
+          "additionalProperties": false,
+          "description": "What the organiser changes about a checkpoint: at least one field.",
+          "properties": {
+            "clue": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Clue"
+            },
+            "pose": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Pose"
+            },
+            "scene": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Scene"
+            },
+            "proximity": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Proximity"
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "accepted",
+                    "rejected"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review"
+            }
+          },
+          "title": "CheckpointEdit",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "draft_id": {
+          "format": "uuid",
+          "title": "Draft Id",
+          "type": "string"
+        },
+        "position": {
+          "title": "Position",
+          "type": "integer"
+        },
+        "edit": {
+          "$ref": "#/$defs/CheckpointEdit"
+        }
+      },
+      "required": [
+        "draft_id",
+        "position",
+        "edit"
+      ],
+      "title": "edit_hunt_checkpointArguments"
+    },
+    "outputSchema": {
+      "$defs": {
+        "DraftChallenge": {
+          "description": "What the photo must show (`scene`, the clue's answer) and the pose to strike.",
+          "properties": {
+            "scene": {
+              "title": "Scene",
+              "type": "string"
+            },
+            "pose": {
+              "title": "Pose",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scene",
+            "pose"
+          ],
+          "title": "DraftChallenge",
+          "type": "object"
+        },
+        "DraftOriginal": {
+          "description": "The agent's text for each field the organiser edited; None where it wasn't edited.",
+          "properties": {
+            "clue": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Clue"
+            },
+            "scene": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Scene"
+            },
+            "pose": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Pose"
+            },
+            "proximity": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Proximity"
+            }
+          },
+          "title": "DraftOriginal",
+          "type": "object"
+        },
+        "DraftPlace": {
+          "description": "A real place from the map data: its OpenStreetMap id, name, kind and location.",
+          "properties": {
+            "osm": {
+              "title": "Osm",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "kind": {
+              "title": "Kind",
+              "type": "string"
+            },
+            "location": {
+              "$ref": "#/$defs/Location"
+            }
+          },
+          "required": [
+            "osm",
+            "name",
+            "kind",
+            "location"
+          ],
+          "title": "DraftPlace",
+          "type": "object"
+        },
+        "Location": {
+          "additionalProperties": false,
+          "description": "WGS84 coordinates in decimal degrees.",
+          "properties": {
+            "lat": {
+              "maximum": 90,
+              "minimum": -90,
+              "title": "Lat",
+              "type": "number"
+            },
+            "long": {
+              "maximum": 180,
+              "minimum": -180,
+              "title": "Long",
+              "type": "number"
+            }
+          },
+          "required": [
+            "lat",
+            "long"
+          ],
+          "title": "Location",
+          "type": "object"
+        }
+      },
+      "description": "A proposed checkpoint, with why the agent picked it and the organiser's review.\n\n`original` keeps the agent's version of every field the organiser edited, from the\nfirst edit on, so the two can be compared.",
+      "properties": {
+        "position": {
+          "title": "Position",
+          "type": "integer"
+        },
+        "place": {
+          "$ref": "#/$defs/DraftPlace"
+        },
+        "clue": {
+          "title": "Clue",
+          "type": "string"
+        },
+        "challenge": {
+          "$ref": "#/$defs/DraftChallenge"
+        },
+        "proximity": {
+          "title": "Proximity",
+          "type": "integer"
+        },
+        "rationale": {
+          "title": "Rationale",
+          "type": "string"
+        },
+        "review": {
+          "default": "pending",
+          "enum": [
+            "pending",
+            "accepted",
+            "rejected"
+          ],
+          "title": "Review",
+          "type": "string"
+        },
+        "edited": {
+          "default": false,
+          "title": "Edited",
+          "type": "boolean"
+        },
+        "original": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DraftOriginal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "position",
+        "place",
+        "clue",
+        "challenge",
+        "proximity",
+        "rationale"
+      ],
+      "title": "DraftCheckpoint",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "publish_hunt",
+    "description": "Publish the draft's accepted checkpoints as a session, playable at once. Final.\n\nThe result holds the session's join codes and its moderator code. They are credentials:\ngive each to its holders only (a team's join code to that team, the moderator code to\nthe moderator) and never repeat them elsewhere. No other tool returns them.\n",
+    "inputSchema": {
+      "type": "object",
+      "$defs": {
+        "PublishRequest": {
+          "additionalProperties": false,
+          "description": "The session to make of the draft: its name, planned window and teams.",
+          "properties": {
+            "name": {
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            },
+            "start-time": {
+              "format": "date-time",
+              "title": "Start-Time",
+              "type": "string"
+            },
+            "end-time": {
+              "format": "date-time",
+              "title": "End-Time",
+              "type": "string"
+            },
+            "teams": {
+              "items": {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 10,
+              "minItems": 1,
+              "title": "Teams",
+              "type": "array"
+            }
+          },
+          "required": [
+            "name",
+            "start-time",
+            "end-time",
+            "teams"
+          ],
+          "title": "PublishRequest",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "draft_id": {
+          "format": "uuid",
+          "title": "Draft Id",
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/PublishRequest"
+        }
+      },
+      "required": [
+        "draft_id",
+        "request"
+      ],
+      "title": "publish_huntArguments"
+    },
+    "outputSchema": {
+      "$defs": {
+        "TeamCodeOut": {
+          "description": "A team and its join code.",
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "join-code": {
+              "title": "Join-Code",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "join-code"
+          ],
+          "title": "TeamCodeOut",
+          "type": "object"
+        }
+      },
+      "description": "The published session and its codes: credentials, for the organiser only.",
+      "properties": {
+        "session": {
+          "format": "uuid",
+          "title": "Session",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "moderator-code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Moderator-Code"
+        },
+        "teams": {
+          "items": {
+            "$ref": "#/$defs/TeamCodeOut"
+          },
+          "title": "Teams",
+          "type": "array"
+        }
+      },
+      "required": [
+        "session",
+        "name",
+        "moderator-code",
+        "teams"
+      ],
+      "title": "PublicationOut",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    }
   }
 ]

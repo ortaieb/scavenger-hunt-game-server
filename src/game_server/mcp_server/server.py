@@ -1,11 +1,11 @@
 """The organiser's MCP server: its tools, and mounting it at `/mcp` in the app.
 
 Streamable HTTP, stateless, answering in JSON, inside the game-server: it shares the app's
-database pool, clock and settings. The tools return no codes and no coordinates.
+database pool, clock and settings. Only `publish_hunt` returns codes; only draft tools return
+coordinates (the draft is for the organiser).
 """
 
 import logging
-from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -21,9 +21,14 @@ from starlette.routing import Route
 from game_server.clock import Clock, utc_now
 from game_server.config import Settings
 from game_server.database import get_database
+from game_server.designer.review import SecretCodes
+from game_server.designer_runners import app_agent_runner, get_designer_runner
+from game_server.drafts import DraftStore
 from game_server.mcp_server.auth import OrganiserGuard
+from game_server.mcp_server.hunts import register_hunt_tools
+from game_server.mcp_server.services import McpServices
 from game_server.session_runs import SessionPhase
-from game_server.sessions import SessionRepository, get_session_repository
+from game_server.sessions import get_session_repository
 
 MCP_PATH = "/mcp"
 # The SDK's loggers stay quiet: at INFO they'd log every request.
@@ -62,8 +67,8 @@ class SessionList(BaseModel):
     sessions: list[SessionSummary]
 
 
-def build_mcp_server(settings: Settings, sessions: Callable[[], SessionRepository]) -> MCPServer:
-    """The organiser's MCP server and its tools; `sessions` provides the sessions per call."""
+def build_mcp_server(settings: Settings, run: McpServices) -> MCPServer:
+    """The organiser's MCP server and its tools, running on `run`."""
     server = MCPServer(name="scavenger-hunt", instructions=INSTRUCTIONS, log_level="WARNING")
 
     def moderator_link(session: UUID) -> str | None:
@@ -91,11 +96,27 @@ def build_mcp_server(settings: Settings, sessions: Callable[[], SessionRepositor
                     teams=len(listed.session.teams),
                     moderator_link=moderator_link(listed.session.id),
                 )
-                for listed in sessions().list_sessions()
+                for listed in run.sessions().list_sessions()
             ]
         )
 
+    register_hunt_tools(server, settings, run)
     return server
+
+
+def app_services(app: FastAPI, settings: Settings, clock: Clock) -> McpServices:
+    """The tools' services on the app's database pool and designer runner."""
+
+    def drafts() -> DraftStore:
+        return DraftStore(get_database(settings))
+
+    return McpServices(
+        sessions=lambda: get_session_repository(settings, get_database(settings)),
+        drafts=drafts,
+        runner=lambda: get_designer_runner(settings, drafts(), clock, app_agent_runner(app)),
+        codes=SecretCodes(),
+        clock=clock,
+    )
 
 
 def mount_mcp(app: FastAPI, settings: Settings, clock: Clock = utc_now) -> None:
@@ -106,9 +127,7 @@ def mount_mcp(app: FastAPI, settings: Settings, clock: Clock = utc_now) -> None:
     """
     for name in SDK_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
-    server = build_mcp_server(
-        settings, lambda: get_session_repository(settings, get_database(settings))
-    )
+    server = build_mcp_server(settings, app_services(app, settings, clock))
     server.streamable_http_app(
         stateless_http=True,
         json_response=True,

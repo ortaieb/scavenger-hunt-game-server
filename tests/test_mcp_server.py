@@ -12,12 +12,15 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
 from mcp import Client
+from mcp_fakes import call_tool
+from test_designer_review import FixedCodes
 from test_published_sessions import FILE_CODE, FILE_SESSION, START, game_session, session_json
 
 from game_server.app import create_app
 from game_server.config import Settings
 from game_server.database import Database
 from game_server.mcp_server.server import SDK_LOGGERS, build_mcp_server
+from game_server.mcp_server.services import McpServices
 from game_server.organiser import UNAUTHORISED_BODY
 from game_server.published_sessions import PublishedSessionRows
 from game_server.sessions import SessionRepository, parse_sessions
@@ -77,7 +80,14 @@ def test_tools_list(client: TestClient) -> None:
     response = rpc(client, TOOLS_LIST, **AUTH)
 
     assert response.status_code == 200
-    assert [tool["name"] for tool in response.json()["result"]["tools"]] == ["list_sessions"]
+    assert [tool["name"] for tool in response.json()["result"]["tools"]] == [
+        "list_sessions",
+        "start_hunt_design",
+        "list_hunt_drafts",
+        "get_hunt_draft",
+        "edit_hunt_checkpoint",
+        "publish_hunt",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -142,14 +152,17 @@ def test_the_sdks_loggers_stay_at_warning(client: TestClient) -> None:
 # --- in-process --------------------------------------------------------------------------------
 
 
-def call_tool(repository: SessionRepository, settings: Settings, name: str) -> Any:
-    async def call() -> Any:
-        async with Client(build_mcp_server(settings, lambda: repository)) as client:
-            result = await client.call_tool(name, {})
-        assert not result.is_error
-        return result.structured_content
-
-    return asyncio.run(call())
+def list_sessions(repository: SessionRepository, settings: Settings) -> Any:
+    services = McpServices(
+        sessions=lambda: repository,
+        drafts=lambda: pytest.fail("list_sessions doesn't touch drafts"),
+        runner=lambda: pytest.fail("list_sessions doesn't touch the runner"),
+        codes=FixedCodes(),
+        clock=lambda: START,
+    )
+    result = call_tool(services, settings, "list_sessions")
+    assert not result.is_error
+    return result.structured_content
 
 
 def test_list_sessions_returns_file_and_published_sessions_with_their_phase(
@@ -162,7 +175,7 @@ def test_list_sessions_returns_file_and_published_sessions_with_their_phase(
     SubmissionStore(database).start_run(published.id, START)
     settings = Settings(web_app_url="https://play.example/")
 
-    listed = call_tool(repository, settings, "list_sessions")
+    listed = list_sessions(repository, settings)
 
     assert listed == {
         "sessions": [
@@ -193,9 +206,20 @@ def test_list_sessions_returns_file_and_published_sessions_with_their_phase(
 def test_without_the_web_app_url_there_are_no_links() -> None:
     file_session = session_json(FILE_SESSION, codes=(FILE_CODE,), moderator=None)
 
-    listed = call_tool(parse_sessions(json.dumps([file_session])), Settings(), "list_sessions")
+    listed = list_sessions(parse_sessions(json.dumps([file_session])), Settings())
 
     assert listed["sessions"][0]["moderator_link"] is None
+
+
+def no_services() -> McpServices:
+    """Services for listing tools, which calls none."""
+    return McpServices(
+        sessions=SessionRepository,
+        drafts=lambda: pytest.fail("not called"),
+        runner=lambda: pytest.fail("not called"),
+        codes=FixedCodes(),
+        clock=lambda: START,
+    )
 
 
 def test_the_tools_match_the_snapshot() -> None:
@@ -203,7 +227,7 @@ def test_the_tools_match_the_snapshot() -> None:
     the snapshot and commit it: `UPDATE_MCP_SNAPSHOT=1 uv run pytest -k snapshot`."""
 
     async def tools() -> list[dict[str, Any]]:
-        async with Client(build_mcp_server(Settings(), SessionRepository)) as client:
+        async with Client(build_mcp_server(Settings(), no_services())) as client:
             listed = await client.list_tools()
         return [t.model_dump(mode="json", by_alias=True, exclude_none=True) for t in listed.tools]
 

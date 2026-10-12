@@ -22,7 +22,6 @@ from game_server.designer.review import (
     DraftNotReadyError,
     DraftProblemsError,
     PublishRequest,
-    apply_edit,
     get_code_source,
 )
 from game_server.designer.rules import route_legs
@@ -35,6 +34,7 @@ from game_server.drafts import (
     DraftRequest,
     DraftStatus,
     DraftStore,
+    DraftSummary,
     Problem,
     ProgressEntry,
     RunErrorCode,
@@ -44,8 +44,11 @@ from game_server.errors import ApiError
 from game_server.organiser import require_organiser
 from game_server.organiser_services import (
     DesignerDisabledError,
+    DraftNotEditableError,
+    UnknownCheckpointError,
     UnknownDraftError,
 )
+from game_server.organiser_services import edit_checkpoint as edit_service
 from game_server.organiser_services import publish_draft as publish_service
 from game_server.organiser_services import start_design as start_design_service
 from game_server.sessions import (
@@ -219,9 +222,8 @@ def start_design(
     return DraftCreatedOut(id=draft_id, status="running")
 
 
-@router.get("")
-def list_drafts(store: Annotated[DraftStore, Depends(get_draft_store)]) -> DraftListOut:
-    """The newest drafts, newest first (at most 50)."""
+def draft_list_out(drafts: Sequence[DraftSummary]) -> DraftListOut:
+    """The drafts as listed."""
     return DraftListOut(
         drafts=[
             DraftListItemOut(
@@ -234,9 +236,15 @@ def list_drafts(store: Annotated[DraftStore, Depends(get_draft_store)]) -> Draft
                 checkpoints=draft.checkpoints,
                 cost_usd=float(draft.cost_usd),
             )
-            for draft in store.list(DRAFTS_LISTED)
+            for draft in drafts
         ]
     )
+
+
+@router.get("")
+def list_drafts(store: Annotated[DraftStore, Depends(get_draft_store)]) -> DraftListOut:
+    """The newest drafts, newest first (at most 50)."""
+    return draft_list_out(store.list(DRAFTS_LISTED))
 
 
 @router.get("/{draft}", responses={404: {"description": "Unknown draft"}})
@@ -284,18 +292,16 @@ def edit_checkpoint(
     store: Annotated[DraftStore, Depends(get_draft_store)],
 ) -> DraftCheckpoint:
     """Edit, accept or reject a checkpoint of a `ready` draft. Edits are held to the rules."""
-    with store.locked(draft) as locked:
-        if locked is None:
-            raise _unknown_draft()
-        if locked.draft.status != "ready":
-            raise ApiError(status.HTTP_409_CONFLICT, "draft can't be edited", "draft_not_editable")
-        checkpoints = locked.draft.checkpoints
-        found = next((c for c in checkpoints if c.position == position), None)
-        if found is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown checkpoint")
-        edited = apply_edit(found, body)
-        locked.save_checkpoints([edited if c.position == position else c for c in checkpoints])
-    return edited
+    try:
+        return edit_service(store, draft, position, body)
+    except UnknownDraftError:
+        raise _unknown_draft() from None
+    except DraftNotEditableError:
+        raise ApiError(
+            status.HTTP_409_CONFLICT, "draft can't be edited", "draft_not_editable"
+        ) from None
+    except UnknownCheckpointError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown checkpoint") from None
 
 
 class TeamCodeOut(_KebabModel):

@@ -41,6 +41,8 @@ src/game_server/
   mcp_server/
     server.py        # build_mcp_server and its tools (list_sessions); mount_mcp: `/mcp` in the app
     hunts.py         # the hunt tools: start a design, list and read drafts, edit checkpoints, publish
+    submissions.py   # the submission tools: list a session's submissions, read one (no photos)
+    errors.py        # tool_error: the API's error body as a tool error
     services.py      # McpServices: the stores, runner, codes and clock the tools run on
     auth.py          # OrganiserGuard: the organiser key in front of `/mcp`, failures rate-limited
   designer/
@@ -55,6 +57,7 @@ src/game_server/
   designer_runners.py  # what fills a draft: AgentRunner (the agent, as tasks on the app's loop) or StubRunner
   ruling.py          # `…/submissions/{submission}/ruling`: the moderator approves or rejects a photo
   review.py          # `…/review`: the photos waiting for a ruling, and the latest rulings
+  submission_views.py  # the MCP tools' queries over ruled_submissions: a filtered page, and one submission with its rulings
   review_queue.py    # read_review_queue: the review queue as stored
   photos.py          # `…/photo`, `…/reference-photos/{position}`: photos served to the moderator
   game_state.py      # team state: team_state() rules and the `…/state` endpoint

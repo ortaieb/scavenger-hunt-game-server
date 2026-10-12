@@ -1727,6 +1727,41 @@ A domain error is a tool error whose text is the API's error body as JSON,
 An argument outside its schema (a `checkpoints` of 9, an empty edit) is refused by the server
 before the tool runs.
 
+#### Submission tools
+
+Read-only, and without the photos: no image content and no photo URLs (the organiser views a
+photo on the moderator screen), and no coordinates, participant ids or codes. Both read the
+`ruled_submissions` view, so "passed" and "failed" mean what scoring uses.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `list_submissions` | `session_id`; `filter`; `team`; `checkpoint`; `limit` (1–100, default 50); `before` | Compact rows, newest first, with `next` and `moderator-link` |
+| `get_submission` | `session_id`, `submission_id` | One submission in full but for the photo |
+
+`filter`, applied in the database query:
+
+| Value | Matches |
+|---|---|
+| `needs_review` (default) | Photos the referee couldn't decide and nobody has ruled on: the [`/review`](#get-sessionssessionreview) queue |
+| `failed`, `passed` | The effective verdict: the moderator's ruling if there is one, else the referee's |
+| `overridden` | Every photo the moderator has ruled on |
+| `all` | Everything |
+
+`team` is a team name, ignoring case; `checkpoint` a checkpoint's sequence. Page with `before`:
+pass the previous page's `next` until it is `null`, as for [`/traces`](#get-sessionssessiontraces).
+Each row has the submission, team, checkpoint (sequence and name), attempt, `received-at`, the
+referee's `verdict`, the latest `ruling`, the `effective-verdict` and `failed-checks`, the codes
+of the checks that failed.
+
+`get_submission` adds the pose the team was given and the scene it should show; each check with
+its outcome, confidence, the reason the team was told and its moderator-only detail; the
+referee's `status` and `error-code`; and every ruling with its note, oldest first (the last is
+in force). It leaves out the referee's raw trace, its prompt and the token counts: those are in
+[`/traces`](#get-sessionssessiontraces). The scene and the details are the answers to the
+clues, for the organiser only.
+
+Tool errors: `unknown_session`, and `unknown_submission` for an id that isn't in that session.
+
 ## Referee (visual challenge)
 
 The deterministic checks can only rule a submission *out*: a phone can report any location,

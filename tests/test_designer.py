@@ -431,7 +431,7 @@ def test_one_line_when_created_and_one_when_finished(
     lines = [
         r.getMessage()
         for r in caplog.records
-        if r.name in ("game_server.designer.routes", "game_server.designer_runners")
+        if r.name in ("game_server.organiser_services", "game_server.designer_runners")
     ]
     assert lines == [
         f"Draft {draft} created status running runner stub",

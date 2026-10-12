@@ -282,7 +282,7 @@ def test_each_ruling_is_logged_without_the_note(
     rule(client, submission, "approve", "SENTINEL-NOTE-a3 the arm is cropped")
     rule(client, submission, "reject", "SENTINEL-NOTE-a3 changed my mind")
 
-    lines = [r.getMessage() for r in caplog.records if r.name == "game_server.ruling"]
+    lines = [r.getMessage() for r in caplog.records if r.name == "game_server.organiser_services"]
     assert lines == [
         f"Moderator ruling session {SESSION} submission {submission} approve"
         " verdict failed -> pass first=yes",

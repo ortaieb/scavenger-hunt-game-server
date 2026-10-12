@@ -6,8 +6,6 @@ which is never changed, and scoring follows the effective verdict (see `rulings`
 only. The note may describe the photo, so it's never logged.
 """
 
-import logging
-from datetime import UTC
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
@@ -16,11 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.models import VerdictStatus
 from game_server.moderation import require_moderator
+from game_server.organiser_services import rule
 from game_server.rulings import RecordedRuling, Ruling, StoredRuling
 from game_server.sessions import GameSession
 from game_server.submissions import SubmissionStore, get_submission_store
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -100,19 +97,9 @@ def rule_on_submission(
     Allowed while the session runs and after it stops: the results aren't final until every
     `pending` photo is ruled on. Posting again replaces the ruling.
     """
-    now = clock().astimezone(UTC)
-    recorded = store.rule(session.id, submission, body.ruling, body.note, now)
+    recorded = rule(store, session, submission, body.ruling, body.note, clock)
     if recorded is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown submission")
-    logger.info(
-        "Moderator ruling session %s submission %d %s verdict %s -> %s first=%s",
-        session.id,
-        submission,
-        body.ruling,
-        recorded.verdict,
-        recorded.effective_verdict,
-        "yes" if recorded.first else "no",
-    )
     if recorded.first:
         response.status_code = status.HTTP_201_CREATED
     return SubmissionRulingOut.of(recorded)

@@ -89,6 +89,7 @@ def test_tools_list(client: TestClient) -> None:
         "publish_hunt",
         "list_submissions",
         "get_submission",
+        "override_verdict",
     ]
 
 

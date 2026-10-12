@@ -1839,5 +1839,137 @@
       "readOnlyHint": true,
       "openWorldHint": false
     }
+  },
+  {
+    "name": "override_verdict",
+    "description": "Approve or reject a photo, whatever the referee decided. Reversible.\n\nThe referee's verdict is never changed: the ruling is recorded beside it, and scoring\nfollows the effective verdict (`approve` counts as a pass, `reject` as a fail). An\napproval completes the photo's checkpoint, and a later `reject` doesn't take that\nback: it changes the team's score, not its progress. Ruling again on the same photo\nreplaces the ruling (`replaced` is true); the earlier one stays in the record. Allowed\nwhile the session runs and after it stops. The `note` is for the record: it is never\nlogged, but don't put anything in it that you wouldn't want the moderator to read.\n",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "submission_id": {
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "title": "Submission Id",
+          "type": "integer"
+        },
+        "ruling": {
+          "enum": [
+            "approve",
+            "reject"
+          ],
+          "title": "Ruling",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "session_id",
+        "submission_id",
+        "ruling"
+      ],
+      "title": "override_verdictArguments"
+    },
+    "outputSchema": {
+      "$defs": {
+        "RulingOut": {
+          "description": "A ruling as recorded.",
+          "properties": {
+            "ruling": {
+              "enum": [
+                "approve",
+                "reject"
+              ],
+              "title": "Ruling",
+              "type": "string"
+            },
+            "note": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Note"
+            },
+            "ruled-at": {
+              "title": "Ruled-At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "ruling",
+            "note",
+            "ruled-at"
+          ],
+          "title": "RulingOut",
+          "type": "object"
+        }
+      },
+      "description": "The ruling as `POST \u2026/ruling` answers it, and whether it replaced an earlier one.",
+      "properties": {
+        "submission": {
+          "title": "Submission",
+          "type": "integer"
+        },
+        "verdict": {
+          "enum": [
+            "failed",
+            "pending",
+            "pass"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        },
+        "ruling": {
+          "$ref": "#/$defs/RulingOut"
+        },
+        "effective-verdict": {
+          "enum": [
+            "failed",
+            "pending",
+            "pass"
+          ],
+          "title": "Effective-Verdict",
+          "type": "string"
+        },
+        "replaced": {
+          "title": "Replaced",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "submission",
+        "verdict",
+        "ruling",
+        "effective-verdict",
+        "replaced"
+      ],
+      "title": "OverrideResult",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
   }
 ]

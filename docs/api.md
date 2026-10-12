@@ -1762,6 +1762,24 @@ clues, for the organiser only.
 
 Tool errors: `unknown_session`, and `unknown_submission` for an id that isn't in that session.
 
+#### `override_verdict`
+
+Write, reversible (`destructiveHint: false`). Rules on a submission through the same service as
+[`POST …/ruling`](#post-sessionssessionsubmissionssubmissionruling): `session_id`,
+`submission_id`, `ruling` (`approve` or `reject`) and an optional `note` of up to 500 characters.
+Returns the route's body, `{submission, verdict, ruling, effective-verdict}`, with `replaced`:
+true when it replaced an earlier ruling on the photo.
+
+The referee's verdict is never changed; scoring follows the effective verdict. An approval
+completes the photo's checkpoint, and a later reject doesn't take that back: it changes the
+team's score, not its progress. Ruling again replaces the ruling, and the earlier one stays in
+the record. It works while the session runs and after it stops. The note may describe the photo,
+so it is never logged. Errors: `unknown_session`, and `unknown_submission` for an id that isn't
+in that session.
+
+Through MCP, the [organiser key](#organiser-key) stands in for the session's moderator code. The
+record doesn't yet say who ruled.
+
 ## Referee (visual challenge)
 
 The deterministic checks can only rule a submission *out*: a phone can report any location,

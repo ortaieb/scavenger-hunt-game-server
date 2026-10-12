@@ -42,6 +42,7 @@ src/game_server/
     server.py        # build_mcp_server and its tools (list_sessions); mount_mcp: `/mcp` in the app
     hunts.py         # the hunt tools: start a design, list and read drafts, edit checkpoints, publish
     submissions.py   # the submission tools: list a session's submissions, read one (no photos)
+    rulings.py       # override_verdict: rule on a submission, through organiser_services.rule
     errors.py        # tool_error: the API's error body as a tool error
     services.py      # McpServices: the stores, runner, codes and clock the tools run on
     auth.py          # OrganiserGuard: the organiser key in front of `/mcp`, failures rate-limited

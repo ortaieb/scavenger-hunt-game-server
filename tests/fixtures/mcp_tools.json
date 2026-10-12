@@ -1,0 +1,102 @@
+[
+  {
+    "name": "list_sessions",
+    "description": "Every game session, from the sessions file and published by the hunt designer.\n\nEach with its phase (`scheduled`, `running` or `stopped`), its planned window (only for\ndisplay: the moderator starts and stops a session), how many teams play it, and a link\nto its moderator screen in the web app.\n",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "title": "list_sessionsArguments"
+    },
+    "outputSchema": {
+      "$defs": {
+        "SessionSummary": {
+          "description": "A game session, without its codes or coordinates.",
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "file",
+                "published"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "phase": {
+              "enum": [
+                "scheduled",
+                "running",
+                "stopped"
+              ],
+              "title": "Phase",
+              "type": "string"
+            },
+            "planned_start": {
+              "format": "date-time",
+              "title": "Planned Start",
+              "type": "string"
+            },
+            "planned_end": {
+              "format": "date-time",
+              "title": "Planned End",
+              "type": "string"
+            },
+            "teams": {
+              "title": "Teams",
+              "type": "integer"
+            },
+            "moderator_link": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Moderator Link"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "source",
+            "phase",
+            "planned_start",
+            "planned_end",
+            "teams",
+            "moderator_link"
+          ],
+          "title": "SessionSummary",
+          "type": "object"
+        }
+      },
+      "description": "Every game session.",
+      "properties": {
+        "sessions": {
+          "items": {
+            "$ref": "#/$defs/SessionSummary"
+          },
+          "title": "Sessions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "sessions"
+      ],
+      "title": "SessionList",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  }
+]

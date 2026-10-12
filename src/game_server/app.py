@@ -1,7 +1,7 @@
 """FastAPI application and HTTP routes."""
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -30,6 +30,7 @@ from game_server.designer import routes as designer_routes
 from game_server.designer_runners import AgentRunner, interrupt_left_running
 from game_server.drafts import DraftStore
 from game_server.logging_config import configure_logging
+from game_server.mcp_server.server import mount_mcp
 from game_server.sessions import load_session_repository
 
 GREETING = "Hello, World!"
@@ -42,7 +43,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     The pool connects in the background, so an unreachable database doesn't stop startup:
     `/health` reports it unavailable until it answers. Drafts a previous process left
-    `running` are failed with `interrupted` first.
+    `running` are failed with `interrupted` first. The MCP server's session manager, if
+    mounted, runs for as long as the app.
     """
     settings = get_settings()
     store = DraftStore(open_database(database_config(settings)))
@@ -50,8 +52,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     runner = AgentRunner(store, get_clock(), settings)
     await runner.open()
     app.state.agent_runner = runner
+    manager = getattr(app.state, "mcp_session_manager", None)
+    mcp: AbstractAsyncContextManager[None] = manager.run() if manager else nullcontext()
     try:
-        yield
+        async with mcp:
+            yield
     finally:
         await runner.close()
         close_databases()
@@ -99,6 +104,8 @@ def create_app() -> FastAPI:
     app.include_router(ruling.router)
     app.include_router(review.router)
     app.include_router(photos.router)
+    if settings.mcp_enabled:
+        mount_mcp(app, settings)
 
     return app
 

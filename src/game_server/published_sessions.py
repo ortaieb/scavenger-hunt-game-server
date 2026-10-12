@@ -14,6 +14,7 @@ from psycopg.types.json import Jsonb
 from pydantic import JsonValue
 
 from game_server.database import Database
+from game_server.session_runs import SessionRun
 
 CodeKind = Literal["join", "moderator"]
 
@@ -35,6 +36,25 @@ class PublishedSessionRows:
                 "SELECT document FROM published_sessions WHERE id = %s", (session,)
             ).fetchone()
         return None if row is None else row[0]
+
+    def documents(self) -> list[JsonValue]:
+        """Every published session's document, oldest first."""
+        with self._database.connection() as conn:
+            rows = conn.execute(
+                "SELECT document FROM published_sessions ORDER BY published_at, id"
+            ).fetchall()
+        return [document for (document,) in rows]
+
+    def runs(self, sessions: Collection[UUID]) -> dict[UUID, SessionRun]:
+        """The runs of those of these sessions that were ever started (from `session_runs`)."""
+        with self._database.connection() as conn:
+            rows = conn.execute(
+                "SELECT session, started_at, stopped_at FROM session_runs WHERE session = ANY(%s)",
+                (list(sessions),),
+            ).fetchall()
+        return {
+            session: SessionRun(started_at, stopped_at) for session, started_at, stopped_at in rows
+        }
 
     def session_for_code(self, code: str, kind: CodeKind) -> UUID | None:
         """The published session a normalised code of this kind belongs to, if any."""

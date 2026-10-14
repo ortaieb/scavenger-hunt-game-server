@@ -357,6 +357,54 @@ claude mcp add --transport http scavenger-hunt http://localhost:8000/mcp \
 
 `claude mcp add` stores the header as written, key included, in Claude Code's configuration.
 
+### On Railway
+
+Claude reaches `/mcp` through the web app's relay (`https://<web-app>/mcp`,
+[scavenger-hunt-web-app#70](https://github.com/ortaieb/scavenger-hunt-web-app/issues/70)), which
+forwards to the game server. On the game server's Railway service:
+
+| Variable | Value |
+|---|---|
+| `GAME_SERVER_MCP_ENABLED` | `true` |
+| `GAME_SERVER_MCP_ALLOWED_HOSTS` | The `Host` the game server sees from the relay: its Railway domain (for example `game-server-production.up.railway.app`), or its private one (`<service>.railway.internal:<port>`) if the relay uses the private network. A request with another `Host` gets `421`; check the deploy log's `Invalid Host header` line for the value to add |
+| `GAME_SERVER_WEB_APP_URL` | The web app's base URL, for the tools' links to `/moderator` and `/designer` |
+| `GAME_SERVER_ORGANISER_KEY` | Already set for the hunt designer (sealed); the same key opens `/mcp` |
+
+Connect Claude Code to the relay, with the key read from your shell's environment and never
+written to a committed file:
+
+```bash
+export GAME_SERVER_ORGANISER_KEY=…   # in your shell profile or a secrets manager, not in the repo
+claude mcp add --transport http scavenger-hunt https://<web-app>/mcp \
+  --header "Authorization: Bearer $GAME_SERVER_ORGANISER_KEY"
+```
+
+A claude.ai custom connector can't be set up this way unless claude.ai lets a connector send a
+request header (a beta feature); check, and record below whether it can. Until OAuth
+([#131](https://github.com/ortaieb/scavenger-hunt-game-server/issues/131)) replaces the key,
+Claude Code is the supported client.
+
+**Checking it end to end on production** (a manual run, as it needs a phone and the relay):
+
+1. In Claude Code, `/mcp` lists `scavenger-hunt` as connected, and `list_sessions` answers.
+2. Ask Claude to design a 3-checkpoint hunt (`start_hunt_design`), follow it until it's `ready`
+   (`get_hunt_draft`), accept the checkpoints (`edit_hunt_checkpoint`) and `publish_hunt`.
+3. Start the session from the moderator screen, join a team on a phone with the join code and
+   play one checkpoint.
+4. `list_submissions` shows the photo; `get_submission` shows why the referee decided as it did.
+5. `override_verdict` it. The moderator screen shows the ruling, and the team's score changes.
+
+| Check | Result |
+|---|---|
+| Variables set on Railway, `/mcp` reachable through the relay | not yet run |
+| Claude Code connects with the key from the environment | not yet run |
+| claude.ai custom connector with a request header | not yet run: availability not recorded |
+| Steps 2–5 above, end to end | not yet run |
+
+The local half of this was checked as the steps above are written: `/mcp` answers `401` without
+the key, `421` for a `Host` that isn't allowed, and with the key `initialize`, `tools/list`
+(nine tools) and `list_sessions` succeed, with the key in no log line.
+
 ## Docker
 
 ```bash

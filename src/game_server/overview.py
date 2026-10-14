@@ -176,21 +176,8 @@ def standings(snapshot: SessionSnapshot) -> list[TeamOverviewOut]:
     return sorted(rows, key=lambda row: (not row.joined, row.points or 0, row.team))
 
 
-@router.get(
-    "/sessions/{session}/overview",
-    responses={
-        401: {"description": "Moderator code required (code: moderator_unauthorised)"},
-        404: {"description": "Unknown session"},
-    },
-)
-def session_overview(
-    session: Annotated[GameSession, Depends(require_moderator)],
-    clock: Annotated[Clock, Depends(get_clock)],
-    store: Annotated[SubmissionStore, Depends(get_submission_store)],
-) -> OverviewOut:
-    """The session clock, the photos to review, standings with each team's progress, and
-    blocked attempts."""
-    now = clock().astimezone(UTC)
+def build_overview(store: SubmissionStore, session: GameSession, now: datetime) -> OverviewOut:
+    """The session's overview at `now`."""
     snapshot = SessionSnapshot(
         session=session,
         run=store.session_run(session.id),
@@ -207,3 +194,20 @@ def session_overview(
             for b in store.blocked_attempts(session.id, BLOCKED_SHOWN)
         ],
     )
+
+
+@router.get(
+    "/sessions/{session}/overview",
+    responses={
+        401: {"description": "Moderator code required (code: moderator_unauthorised)"},
+        404: {"description": "Unknown session"},
+    },
+)
+def session_overview(
+    session: Annotated[GameSession, Depends(require_moderator)],
+    clock: Annotated[Clock, Depends(get_clock)],
+    store: Annotated[SubmissionStore, Depends(get_submission_store)],
+) -> OverviewOut:
+    """The session clock, the photos to review, standings with each team's progress, and
+    blocked attempts."""
+    return build_overview(store, session, clock().astimezone(UTC))

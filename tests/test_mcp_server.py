@@ -90,6 +90,9 @@ def test_tools_list(client: TestClient) -> None:
         "list_submissions",
         "get_submission",
         "override_verdict",
+        "start_session",
+        "stop_session",
+        "session_overview",
     ]
 
 

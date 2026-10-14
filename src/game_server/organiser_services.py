@@ -1,15 +1,16 @@
 """What the organiser does, as plain functions: start a design, edit and publish a draft, rule
-on a photo.
+on a photo, start and stop a session.
 
 The HTTP routes and the MCP tools both call these, so they do the same thing. They raise domain
 errors; each caller maps them to its own kind of response.
 """
 
 import logging
-from datetime import UTC
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from game_server.clock import Clock
+from game_server.clock import Clock, utc_iso
 from game_server.config import Settings
 from game_server.designer.review import (
     CheckpointEdit,
@@ -33,6 +34,7 @@ from game_server.drafts import (
     Problem,
 )
 from game_server.rulings import RecordedRuling, Ruling
+from game_server.session_runs import SessionRun, session_phase
 from game_server.sessions import GameSession, SessionPublishError, SessionRepository
 from game_server.submissions import SubmissionStore
 
@@ -46,12 +48,17 @@ __all__ = [
     "DraftNotEditableError",
     "DraftNotReadyError",
     "DraftProblemsError",
+    "RunOutcome",
+    "SessionNotStartedError",
+    "SessionStoppedError",
     "UnknownCheckpointError",
     "UnknownDraftError",
     "edit_checkpoint",
     "publish_draft",
     "rule",
     "start_design",
+    "start_session",
+    "stop_session",
 ]
 
 
@@ -161,6 +168,47 @@ def _publish(
             ) from None
         return session
     raise RuntimeError(f"no unused codes after {PUBLISH_ATTEMPTS} attempts")
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    """The session's run after a start or stop, whether that call changed it, and the time."""
+
+    run: SessionRun | None
+    changed: bool
+    now: datetime
+
+
+class SessionStoppedError(Exception):
+    """The session has ended: it can't start again."""
+
+
+class SessionNotStartedError(Exception):
+    """The session hasn't started: there is nothing to stop."""
+
+
+def start_session(store: SubmissionStore, session: GameSession, clock: Clock) -> RunOutcome:
+    """Start a scheduled session: `scheduled` → `running`. A running one is left as it is
+    (`changed` false). Raises `SessionStoppedError` for a stopped one."""
+    now = clock().astimezone(UTC)
+    change = store.start_run(session.id, now)
+    if session_phase(change.run) == "stopped":
+        raise SessionStoppedError(str(session.id))
+    if change.changed:
+        logger.info("Session %s phase running started_at %s", session.id, utc_iso(now))
+    return RunOutcome(change.run, change.changed, now)
+
+
+def stop_session(store: SubmissionStore, session: GameSession, clock: Clock) -> RunOutcome:
+    """Finish a running session: `running` → `stopped`, for good. A stopped one is left as it
+    is (`changed` false). Raises `SessionNotStartedError` for one that never started."""
+    now = clock().astimezone(UTC)
+    change = store.stop_run(session.id, now)
+    if session_phase(change.run) == "scheduled":
+        raise SessionNotStartedError(str(session.id))
+    if change.changed:
+        logger.info("Session %s phase stopped stopped_at %s", session.id, utc_iso(now))
+    return RunOutcome(change.run, change.changed, now)
 
 
 def rule(

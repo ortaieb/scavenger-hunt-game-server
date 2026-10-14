@@ -5,8 +5,6 @@ and used for invitations, never enforced. A session can start early or late and 
 planned end. Stopping is final.
 """
 
-import logging
-from datetime import UTC
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response, status
@@ -15,11 +13,15 @@ from pydantic import BaseModel, ConfigDict
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.errors import ApiError
 from game_server.moderation import require_moderator
+from game_server.organiser_services import (
+    SessionNotStartedError,
+    SessionStoppedError,
+)
+from game_server.organiser_services import start_session as start_service
+from game_server.organiser_services import stop_session as stop_service
 from game_server.session_runs import SessionPhase, SessionRun, session_phase
 from game_server.sessions import GameSession
 from game_server.submissions import SubmissionStore, get_submission_store
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -79,14 +81,13 @@ def start_session(
     store: Annotated[SubmissionStore, Depends(get_submission_store)],
 ) -> SessionClock:
     """Start the session: `scheduled` → `running`. Moderator only."""
-    now = clock().astimezone(UTC)
-    change = store.start_run(session.id, now)
-    if session_phase(change.run) == "stopped":
-        raise ApiError(status.HTTP_409_CONFLICT, *SESSION_STOPPED)
-    if change.changed:
-        logger.info("Session %s phase running started_at %s", session.id, utc_iso(now))
+    try:
+        outcome = start_service(store, session, clock)
+    except SessionStoppedError:
+        raise ApiError(status.HTTP_409_CONFLICT, *SESSION_STOPPED) from None
+    if outcome.changed:
         response.status_code = status.HTTP_201_CREATED
-    return session_clock(session, change.run, utc_iso(now))
+    return session_clock(session, outcome.run, utc_iso(outcome.now))
 
 
 @router.post(
@@ -107,11 +108,10 @@ def stop_session(
     store: Annotated[SubmissionStore, Depends(get_submission_store)],
 ) -> SessionClock:
     """Finish the session: `running` → `stopped`, for good. Moderator only."""
-    now = clock().astimezone(UTC)
-    change = store.stop_run(session.id, now)
-    if session_phase(change.run) == "scheduled":
-        raise ApiError(status.HTTP_409_CONFLICT, *SESSION_NOT_STARTED)
-    if change.changed:
-        logger.info("Session %s phase stopped stopped_at %s", session.id, utc_iso(now))
+    try:
+        outcome = stop_service(store, session, clock)
+    except SessionNotStartedError:
+        raise ApiError(status.HTTP_409_CONFLICT, *SESSION_NOT_STARTED) from None
+    if outcome.changed:
         response.status_code = status.HTTP_201_CREATED
-    return session_clock(session, change.run, utc_iso(now))
+    return session_clock(session, outcome.run, utc_iso(outcome.now))

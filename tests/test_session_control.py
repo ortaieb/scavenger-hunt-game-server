@@ -264,7 +264,7 @@ def test_each_change_is_logged_once_without_the_code(
     post(client, "stop")
     post(client, "stop")
 
-    lines = [r.getMessage() for r in caplog.records if r.name == "game_server.session_control"]
+    lines = [r.getMessage() for r in caplog.records if r.name == "game_server.organiser_services"]
     assert lines == [
         f"Session {SESSION} phase running started_at 2026-10-03T09:03:12Z",
         f"Session {SESSION} phase stopped stopped_at 2026-10-03T09:03:12Z",

@@ -25,6 +25,7 @@ from game_server.designer.review import SecretCodes
 from game_server.designer_runners import app_agent_runner, get_designer_runner
 from game_server.drafts import DraftStore
 from game_server.mcp_server.auth import OrganiserGuard
+from game_server.mcp_server.game_day import register_game_day_tools
 from game_server.mcp_server.hunts import register_hunt_tools
 from game_server.mcp_server.rulings import register_ruling_tool
 from game_server.mcp_server.services import McpServices
@@ -106,6 +107,7 @@ def build_mcp_server(settings: Settings, run: McpServices) -> MCPServer:
     register_hunt_tools(server, settings, run)
     register_submission_tools(server, settings, run)
     register_ruling_tool(server, run)
+    register_game_day_tools(server, run)
     return server
 
 

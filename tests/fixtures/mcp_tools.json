@@ -1971,5 +1971,470 @@
       "destructiveHint": false,
       "openWorldHint": false
     }
+  },
+  {
+    "name": "start_session",
+    "description": "Start a scheduled session now: players can join and submit photos from this moment.\n\nThe planned window is only for display: the session runs from when it starts to when it\nstops. A session that is already running is left as it is (`changed` is false). A\nstopped session can't be started again (`session_stopped`).\n",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "start_sessionArguments"
+    },
+    "outputSchema": {
+      "description": "The session clock, and whether this call changed it: `false` when the session was\nalready in the state asked for.",
+      "properties": {
+        "phase": {
+          "enum": [
+            "scheduled",
+            "running",
+            "stopped"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "planned-start": {
+          "title": "Planned-Start",
+          "type": "string"
+        },
+        "planned-end": {
+          "title": "Planned-End",
+          "type": "string"
+        },
+        "started-at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Started-At"
+        },
+        "stopped-at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Stopped-At"
+        },
+        "server-time": {
+          "title": "Server-Time",
+          "type": "string"
+        },
+        "changed": {
+          "title": "Changed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "phase",
+        "planned-start",
+        "planned-end",
+        "started-at",
+        "stopped-at",
+        "server-time",
+        "changed"
+      ],
+      "title": "ClockResult",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "stop_session",
+    "description": "Finish a running session, for good. Confirm with the organiser first: it can't be undone.\n\nPlayers can no longer join or submit photos, and the session can't be started again.\nPhotos still waiting for a ruling can be ruled on afterwards; results are final once\nevery one has been. A session that is already stopped is left as it is (`changed` is\nfalse). One that never started can't be stopped (`session_not_started`).\n",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "stop_sessionArguments"
+    },
+    "outputSchema": {
+      "description": "The session clock, and whether this call changed it: `false` when the session was\nalready in the state asked for.",
+      "properties": {
+        "phase": {
+          "enum": [
+            "scheduled",
+            "running",
+            "stopped"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "planned-start": {
+          "title": "Planned-Start",
+          "type": "string"
+        },
+        "planned-end": {
+          "title": "Planned-End",
+          "type": "string"
+        },
+        "started-at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Started-At"
+        },
+        "stopped-at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Stopped-At"
+        },
+        "server-time": {
+          "title": "Server-Time",
+          "type": "string"
+        },
+        "changed": {
+          "title": "Changed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "phase",
+        "planned-start",
+        "planned-end",
+        "started-at",
+        "stopped-at",
+        "server-time",
+        "changed"
+      ],
+      "title": "ClockResult",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "session_overview",
+    "description": "The moderator's view of a session: its clock, how many photos wait for a ruling, every\nteam's standing and progress (to spot a team that is stuck), and the newest attempts to\nplay outside the session.\n\nNames checkpoints, but shows no coordinates, clues, scenes, photos or codes.\n",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "session_overviewArguments"
+    },
+    "outputSchema": {
+      "$defs": {
+        "BlockedOut": {
+          "description": "A team that tried to play outside the session.",
+          "properties": {
+            "at": {
+              "title": "At",
+              "type": "string"
+            },
+            "team": {
+              "title": "Team",
+              "type": "string"
+            },
+            "action": {
+              "enum": [
+                "join",
+                "arrive",
+                "photo"
+              ],
+              "title": "Action",
+              "type": "string"
+            },
+            "code": {
+              "enum": [
+                "session_not_started",
+                "session_stopped"
+              ],
+              "title": "Code",
+              "type": "string"
+            }
+          },
+          "required": [
+            "at",
+            "team",
+            "action",
+            "code"
+          ],
+          "title": "BlockedOut",
+          "type": "object"
+        },
+        "CurrentOut": {
+          "description": "The checkpoint the team is on.",
+          "properties": {
+            "sequence": {
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          "required": [
+            "sequence",
+            "name"
+          ],
+          "title": "CurrentOut",
+          "type": "object"
+        },
+        "LastCompletedOut": {
+          "description": "The team's most recent photo that completed a checkpoint: which one, its effective\nverdict and its receive time.",
+          "properties": {
+            "sequence": {
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "verdict": {
+              "enum": [
+                "failed",
+                "pending",
+                "pass"
+              ],
+              "title": "Verdict",
+              "type": "string"
+            },
+            "at": {
+              "title": "At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "sequence",
+            "name",
+            "verdict",
+            "at"
+          ],
+          "title": "LastCompletedOut",
+          "type": "object"
+        },
+        "SessionClock": {
+          "description": "Where the session stands, with its planned window and the server's time.\n\n`planned-start`/`planned-end` are the file's times, for display only. `server-time` lets\nthe app correct for a phone whose clock is off. Times are UTC to the second.",
+          "properties": {
+            "phase": {
+              "enum": [
+                "scheduled",
+                "running",
+                "stopped"
+              ],
+              "title": "Phase",
+              "type": "string"
+            },
+            "planned-start": {
+              "title": "Planned-Start",
+              "type": "string"
+            },
+            "planned-end": {
+              "title": "Planned-End",
+              "type": "string"
+            },
+            "started-at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started-At"
+            },
+            "stopped-at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stopped-At"
+            },
+            "server-time": {
+              "title": "Server-Time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "phase",
+            "planned-start",
+            "planned-end",
+            "started-at",
+            "stopped-at",
+            "server-time"
+          ],
+          "title": "SessionClock",
+          "type": "object"
+        },
+        "TeamOverviewOut": {
+          "description": "A team's standing and progress. Score fields are `null` for a team that hasn't joined.\n\n`points`, `in-review` and `place` are exactly what the team sees in its own state.",
+          "properties": {
+            "team": {
+              "title": "Team",
+              "type": "string"
+            },
+            "joined": {
+              "title": "Joined",
+              "type": "boolean"
+            },
+            "completed": {
+              "title": "Completed",
+              "type": "integer"
+            },
+            "total": {
+              "title": "Total",
+              "type": "integer"
+            },
+            "points": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Points"
+            },
+            "in-review": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "In-Review"
+            },
+            "place": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Place"
+            },
+            "last-completed": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LastCompletedOut"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "current": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CurrentOut"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "team",
+            "joined",
+            "completed",
+            "total",
+            "points",
+            "in-review",
+            "place",
+            "last-completed",
+            "current"
+          ],
+          "title": "TeamOverviewOut",
+          "type": "object"
+        }
+      },
+      "description": "The session clock, the photos to review, the teams (standings first) and the newest\nblocked attempts.\n\n`to-review` counts the session's `pending` photos the moderator hasn't ruled on yet.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionClock"
+        },
+        "to-review": {
+          "title": "To-Review",
+          "type": "integer"
+        },
+        "teams": {
+          "items": {
+            "$ref": "#/$defs/TeamOverviewOut"
+          },
+          "title": "Teams",
+          "type": "array"
+        },
+        "blocked": {
+          "items": {
+            "$ref": "#/$defs/BlockedOut"
+          },
+          "title": "Blocked",
+          "type": "array"
+        }
+      },
+      "required": [
+        "session",
+        "to-review",
+        "teams",
+        "blocked"
+      ],
+      "title": "OverviewOut",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
   }
 ]

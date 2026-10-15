@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # anything neither sets. The URL and password hold credentials: SecretStr keeps them out
     # of reprs and logs.
     db_url: SecretStr | None = None
+    # The users directory's own login (`directory_app`), a URL: it takes the TLS, timeout and
+    # pool settings below, never the separate db_* fields, which belong to the game's login.
+    # Unset: the directory is unavailable.
+    directory_db_url: SecretStr | None = None
     db_host: str | None = None
     db_port: int | None = Field(default=None, ge=1, le=65535)
     db_name: str | None = None

@@ -102,12 +102,17 @@ def isolated_storage(
     for name in DB_SETTINGS:
         monkeypatch.delenv(f"GAME_SERVER_DB_{name}", raising=False)
     monkeypatch.setenv("GAME_SERVER_DB_URL", TEST_DB_URL)
+    monkeypatch.setenv("GAME_SERVER_DIRECTORY_DB_URL", TEST_DB_URL)
     monkeypatch.setenv("GAME_SERVER_DB_SSLMODE", "prefer")  # CI's server has no TLS
     monkeypatch.setenv("GAME_SERVER_IMAGE_BASE_PATH", str(tmp_path / "default-images"))
     db.execute(
         "TRUNCATE session_codes, published_sessions, hunt_drafts, rulings, referee_traces,"
         " referee_prompts, blocked_attempts, session_runs, arrivals, participants, submissions"
         " RESTART IDENTITY"
+    )
+    db.execute(
+        "TRUNCATE directory.people, directory.erasures, directory.suppressions RESTART IDENTITY"
+        " CASCADE"
     )
     caches = (
         get_settings,

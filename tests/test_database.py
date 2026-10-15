@@ -13,6 +13,7 @@ from game_server.database import (
     DatabaseConfig,
     close_databases,
     database_config,
+    directory_database_config,
     get_database,
     open_database,
 )
@@ -208,3 +209,38 @@ def test_dependency_opens_the_configured_database() -> None:
     settings = Settings()
 
     assert get_database(settings) is open_database(database_config(settings))
+
+
+# --- the users directory's connection -------------------------------------------------------------
+
+
+def test_the_directory_has_its_own_login_and_the_games_tls_and_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GAME_SERVER_DB_USER", "game_app")  # belongs to the game's login only
+    settings = Settings(
+        db_url=URL,
+        directory_db_url="postgresql://directory_app:dir-secret@db.example:6543/hunt",
+        db_sslmode="verify-full",
+        db_pool_max_size=4,
+    )
+
+    config = directory_database_config(settings)
+
+    assert config is not None
+    found = dict(conninfo_to_dict(config.conninfo))
+    assert (found["user"], found["password"], found["host"]) == (
+        "directory_app",
+        "dir-secret",
+        "db.example",
+    )
+    assert (found["sslmode"], found["application_name"]) == ("verify-full", "game-server-directory")
+    assert config.max_size == 4
+    assert "dir-secret" not in repr(config)
+
+
+def test_without_a_directory_url_there_is_no_directory_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GAME_SERVER_DIRECTORY_DB_URL")
+    assert directory_database_config(Settings(db_url=URL)) is None

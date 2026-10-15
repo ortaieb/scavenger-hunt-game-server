@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, Upl
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
+from game_server.auth import Principal, optional_person
 from game_server.checks import (
     Check,
     CheckResult,
@@ -129,6 +130,7 @@ def new_submission(
         processing_ms=processing_ms,
         referee=ctx.referee_report,
         arrival_id=ctx.active_arrival.id if ctx.active_arrival else None,
+        pid=ctx.pid,
         phash_match_id=next(
             (
                 r.matched_submission_id
@@ -349,6 +351,7 @@ def submit_challenge(
     submissions: Annotated[SubmissionStore, Depends(get_submission_store)],
     referee: Annotated[Referee, Depends(get_referee)],
     references: Annotated[ReferencePhotos, Depends(get_reference_photos)],
+    person: Annotated[Principal | None, Depends(optional_person)],
 ) -> ChallengeVerdict:
     """Check the submission, record it as the next attempt, and return the verdict.
 
@@ -370,7 +373,15 @@ def submit_challenge(
         session.id, parsed.participant, checkpoint.sequence, received_at
     )
     ctx = SubmissionContext(
-        parsed, received_at, session, checkpoint, image, phash, run=run, arrival=arrival
+        parsed,
+        received_at,
+        session,
+        checkpoint,
+        image,
+        phash,
+        run=run,
+        arrival=arrival,
+        pid=person.pid if person else None,
     )
     before, during = split_stages(checks)
     earlier = run_checks(before, ctx)

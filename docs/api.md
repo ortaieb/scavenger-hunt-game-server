@@ -554,6 +554,15 @@ accepted photo was received, since arriving takes no location. Rows carry their 
 A team joins its session with the join code the moderator sent it, and the player accepts the
 photo privacy notice. The response's `participant` is the id the team uses from then on.
 
+**Signed-in players.** With accounts on (`GAME_SERVER_AUTH_MODE` isn't `off`), a request that
+carries a Clerk session token (`Authorization: Bearer …`) also makes the player a member of the
+team: a `team_members` row with their own `pid` and their own consent time, kept apart from their
+teammates'. Several people join one team with the same code and share its `participant`. Someone
+already in another team of the same session gets `409 already_in_another_team`; a valid token
+without a `pid` yet gets `401 provisioning_required`. The response doesn't change, and without a
+token (or with accounts off) joining works as it always did. `/arrive` and `/challenge` record
+the caller's `pid` the same way, when there is one.
+
 ```json
 { "code": "FOX-7Q2K", "consent": true }
 ```

@@ -2,7 +2,7 @@
 
 # The newest migration's version in db/migrations: bump it in the same PR as a new migration
 # (a test fails until you do).
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class SchemaBehindError(Exception):

@@ -1633,6 +1633,53 @@ Drafts are stored in a `hunt_drafts` table, not scoped to a session:
 A partial unique index allows only one `running` draft at a time, so two starts at once can't
 both run.
 
+## Accounts
+
+Signed-in players carry a Clerk session token ([`auth.py`](../src/game_server/auth.py)), which
+names them by `pid`, the [users directory's](../README.md#the-users-directory) random person id.
+These two endpoints give a person their `pid`, and write it, with their role, into their Clerk
+user, which copies both into every token.
+
+### `POST /me/provision`
+
+`Authorization: Bearer <Clerk session token>`: a valid token, with or without a `pid`. The web
+app calls it after a `401 provisioning_required`, then takes a fresh token and retries.
+
+- A new person's email comes from Clerk's Backend API. Someone already known keeps their `pid`.
+- The `pid` and role are written to Clerk at once. If that fails, the write is queued and
+  retried in the background, and the answer is the same.
+
+```json
+{"pid": "5b1f5d3e-8f0e-4f64-9d57-2f6d4a3e7c10"}
+```
+
+| Status | `code` | When |
+|---|---|---|
+| `200` | | The caller's `pid` |
+| `401` | `unauthorised` | No valid token |
+| `409` | `no_primary_email` | The Clerk user has no primary email address |
+| `409` | `erasing` | The person is being erased |
+| `429` | `too_many_requests` | Called again within `GAME_SERVER_PROVISION_INTERVAL_SECONDS`; see `Retry-After` |
+| `503` | `directory_unavailable`, `clerk_unavailable` | No directory or no Clerk key, or Clerk can't be reached to read a new person's email |
+
+### `POST /internal/clerk-events`
+
+Clerk's webhook, reached only through the web app's pass-through. The body is checked against
+its Svix signature (`svix-id`, `svix-timestamp`, `svix-signature`) with
+`GAME_SERVER_CLERK_WEBHOOK_SECRET`; a bad or missing one answers `400 invalid_signature` and
+changes nothing.
+
+| Event | Effect |
+|---|---|
+| `user.created` | The person is created with the primary email (if new), and a write to Clerk is queued |
+| `user.updated` | The profile's email follows a changed primary address |
+| `user.deleted` | The person is marked `erasing`, and their `pid` logged |
+
+Svix can deliver an event late, out of order or twice: each is idempotent, and an event for a
+person the directory doesn't know, or is erasing, changes nothing. Handled events, and other
+event types, answer `204`, so Svix stops retrying. `503` (no secret, or no directory) makes it
+retry later.
+
 ## Organiser MCP
 
 **Organiser only.** An MCP server inside the game-server, so the organiser can run the game from

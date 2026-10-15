@@ -256,11 +256,16 @@ def every_route_response(
         ("POST", "/checkpoint/proximity"): [hint(client, participant=str(UNKNOWN))],
     }
     designing = designer_responses(client, designer)
+    accounts = {  # signed events and Clerk tokens: their own tests cover them signed in
+        ("POST", "/internal/clerk-events"): [client.post("/internal/clerk-events", json={})],
+        ("POST", "/me/provision"): [client.post("/me/provision")],  # 401
+    }
     for route, route_responses in (
         *opening.items(),
         *closing.items(),
         *after_stop.items(),
         *designing.items(),
+        *accounts.items(),
     ):
         responses.setdefault(route, []).extend(route_responses)
     return responses

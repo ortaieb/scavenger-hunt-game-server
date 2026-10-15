@@ -11,6 +11,8 @@ from pydantic import TypeAdapter
 
 from game_server.config import get_settings
 from game_server.database import Database, close_databases, database_config, open_database
+from game_server.directory.clerk import clerk_api
+from game_server.directory.routes import provision_rate_limiter
 from game_server.proximity import hint_rate_limiter
 from game_server.published_sessions import PublishedSessionRows
 from game_server.referee import build_referee
@@ -120,6 +122,8 @@ def isolated_storage(
         build_referee,
         build_reference_photos,
         sessions_beside,
+        clerk_api,
+        provision_rate_limiter,
     )
     for cache in caches:
         cache.cache_clear()

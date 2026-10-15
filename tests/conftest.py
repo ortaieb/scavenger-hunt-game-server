@@ -109,7 +109,8 @@ def isolated_storage(
     monkeypatch.setenv("GAME_SERVER_IMAGE_BASE_PATH", str(tmp_path / "default-images"))
     db.execute(
         "TRUNCATE session_codes, published_sessions, hunt_drafts, rulings, referee_traces,"
-        " referee_prompts, blocked_attempts, session_runs, arrivals, participants, submissions"
+        " referee_prompts, blocked_attempts, session_runs, arrivals, team_members, participants,"
+        " submissions"
         " RESTART IDENTITY"
     )
     db.execute(

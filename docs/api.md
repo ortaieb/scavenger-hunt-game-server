@@ -549,6 +549,24 @@ team's active arrival, and the referee judges the `pose` it issued.
 Arrivals don't set the order of arrival: [scoring](#scoring) ranks teams by when their
 accepted photo was received, since arriving takes no location. Rows carry their `session`, so they're deleted with the session's other data.
 
+### Playing as a team: who may call
+
+Four routes act for a team, naming its `participant`: `GET …/state`, `POST …/arrive`,
+`POST /challenge` and `POST /checkpoint/proximity`. With accounts on, the caller sends their
+Clerk session token (`Authorization: Bearer …`), and their `pid` must be one of the team's
+members (see [`POST /join`](#post-join)). `GAME_SERVER_AUTH_MODE` decides when this applies:
+
+| Mode | No token | A token |
+|---|---|---|
+| `off` | as before: the `participant` id is enough | not read |
+| `optional` | as before | checked: invalid is `401`, a non-member is `404` |
+| `required` | `401` (`code: unauthorised`) | checked as in `optional` |
+
+A person outside the team gets `404 unknown participant`, the same body as for a team that
+doesn't exist, so ids can't be probed. `/challenge` checks before it reads the photo, so a
+refusal never waits behind the referee. With accounts on, the `participant` id is no longer a
+secret that grants access.
+
 ## `POST /join`
 
 A team joins its session with the join code the moderator sent it, and the player accepts the

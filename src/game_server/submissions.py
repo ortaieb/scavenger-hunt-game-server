@@ -389,6 +389,15 @@ class SubmissionStore:
         id_, session_, team, joined_at, consented_at = row
         return ParticipantRecord(id_, session_, team, joined_at, consented_at)
 
+    def is_member(self, session: UUID, participant: UUID, pid: UUID) -> bool:
+        """Whether the person is a member of the team (the participant) in this session."""
+        with self._database.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM team_members WHERE session = %s AND participant = %s AND pid = %s",
+                (session, participant, pid),
+            ).fetchone()
+        return row is not None
+
     def record(self, submission: NewSubmission) -> RecordedSubmission:
         """Record `submission` in a transaction of its own."""
         with self.transaction(submission.session) as transaction:

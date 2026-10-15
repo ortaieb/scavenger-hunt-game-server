@@ -120,3 +120,18 @@ def current_clerk_user(
     """The Clerk user id (`sub`) of a valid token, `pid` or not. Only `/me/provision` uses it."""
     sub: str = _claims(authorization, settings)["sub"]
     return sub
+
+
+def optional_person(
+    settings: Annotated[Settings, Depends(get_settings)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> Principal | None:
+    """The caller, when there is one: for routes that serve people and, still, anonymous teams.
+
+    `None` with `GAME_SERVER_AUTH_MODE=off` (the header isn't even read), or when no token was
+    sent. A token that was sent must check out, as for `current_person`. Refusing callers
+    without one is for the routes that need it, from the mode.
+    """
+    if settings.auth_mode == "off" or authorization is None:
+        return None
+    return current_person(settings, authorization)

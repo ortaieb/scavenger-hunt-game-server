@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from game_server.arrivals import Arrival
+from game_server.auth import Principal, optional_person
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.config import Settings, get_settings
 from game_server.errors import ApiError
@@ -98,6 +99,7 @@ def arrive(
     settings: Annotated[Settings, Depends(get_settings)],
     sessions: Annotated[SessionRepository, Depends(get_session_repository)],
     store: Annotated[SubmissionStore, Depends(get_submission_store)],
+    person: Annotated[Principal | None, Depends(optional_person)],
 ) -> ArrivalOut:
     """Check in at the team's current checkpoint and get the pose and a one-time code."""
     now = clock().astimezone(UTC)
@@ -132,6 +134,7 @@ def arrive(
         now=now,
         ttl=timedelta(seconds=settings.arrival_code_ttl_seconds),
         new_code=draw_code,
+        pid=person.pid if person else None,
     )
     logger.info(
         "Team arrived session %s participant %s checkpoint %d %s expires_at %s",

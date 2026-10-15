@@ -13,12 +13,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
+from game_server.auth import Principal, optional_person
 from game_server.clock import Clock, get_clock
 from game_server.errors import ApiError
 from game_server.models import JoinedSession, JoinRequest, JoinResponse
 from game_server.session_runs import session_phase
 from game_server.sessions import GameSession, SessionRepository, Team, get_session_repository
 from game_server.submissions import (
+    AlreadyInAnotherTeamError,
     ParticipantRecord,
     SubmissionStore,
     get_submission_store,
@@ -65,7 +67,10 @@ def find_participant(
             "description": "The team had joined before: same participant, consent recorded again"
         },
         404: {"description": "No team has this code"},
-        409: {"description": "The session has ended (code: session_stopped)"},
+        409: {
+            "description": "The session has ended (code: session_stopped), or the signed-in "
+            "player is in another team of it (code: already_in_another_team)"
+        },
         422: {"description": "Invalid body, including consent that isn't true"},
     },
 )
@@ -75,11 +80,14 @@ def join(
     clock: Annotated[Clock, Depends(get_clock)],
     sessions: Annotated[SessionRepository, Depends(get_session_repository)],
     store: Annotated[SubmissionStore, Depends(get_submission_store)],
+    person: Annotated[Principal | None, Depends(optional_person)],
 ) -> JoinResponse:
     """Join the team the code belongs to, recording the player's consent.
 
     Joining before the moderator starts the session is fine: teams join first, then the
-    game starts. Only a stopped session refuses; the file's end-time doesn't.
+    game starts. Only a stopped session refuses; the file's end-time doesn't. A signed-in
+    player (a Clerk token, with accounts on) also becomes a member of the team, with their own
+    consent time; the response is the same.
     """
     now = clock().astimezone(UTC)
     found = sessions.find_team(body.code)
@@ -89,7 +97,12 @@ def join(
     if session_phase(store.session_run(session.id)) == "stopped":
         store.record_blocked(session.id, team.name, "join", "session_stopped", now)
         raise ApiError(status.HTTP_409_CONFLICT, "session has ended", "session_stopped")
-    outcome = store.join_team(session.id, team.name, now)
+    try:
+        outcome = store.join_team(session.id, team.name, now, person.pid if person else None)
+    except AlreadyInAnotherTeamError:
+        raise ApiError(
+            status.HTTP_409_CONFLICT, "already in another team", "already_in_another_team"
+        ) from None
     logger.info(
         "Team joined session %s team %s participant %s first=%s",
         session.id,

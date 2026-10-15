@@ -65,11 +65,17 @@ class NewSubmission:
     referee: RefereeReport | None = None
     # The active arrival the photo used; None when there was none.
     arrival_id: int | None = None
+    # The signed-in caller; None for a team playing without accounts.
+    pid: UUID | None = None
 
     @property
     def rejections(self) -> list[Rejection]:
         """The failed checks' rejections, in check order."""
         return rejections_of(self.checks)
+
+
+class AlreadyInAnotherTeamError(Exception):
+    """The person is a member of another team of the session: nobody is in two teams."""
 
 
 @dataclass(frozen=True)
@@ -188,13 +194,17 @@ class SubmissionStore:
         with self.transaction(session) as transaction:
             return transaction.stop_run(session, now)
 
-    def join_team(self, session: UUID, team: str, now: datetime) -> JoinOutcome:
+    def join_team(
+        self, session: UUID, team: str, now: datetime, pid: UUID | None = None
+    ) -> JoinOutcome:
         """Create the team's participant, or return it and record the renewed consent.
 
+        With a `pid`, the person becomes a member of the team, with their own consent time.
+        Raises `AlreadyInAnotherTeamError` if they're in another team of the session.
         One session-locked transaction, so two phones joining at once share one id.
         """
         with self.transaction(session) as transaction:
-            return transaction.join_team(session, team, now)
+            return transaction.join_team(session, team, now, pid)
 
     def arrive(
         self,
@@ -206,15 +216,25 @@ class SubmissionStore:
         now: datetime,
         ttl: timedelta,
         new_code: Callable[[], str],
+        pid: UUID | None = None,
     ) -> ArrivalOutcome:
         """Return the team's active arrival at the checkpoint, or issue a fresh one.
+
+        A fresh one records the caller's `pid`, if any.
 
         An arrival is active until it expires or a photo uses it (see `LatestArrival`).
         One session-locked transaction, so two taps at once can't issue two codes.
         """
         with self.transaction(session) as transaction:
             return transaction.arrive(
-                session, participant, checkpoint, pose=pose, now=now, ttl=ttl, new_code=new_code
+                session,
+                participant,
+                checkpoint,
+                pose=pose,
+                now=now,
+                ttl=ttl,
+                new_code=new_code,
+                pid=pid,
             )
 
     def latest_arrival(
@@ -413,6 +433,7 @@ class SubmissionTransaction:
         now: datetime,
         ttl: timedelta,
         new_code: Callable[[], str],
+        pid: UUID | None = None,
     ) -> ArrivalOutcome:
         """See `SubmissionStore.arrive`."""
         key = (session, participant, checkpoint)
@@ -422,8 +443,8 @@ class SubmissionTransaction:
         code, expires_at = new_code(), now + ttl
         inserted = self._conn.execute(
             "INSERT INTO arrivals (session, participant, checkpoint, code, pose, issued_at,"
-            " expires_at) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
-            (*key, code, pose, now, expires_at),
+            " expires_at, pid) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (*key, code, pose, now, expires_at, pid),
         ).fetchone()
         if inserted is None:  # pragma: no cover - INSERT ... RETURNING always returns the row
             raise RuntimeError("the database did not return the inserted row id")
@@ -458,22 +479,46 @@ class SubmissionTransaction:
         )
         return RunChange(SessionRun(started_at=run.started_at, stopped_at=now), changed=True)
 
-    def join_team(self, session: UUID, team: str, now: datetime) -> JoinOutcome:
+    def join_team(
+        self, session: UUID, team: str, now: datetime, pid: UUID | None = None
+    ) -> JoinOutcome:
         """See `SubmissionStore.join_team`."""
+        if pid is not None:
+            self._refuse_another_team(session, team, pid)
         existing = self._conn.execute(
             "UPDATE participants SET consented_at = %s WHERE session = %s AND team = %s"
             " RETURNING id",
             (now, session, team),
         ).fetchone()
         if existing is not None:
-            return JoinOutcome(participant=existing[0], first=False)
-        participant = uuid4()
-        self._conn.execute(
-            "INSERT INTO participants (id, session, team, joined_at, consented_at)"
-            " VALUES (%s, %s, %s, %s, %s)",
-            (participant, session, team, now, now),
-        )
-        return JoinOutcome(participant=participant, first=True)
+            outcome = JoinOutcome(participant=existing[0], first=False)
+        else:
+            participant = uuid4()
+            self._conn.execute(
+                "INSERT INTO participants (id, session, team, joined_at, consented_at)"
+                " VALUES (%s, %s, %s, %s, %s)",
+                (participant, session, team, now, now),
+            )
+            outcome = JoinOutcome(participant=participant, first=True)
+        if pid is not None:
+            self._conn.execute(
+                "INSERT INTO team_members (session, participant, pid, joined_at, photo_consent_at)"
+                " VALUES (%s, %s, %s, %s, %s)"
+                " ON CONFLICT (session, pid)"
+                " DO UPDATE SET photo_consent_at = EXCLUDED.photo_consent_at",
+                (session, outcome.participant, pid, now, now),
+            )
+        return outcome
+
+    def _refuse_another_team(self, session: UUID, team: str, pid: UUID) -> None:
+        """Raise `AlreadyInAnotherTeamError` if `pid` is a member of another team of the session."""
+        row = self._conn.execute(
+            "SELECT 1 FROM team_members m JOIN participants p ON p.id = m.participant"
+            " WHERE m.session = %s AND m.pid = %s AND p.team <> %s",
+            (session, pid, team),
+        ).fetchone()
+        if row is not None:
+            raise AlreadyInAnotherTeamError
 
     def record_blocked(
         self, session: UUID, team: str, action: BlockedAction, code: PhaseCode, at: datetime
@@ -526,8 +571,8 @@ class SubmissionTransaction:
         inserted = self._conn.execute(
             "INSERT INTO submissions (session, participant, checkpoint, attempt,"
             " received_at, capture_time, lat, long, image_id, verdict, rejections,"
-            " distance_m, phash, phash_match_id, checks, arrival_id, processing_ms)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " distance_m, phash, phash_match_id, checks, arrival_id, processing_ms, pid)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             " RETURNING id",
             (
                 *key,
@@ -545,6 +590,7 @@ class SubmissionTransaction:
                 Jsonb([_check_record(result) for result in submission.checks]),
                 submission.arrival_id,
                 submission.processing_ms,
+                submission.pid,
             ),
         ).fetchone()
         if inserted is None:  # pragma: no cover - INSERT ... RETURNING always returns the row

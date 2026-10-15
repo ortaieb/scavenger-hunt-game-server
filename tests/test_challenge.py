@@ -349,6 +349,7 @@ def test_records_submission_row(
         ],
         "arrival_id": None,  # the team didn't check in
         "processing_ms": 250,  # one tick: from receiving the photo to recording its verdict
+        "pid": None,  # no signed-in caller
     }
     # The referee isn't consulted: the checkpoint has no challenge and a check failed.
     assert db.execute("SELECT * FROM referee_traces").fetchall() == []

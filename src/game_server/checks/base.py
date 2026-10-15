@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
 from typing import Protocol, Self
+from uuid import UUID
 
 from game_server import geo
 from game_server.arrivals import Arrival, LatestArrival
@@ -67,6 +68,8 @@ class SubmissionContext:
     # The team's latest arrival at this checkpoint issued by `received_at`; None if it never
     # arrived. Loaded before the checks, and confirmed again inside the write transaction.
     arrival: LatestArrival | None = None
+    # The signed-in caller, recorded with the submission; None for a team without accounts.
+    pid: UUID | None = None
 
     @property
     def active_arrival(self) -> Arrival | None:

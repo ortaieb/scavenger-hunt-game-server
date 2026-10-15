@@ -92,6 +92,10 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS` | `10` | Minimum seconds between [proximity hints](docs/api.md#post-checkpointproximity) per (session, participant) (> 0) |
 | `GAME_SERVER_PHASH_MAX_DISTANCE` | `6` | Hamming distance (0–32 of 64 bits) at or below which a photo is a [duplicate](docs/api.md#submission-checks) of an accepted one |
 | `GAME_SERVER_ORGANISER_KEY` | unset | The [hunt designer's](docs/api.md#hunt-designer) key, at least 24 characters. Unset: nobody can use the designer. Never logged |
+| `GAME_SERVER_AUTH_MODE` | `off` | Clerk session tokens: `off` (not checked, today's behaviour), `optional` (checked when sent) or `required`. Anything but `off` needs the three settings below, or the server won't start |
+| `GAME_SERVER_CLERK_JWT_KEY` | unset | Clerk's PEM public key (Dashboard → API keys), so a check makes no network call. In a one-line variable, write the line breaks as `\n` |
+| `GAME_SERVER_CLERK_ISSUER` | unset | Clerk's Frontend API URL, which every token's `iss` must equal |
+| `GAME_SERVER_CLERK_AUTHORIZED_PARTIES` | empty | The web app's origin(s), comma-separated: a token's `azp` must be one of them, so a token minted for another site can't be replayed here |
 | `GAME_SERVER_DESIGNER_RUNNER` | `agent` | What fills a draft: `agent`, the [hunt designer](#hunt-designer) (needs `GAME_SERVER_ANTHROPIC_API_KEY`: without it, starting a design answers `503`), or `stub`, a fixed hunt for local development and the web app's tests |
 | `GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS` | `1` | How long the `stub` runner takes (≥ 0) |
 | `GAME_SERVER_DESIGNER_MIN_SPACING_M` | `150` | The least distance between two of a draft's checkpoints, in metres; see the [draft rules](docs/api.md#draft-rules) |

@@ -43,6 +43,10 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_REFEREE_MAX_RETRIES",
         "GAME_SERVER_REFEREE_MAX_IMAGE_EDGE",
         "GAME_SERVER_REFEREE_MIN_CONFIDENCE",
+        "GAME_SERVER_AUTH_MODE",
+        "GAME_SERVER_CLERK_JWT_KEY",
+        "GAME_SERVER_CLERK_ISSUER",
+        "GAME_SERVER_CLERK_AUTHORIZED_PARTIES",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -465,3 +469,47 @@ def test_mcp_allowed_hosts_are_comma_separated(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("GAME_SERVER_MCP_ALLOWED_HOSTS", " game.example , localhost:*,")
 
     assert Settings().mcp_allowed_hosts == ["game.example", "localhost:*"]
+
+
+def test_auth_is_off_by_default() -> None:
+    settings = Settings()
+
+    assert settings.auth_mode == "off"
+    assert settings.clerk_jwt_key is None
+    assert settings.clerk_authorized_parties == []
+
+
+def test_auth_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_AUTH_MODE", "optional")
+    monkeypatch.setenv("GAME_SERVER_CLERK_JWT_KEY", "-----BEGIN PUBLIC KEY-----\\nabc\\n-----END")
+    monkeypatch.setenv("GAME_SERVER_CLERK_ISSUER", "https://x.clerk.accounts.dev")
+    monkeypatch.setenv(
+        "GAME_SERVER_CLERK_AUTHORIZED_PARTIES", "https://a.example, https://b.example,"
+    )
+
+    settings = Settings()
+
+    assert settings.auth_mode == "optional"
+    assert settings.clerk_jwt_key == "-----BEGIN PUBLIC KEY-----\nabc\n-----END"
+    assert settings.clerk_authorized_parties == ["https://a.example", "https://b.example"]
+
+
+@pytest.mark.parametrize("mode", ["optional", "required"])
+@pytest.mark.parametrize("missing", ["clerk_jwt_key", "clerk_issuer", "clerk_authorized_parties"])
+def test_auth_on_without_its_settings_fails_at_startup(mode: str, missing: str) -> None:
+    complete: dict[str, object] = {
+        "clerk_jwt_key": "pem",
+        "clerk_issuer": "https://x.clerk.accounts.dev",
+        "clerk_authorized_parties": ["https://a.example"],
+    }
+    del complete[missing]
+
+    with pytest.raises(ValidationError, match=missing):
+        Settings(auth_mode=mode, **complete)  # type: ignore[arg-type]  # mode is a valid literal
+
+
+def test_an_unknown_auth_mode_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_AUTH_MODE", "sometimes")
+
+    with pytest.raises(ValidationError):
+        Settings()

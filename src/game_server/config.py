@@ -19,6 +19,7 @@ DEFAULT_REFEREE_MAX_RETRIES = 2
 ORGANISER_KEY_MIN_LENGTH = 24
 DEFAULT_DESIGNER_MIN_SPACING_M = 150.0
 DesignerRunnerName = Literal["stub", "agent"]
+AuthMode = Literal["off", "optional", "required"]
 
 
 class Settings(BaseSettings):
@@ -120,6 +121,15 @@ class Settings(BaseSettings):
     mcp_allowed_hosts: Annotated[list[str], NoDecode] = []
     # The web app's base URL, for links to its screens. Unset: no links.
     web_app_url: str | None = None
+    # Clerk session tokens (see `auth`). `off`: not checked; `optional`: checked when sent;
+    # `required`: always. Anything but `off` needs the key, the issuer and the web app's origins.
+    auth_mode: AuthMode = "off"
+    # Clerk's PEM public key, so a check makes no network call.
+    clerk_jwt_key: str | None = None
+    # Clerk's Frontend API URL, which every token's `iss` must equal.
+    clerk_issuer: str | None = None
+    # Origins a token's `azp` may name, comma-separated: the web app's.
+    clerk_authorized_parties: Annotated[list[str], NoDecode] = []
 
     @field_validator("organiser_key")
     @classmethod
@@ -128,12 +138,30 @@ class Settings(BaseSettings):
             raise ValueError(f"must be at least {ORGANISER_KEY_MIN_LENGTH} characters")
         return key
 
-    @field_validator("mcp_allowed_hosts", mode="before")
+    @field_validator("mcp_allowed_hosts", "clerk_authorized_parties", mode="before")
     @classmethod
-    def _split_hosts(cls, hosts: object) -> object:
-        if isinstance(hosts, str):
-            return [host.strip() for host in hosts.split(",") if host.strip()]
-        return hosts
+    def _split_commas(cls, values: object) -> object:
+        if isinstance(values, str):
+            return [value.strip() for value in values.split(",") if value.strip()]
+        return values
+
+    @field_validator("clerk_jwt_key")
+    @classmethod
+    def _unescape_newlines(cls, key: str | None) -> str | None:
+        # A PEM pasted into a one-line environment variable carries `\n` for its line breaks.
+        return key.replace("\\n", "\n") if key else key
+
+    @model_validator(mode="after")
+    def _auth_is_configured(self) -> Self:
+        if self.auth_mode != "off":
+            missing = [
+                name
+                for name in ("clerk_jwt_key", "clerk_issuer", "clerk_authorized_parties")
+                if not getattr(self, name)
+            ]
+            if missing:
+                raise ValueError(f"auth_mode {self.auth_mode} needs {', '.join(missing)}")
+        return self
 
     @model_validator(mode="after")
     def _pool_sizes_are_consistent(self) -> Self:

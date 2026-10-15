@@ -11,7 +11,13 @@ from migration_files import MIGRATIONS
 from psycopg.rows import DictRow
 
 from game_server.config import Settings, get_settings
-from game_server.directory import DirectoryNotConfiguredError, DirectoryRepository, get_directory
+from game_server.directory import (
+    DirectoryNotConfiguredError,
+    DirectoryRepository,
+    Identity,
+    Person,
+    get_directory,
+)
 
 DIRECTORY_TABLES = [
     "people",
@@ -322,3 +328,62 @@ def test_the_migration_sets_no_password_and_no_login() -> None:
 
     assert "PASSWORD" not in sql
     assert " LOGIN" not in sql.replace("NOLOGIN", "")
+
+
+# --- people's status, roles and emails -----------------------------------------------------------
+
+
+def test_a_person_is_found_with_their_status(directory: DirectoryRepository) -> None:
+    pid = directory.get_or_create_person("user_a", "a@example.com")
+
+    assert directory.find_person("user_a") == Person(pid, "active")
+    assert directory.find_person("nobody") is None
+
+
+def test_marking_erasing_happens_once(directory: DirectoryRepository) -> None:
+    pid = directory.get_or_create_person("user_a", "a@example.com")
+
+    assert directory.mark_erasing(pid)
+    assert not directory.mark_erasing(pid)
+    assert directory.find_person("user_a") == Person(pid, "erasing")
+
+
+def test_the_role_is_player_without_a_grant(
+    directory: DirectoryRepository, db: psycopg.Connection[DictRow]
+) -> None:
+    player = directory.get_or_create_person("user_a", "a@example.com")
+    admin = directory.get_or_create_person("user_b", "b@example.com")
+    db.execute("INSERT INTO directory.role_grants (pid, role) VALUES (%s, 'admin')", (admin,))
+
+    assert (directory.role(player), directory.role(admin)) == ("player", "admin")
+
+
+def test_active_identities_leave_out_people_being_erased(
+    directory: DirectoryRepository, db: psycopg.Connection[DictRow]
+) -> None:
+    active = directory.get_or_create_person("user_a", "a@example.com")
+    organiser = directory.get_or_create_person("user_b", "b@example.com")
+    db.execute(
+        "INSERT INTO directory.role_grants (pid, role) VALUES (%s, 'organiser')", (organiser,)
+    )
+    directory.mark_erasing(directory.get_or_create_person("user_c", "c@example.com"))
+
+    assert directory.active_identities() == {
+        "user_a": Identity(active, "player"),
+        "user_b": Identity(organiser, "organiser"),
+    }
+
+
+def test_an_email_changes_only_for_an_active_person_and_only_when_different(
+    directory: DirectoryRepository,
+) -> None:
+    pid = directory.get_or_create_person("user_a", "a@example.com")
+
+    assert not directory.update_email(pid, "a@example.com")
+    assert directory.update_email(pid, "new@example.com")
+    directory.mark_erasing(pid)
+    assert not directory.update_email(pid, "newer@example.com")
+
+    profile = directory.profile(pid)
+    assert profile is not None
+    assert profile.email == "new@example.com"

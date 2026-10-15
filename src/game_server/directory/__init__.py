@@ -8,8 +8,17 @@ directory's tables: it calls `DirectoryRepository`.
 from game_server.directory.repository import (
     DirectoryNotConfiguredError,
     DirectoryRepository,
+    Identity,
+    Person,
     Profile,
     get_directory,
 )
 
-__all__ = ["DirectoryNotConfiguredError", "DirectoryRepository", "Profile", "get_directory"]
+__all__ = [
+    "DirectoryNotConfiguredError",
+    "DirectoryRepository",
+    "Identity",
+    "Person",
+    "Profile",
+    "get_directory",
+]

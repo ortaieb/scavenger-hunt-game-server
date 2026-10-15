@@ -48,6 +48,11 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_CLERK_JWT_KEY",
         "GAME_SERVER_CLERK_ISSUER",
         "GAME_SERVER_CLERK_AUTHORIZED_PARTIES",
+        "GAME_SERVER_CLERK_SECRET_KEY",
+        "GAME_SERVER_CLERK_WEBHOOK_SECRET",
+        "GAME_SERVER_PROVISION_INTERVAL_SECONDS",
+        "GAME_SERVER_CLERK_SYNC_INTERVAL_SECONDS",
+        "GAME_SERVER_CLERK_RECONCILE_HOUR_UTC",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -511,6 +516,35 @@ def test_auth_on_without_its_settings_fails_at_startup(mode: str, missing: str) 
 
 def test_an_unknown_auth_mode_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GAME_SERVER_AUTH_MODE", "sometimes")
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_clerk_provisioning_settings_default_to_off() -> None:
+    settings = Settings()
+
+    assert (settings.clerk_secret_key, settings.clerk_webhook_secret) == (None, None)
+    assert settings.provision_interval_seconds == 5
+    assert settings.clerk_sync_interval_seconds == 10
+    assert settings.clerk_reconcile_hour_utc == 3
+
+
+def test_clerk_secrets_are_not_in_the_repr(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAME_SERVER_CLERK_SECRET_KEY", "sk_test_hidden")
+    monkeypatch.setenv("GAME_SERVER_CLERK_WEBHOOK_SECRET", "whsec_hidden")
+
+    text = repr(Settings())
+
+    assert "sk_test_hidden" not in text
+    assert "whsec_hidden" not in text
+
+
+@pytest.mark.parametrize("hour", ["-1", "24"])
+def test_the_reconcile_hour_is_an_hour_of_the_day(
+    monkeypatch: pytest.MonkeyPatch, hour: str
+) -> None:
+    monkeypatch.setenv("GAME_SERVER_CLERK_RECONCILE_HOUR_UTC", hour)
 
     with pytest.raises(ValidationError):
         Settings()

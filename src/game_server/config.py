@@ -134,6 +134,17 @@ class Settings(BaseSettings):
     clerk_issuer: str | None = None
     # Origins a token's `azp` may name, comma-separated: the web app's.
     clerk_authorized_parties: Annotated[list[str], NoDecode] = []
+    # Clerk's Backend API key, for writing each person's pid and role into their Clerk user.
+    # Unset: nothing is written to Clerk, and /me/provision answers 503.
+    clerk_secret_key: SecretStr | None = None
+    # The Svix signing secret of Clerk's webhook. Unset: /internal/clerk-events answers 503.
+    clerk_webhook_secret: SecretStr | None = None
+    # One /me/provision per Clerk user per this many seconds.
+    provision_interval_seconds: int = Field(default=5, gt=0)
+    # How often the outbox's due writes to Clerk are sent, and the UTC hour of the nightly
+    # reconcile with Clerk.
+    clerk_sync_interval_seconds: float = Field(default=10, gt=0)
+    clerk_reconcile_hour_utc: int = Field(default=3, ge=0, le=23)
 
     @field_validator("organiser_key")
     @classmethod

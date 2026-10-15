@@ -28,6 +28,8 @@ from game_server.config import get_settings
 from game_server.database import close_databases, database_config, open_database
 from game_server.designer import routes as designer_routes
 from game_server.designer_runners import AgentRunner, interrupt_left_running
+from game_server.directory import routes as directory_routes
+from game_server.directory.sync import start_clerk_sync
 from game_server.drafts import DraftStore
 from game_server.logging_config import configure_logging
 from game_server.mcp_server.server import mount_mcp
@@ -39,7 +41,8 @@ GREETING = "Hello, World!"
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Open the database's connection pool and the designer's agent runner before serving;
-    on shutdown, stop any design run, then close the pool.
+    on shutdown, stop any design run, then close the pool. With the directory and a Clerk
+    key, the outbox's writes to Clerk are sent in the background.
 
     The pool connects in the background, so an unreachable database doesn't stop startup:
     `/health` reports it unavailable until it answers. Drafts a previous process left
@@ -52,12 +55,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     runner = AgentRunner(store, get_clock(), settings)
     await runner.open()
     app.state.agent_runner = runner
+    clerk_sync = start_clerk_sync(settings, get_clock())
     manager = getattr(app.state, "mcp_session_manager", None)
     mcp: AbstractAsyncContextManager[None] = manager.run() if manager else nullcontext()
     try:
         async with mcp:
             yield
     finally:
+        if clerk_sync is not None:
+            await clerk_sync.stop()
         await runner.close()
         close_databases()
 
@@ -104,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(ruling.router)
     app.include_router(review.router)
     app.include_router(photos.router)
+    app.include_router(directory_routes.router)
     if settings.mcp_enabled:
         mount_mcp(app, settings)
 

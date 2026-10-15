@@ -96,6 +96,11 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_CLERK_JWT_KEY` | unset | Clerk's PEM public key (Dashboard → API keys), so a check makes no network call. In a one-line variable, write the line breaks as `\n` |
 | `GAME_SERVER_CLERK_ISSUER` | unset | Clerk's Frontend API URL, which every token's `iss` must equal |
 | `GAME_SERVER_CLERK_AUTHORIZED_PARTIES` | empty | The web app's origin(s), comma-separated: a token's `azp` must be one of them, so a token minted for another site can't be replayed here |
+| `GAME_SERVER_CLERK_SECRET_KEY` | unset | Clerk's Backend API key (sealed), for writing each person's `pid` and role into their Clerk user. Unset: nothing is written to Clerk and [`/me/provision`](docs/api.md#post-meprovision) answers `503` |
+| `GAME_SERVER_CLERK_WEBHOOK_SECRET` | unset | The Svix signing secret of Clerk's webhook (sealed). Unset: [`/internal/clerk-events`](docs/api.md#post-internalclerk-events) answers `503` |
+| `GAME_SERVER_PROVISION_INTERVAL_SECONDS` | `5` | One `/me/provision` per Clerk user per this many seconds (> 0) |
+| `GAME_SERVER_CLERK_SYNC_INTERVAL_SECONDS` | `10` | How often queued writes to Clerk are sent (> 0) |
+| `GAME_SERVER_CLERK_RECONCILE_HOUR_UTC` | `3` | The UTC hour (0–23) of the nightly reconcile with Clerk |
 | `GAME_SERVER_DESIGNER_RUNNER` | `agent` | What fills a draft: `agent`, the [hunt designer](#hunt-designer) (needs `GAME_SERVER_ANTHROPIC_API_KEY`: without it, starting a design answers `503`), or `stub`, a fixed hunt for local development and the web app's tests |
 | `GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS` | `1` | How long the `stub` runner takes (≥ 0) |
 | `GAME_SERVER_DESIGNER_MIN_SPACING_M` | `150` | The least distance between two of a draft's checkpoints, in metres; see the [draft rules](docs/api.md#draft-rules) |
@@ -501,6 +506,21 @@ them one (see [the logins on Railway](#the-users-directorys-logins-on-railway)) 
 working as before, on the one login. Game code never writes SQL against `directory`: it calls
 `DirectoryRepository`. The migrating login (Flyway's) must be allowed to create roles, as
 PostgreSQL's own `postgres` user is.
+
+**Provisioning.** Clerk never asks the server anything while it mints a session token, so the
+directory writes each person's `pid` and role into their Clerk user ahead of time (the user's
+`external_id`, and its public metadata, which the token's claims copy). A person is created by
+whichever comes first: Clerk's `user.created` [event](docs/api.md#post-internalclerk-events), or
+[`POST /me/provision`](docs/api.md#post-meprovision), which the web app calls when a token has
+no `pid` yet. Writes that fail wait in `directory.clerk_outbox`, and a background task retries
+them with backoff until they land. Every night, at `GAME_SERVER_CLERK_RECONCILE_HOUR_UTC`, it
+also queues a write for any active person whose Clerk user differs: **the directory is the source
+of truth**, so edits to `pid`, `role` or the external id in the Clerk Dashboard are overwritten.
+Logs name people by `pid` only.
+
+In Clerk's Dashboard, add a webhook endpoint for `user.created`, `user.updated` and
+`user.deleted` pointing at the web app's pass-through, and set its signing secret as
+`GAME_SERVER_CLERK_WEBHOOK_SECRET`. The game server has no public domain of its own.
 
 ## Deploying on Railway
 

@@ -15,6 +15,7 @@ from psycopg_pool import ConnectionPool
 from game_server.config import Settings, get_settings
 
 APPLICATION_NAME = "game-server"
+DIRECTORY_APPLICATION_NAME = "game-server-directory"
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,26 @@ class DatabaseConfig:
     min_size: int
     max_size: int
     timeout: float
+
+
+def _transport(settings: Settings) -> dict[str, str | int | None]:
+    """How to connect, whichever login: TLS and the connect timeout."""
+    return {
+        "sslmode": settings.db_sslmode,
+        "sslrootcert": settings.db_sslrootcert,
+        "sslcert": str(settings.db_sslcert) if settings.db_sslcert else None,
+        "sslkey": str(settings.db_sslkey) if settings.db_sslkey else None,
+        "connect_timeout": settings.db_connect_timeout_seconds,
+    }
+
+
+def _pooled(settings: Settings, conninfo: str) -> DatabaseConfig:
+    return DatabaseConfig(
+        conninfo=conninfo,
+        min_size=settings.db_pool_min_size,
+        max_size=settings.db_pool_max_size,
+        timeout=settings.db_pool_timeout_seconds,
+    )
 
 
 def database_config(settings: Settings) -> DatabaseConfig:
@@ -39,19 +60,26 @@ def database_config(settings: Settings) -> DatabaseConfig:
         dbname=settings.db_name,
         user=settings.db_user,
         password=settings.db_password.get_secret_value() if settings.db_password else None,
-        sslmode=settings.db_sslmode,
-        sslrootcert=settings.db_sslrootcert,
-        sslcert=str(settings.db_sslcert) if settings.db_sslcert else None,
-        sslkey=str(settings.db_sslkey) if settings.db_sslkey else None,
-        connect_timeout=settings.db_connect_timeout_seconds,
         application_name=APPLICATION_NAME,
+        **_transport(settings),
     )
-    return DatabaseConfig(
-        conninfo=conninfo,
-        min_size=settings.db_pool_min_size,
-        max_size=settings.db_pool_max_size,
-        timeout=settings.db_pool_timeout_seconds,
+    return _pooled(settings, conninfo)
+
+
+def directory_database_config(settings: Settings) -> DatabaseConfig | None:
+    """The users directory's connection: its own URL and login, the game's TLS and pool
+    settings. None if `directory_db_url` isn't set.
+
+    Raises `psycopg.ProgrammingError` if the URL is malformed.
+    """
+    if settings.directory_db_url is None:
+        return None
+    conninfo = make_conninfo(
+        settings.directory_db_url.get_secret_value(),
+        application_name=DIRECTORY_APPLICATION_NAME,
+        **_transport(settings),
     )
+    return _pooled(settings, conninfo)
 
 
 def _configure(conn: Connection[TupleRow]) -> None:

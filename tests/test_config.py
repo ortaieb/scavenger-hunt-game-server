@@ -43,6 +43,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "GAME_SERVER_REFEREE_MAX_RETRIES",
         "GAME_SERVER_REFEREE_MAX_IMAGE_EDGE",
         "GAME_SERVER_REFEREE_MIN_CONFIDENCE",
+        "GAME_SERVER_DIRECTORY_DB_URL",
         "GAME_SERVER_AUTH_MODE",
         "GAME_SERVER_CLERK_JWT_KEY",
         "GAME_SERVER_CLERK_ISSUER",

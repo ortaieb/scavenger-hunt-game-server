@@ -138,6 +138,7 @@ same part of the URL. libpq's own `PG*` variables fill in anything neither sets.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GAME_SERVER_DB_URL` | unset | `postgresql://user:password@host:port/dbname`. Holds a credential: never logged |
+| `GAME_SERVER_DIRECTORY_DB_URL` | unset | The [users directory's](#the-users-directory) own connection, as `directory_app`. A URL only: the separate `GAME_SERVER_DB_*` fields belong to the game's login and never apply to it. It takes the TLS, timeout and pool settings below. Holds a credential: never logged. Unset: no directory |
 | `GAME_SERVER_DB_HOST`, `GAME_SERVER_DB_PORT`, `GAME_SERVER_DB_NAME`, `GAME_SERVER_DB_USER`, `GAME_SERVER_DB_PASSWORD` | unset | The URL's parts, separately. The password is never logged |
 | `GAME_SERVER_DB_SSLMODE` | `require` | libpq's [`sslmode`](https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-PROTECTION): `disable`, `allow`, `prefer`, `require`, `verify-ca` or `verify-full`. Overrides any `sslmode` in the URL |
 | `GAME_SERVER_DB_SSLROOTCERT` | unset | For `verify-ca`/`verify-full`: the CA file that signed the server's certificate, or `system` for the OS's trusted CAs |
@@ -482,6 +483,25 @@ docker run --rm -p 8000:8000 \
 
 Because there is no shell, use `docker logs` to inspect a container rather than `docker exec`.
 
+### The users directory
+
+Who the people behind a `pid` are (their Clerk user, email, profile, consents and platform
+role) lives in the `directory` schema, behind its own database login, not beside the game's
+tables ([`directory/`](src/game_server/directory/), migration `V2__users_directory.sql`). The
+game knows a person only by `pid`, a random version 4 UUID the server makes (never derived from
+an email or a Clerk id). Two roles keep the two apart, and neither can see the other's tables:
+
+| Role | Can | Used by |
+|---|---|---|
+| `game_app` | read and write the game's tables (and ones added later), read Flyway's history for `/health`; nothing in `directory` | `GAME_SERVER_DB_URL` |
+| `directory_app` | everything in `directory`; nothing in the game's tables | `GAME_SERVER_DIRECTORY_DB_URL` |
+
+The migration creates both as `NOLOGIN`: **a migration never holds a password.** Until you give
+them one (see [the logins on Railway](#the-users-directorys-logins-on-railway)) everything keeps
+working as before, on the one login. Game code never writes SQL against `directory`: it calls
+`DirectoryRepository`. The migrating login (Flyway's) must be allowed to create roles, as
+PostgreSQL's own `postgres` user is.
+
 ## Deploying on Railway
 
 The game server deploys to [Railway](https://railway.com/) from this repository's
@@ -547,6 +567,30 @@ logs show the startup's `Hunt designer self-check` line instead. A deploy or res
 design run fails its draft with `interrupted`: stopping Claude Code and marking the draft takes
 the server about 5 s after `SIGTERM`, and if it's killed sooner, the new deploy marks the draft
 when it starts.
+
+### The users directory's logins on Railway
+
+Once per environment, **after a deploy has applied V2**, give the two roles passwords and
+point the game server at them. Passwords never go in a migration or the repository.
+
+1. Connect as the owner (`railway connect Postgres`, or the dashboard's Data tab) and run, with
+   two long random passwords of your own:
+   ```sql
+   ALTER ROLE game_app LOGIN PASSWORD '<password-1>';
+   ALTER ROLE directory_app LOGIN PASSWORD '<password-2>';
+   ```
+2. On the game server, set `GAME_SERVER_DB_URL` to the private-network URL as `game_app`
+   (replacing `${{Postgres.DATABASE_URL}}`) and add `GAME_SERVER_DIRECTORY_DB_URL` as
+   `directory_app`; keep both sealed:
+   ```text
+   GAME_SERVER_DB_URL=postgresql://game_app:<password-1>@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.PGDATABASE}}
+   GAME_SERVER_DIRECTORY_DB_URL=postgresql://directory_app:<password-2>@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.PGDATABASE}}
+   ```
+3. Leave `db-migrations` on the owner's login: only Flyway may change the schema. Check
+   `GET /health` answers `200` after the redeploy.
+
+Before step 2 nothing changes. To undo it, point `GAME_SERVER_DB_URL` back at
+`${{Postgres.DATABASE_URL}}`.
 
 ### Database migrations on Railway
 

@@ -18,18 +18,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from game_server.auth import (
     MODERATOR_ROLES,
     ForbiddenError,
-    UnauthorisedError,
     can,
     current_person,
     effective_role,
 )
-from game_server.bearer import bearer_token, is_session_token
 from game_server.clock import Clock, get_clock
 from game_server.config import Settings, get_settings
 from game_server.directory.routes import directory_and_outbox
 from game_server.errors import ApiError
 from game_server.moderators import SessionModerators, get_session_moderators
-from game_server.organiser import organiser_key_matches
 from game_server.sessions import SessionRepository, get_session_repository
 
 logger = logging.getLogger(__name__)
@@ -61,17 +58,12 @@ def moderator_manager(
     """The caller, if they may change the session's moderators; else 404, 401 or 403."""
     if sessions.get_session(session) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown session")
-    token = bearer_token(authorization)
-    if token is not None and settings.auth_mode != "off" and is_session_token(token):
-        person = current_person(settings, authorization)
-        role = effective_role(person, settings)
-        moderates = role in MODERATOR_ROLES and moderators.is_moderator(session, person.pid)
-        if not (can(role, "moderate_any_session") or moderates):
-            raise ForbiddenError
-        return ModeratorManager(session, person.pid)
-    if organiser_key_matches(settings, authorization):
-        return ModeratorManager(session, None)
-    raise UnauthorisedError
+    person = current_person(settings, authorization)
+    role = effective_role(person, settings)
+    moderates = role in MODERATOR_ROLES and moderators.is_moderator(session, person.pid)
+    if not (can(role, "moderate_any_session") or moderates):
+        raise ForbiddenError
+    return ModeratorManager(session, person.pid)
 
 
 class ModeratorIn(BaseModel):

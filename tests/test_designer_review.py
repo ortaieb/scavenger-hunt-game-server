@@ -595,10 +595,9 @@ def test_issued_codes_are_unused_and_all_different() -> None:
         joins=["FOX-2222", "OWL-3333", "OWL-3333", "ELK-4444"], moderators=["OWL-3333"]
     )
 
-    joins, moderator = issue_codes(2, source, lambda code: code in taken)
+    joins = issue_codes(2, source, lambda code: code in taken)
 
     assert joins == ["OWL-3333", "ELK-4444"]
-    assert moderator not in {*joins, *taken}
 
 
 def test_issuing_gives_up_after_too_many_clashes() -> None:

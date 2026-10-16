@@ -160,8 +160,8 @@ def _publish(
     accepted = readiness(locked.draft)
     check_accepted(locked.draft, accepted, settings.designer_min_spacing_m)
     for _ in range(PUBLISH_ATTEMPTS):
-        join_codes, moderator_code = issue_codes(len(request.teams), codes, sessions.code_in_use)
-        session = build_session(locked.draft, accepted, request, join_codes, moderator_code)
+        join_codes = issue_codes(len(request.teams), codes, sessions.code_in_use)
+        session = build_session(locked.draft, accepted, request, join_codes)
         try:
             sessions.publish_session(session, locked.draft.id)
         except SessionPublishError as exc:

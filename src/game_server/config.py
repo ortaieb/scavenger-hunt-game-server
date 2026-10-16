@@ -16,7 +16,6 @@ DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 DEFAULT_REFEREE_DEADLINE_SECONDS = 8.0
 DEFAULT_REFEREE_TIMEOUT_SECONDS = 8.0
 DEFAULT_REFEREE_MAX_RETRIES = 2
-ORGANISER_KEY_MIN_LENGTH = 24
 DEFAULT_DESIGNER_MIN_SPACING_M = 150.0
 DesignerRunnerName = Literal["stub", "agent"]
 AuthMode = Literal["off", "optional", "required"]
@@ -98,8 +97,6 @@ class Settings(BaseSettings):
     referee_reference_max_edge: int = Field(default=768, gt=0)
     # The model's confidence is self-reported, not calibrated: tuned with an eval (#23).
     referee_min_confidence: float = Field(default=0.8, ge=0, le=1)
-    # The hunt designer's key (`Authorization: Bearer <key>`). Unset: nobody can use it.
-    organiser_key: SecretStr | None = None
     # `agent` runs the hunt-designer agent; `stub` fills drafts with a fixed hunt after a delay.
     designer_runner: DesignerRunnerName = "agent"
     designer_stub_delay_seconds: float = Field(default=1, ge=0)
@@ -145,13 +142,6 @@ class Settings(BaseSettings):
     # reconcile with Clerk.
     clerk_sync_interval_seconds: float = Field(default=10, gt=0)
     clerk_reconcile_hour_utc: int = Field(default=3, ge=0, le=23)
-
-    @field_validator("organiser_key")
-    @classmethod
-    def _organiser_key_is_long_enough(cls, key: SecretStr | None) -> SecretStr | None:
-        if key is not None and len(key.get_secret_value()) < ORGANISER_KEY_MIN_LENGTH:
-            raise ValueError(f"must be at least {ORGANISER_KEY_MIN_LENGTH} characters")
-        return key
 
     @field_validator("mcp_allowed_hosts", "clerk_authorized_parties", mode="before")
     @classmethod

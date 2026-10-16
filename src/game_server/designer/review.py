@@ -206,7 +206,6 @@ def build_session(
     accepted: Sequence[DraftCheckpoint],
     request: PublishRequest,
     join_codes: Sequence[str],
-    moderator_code: str,
     session_id: UUID | None = None,
 ) -> GameSession:
     """The session: checkpoints 1…n in route order; team i starts at checkpoint i (mod n)."""
@@ -237,7 +236,7 @@ def build_session(
         end_time=request.end_time,
         checkpoints=checkpoints,
         teams=teams,
-        moderator_code=moderator_code,
+        moderator_code=None,
     )
 
 
@@ -278,12 +277,10 @@ def _chars(count: int) -> str:
     return "".join(secrets.choice(UNAMBIGUOUS) for _ in range(count))
 
 
-def issue_codes(
-    teams: int, source: CodeSource, in_use: Callable[[str], bool]
-) -> tuple[list[str], str]:
-    """A fresh join code per team and a moderator code: each unused and all different.
+def issue_codes(teams: int, source: CodeSource, in_use: Callable[[str], bool]) -> list[str]:
+    """A fresh join code per team: each unused and all different.
 
-    A clash, with an existing code or another of these, draws again.
+    A clash draws again.
     """
     issued: set[str] = set()
 
@@ -295,8 +292,7 @@ def issue_codes(
                 return code
         raise RuntimeError(f"no unused code after {CODE_ATTEMPTS} attempts")
 
-    joins = [draw(source.join_code) for _ in range(teams)]
-    return joins, draw(source.moderator_code)
+    return [draw(source.join_code) for _ in range(teams)]
 
 
 def publication_of(session: GameSession) -> tuple[list[tuple[str, str]], str | None]:

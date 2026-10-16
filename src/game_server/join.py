@@ -15,6 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from game_server.auth import Principal, optional_person
 from game_server.clock import Clock, get_clock
+from game_server.directory.consents import record_join_consent
+from game_server.directory.repository import DirectoryRepository, optional_directory
 from game_server.errors import ApiError
 from game_server.models import JoinedSession, JoinRequest, JoinResponse
 from game_server.session_runs import session_phase
@@ -81,13 +83,15 @@ def join(
     sessions: Annotated[SessionRepository, Depends(get_session_repository)],
     store: Annotated[SubmissionStore, Depends(get_submission_store)],
     person: Annotated[Principal | None, Depends(optional_person)],
+    people: Annotated[DirectoryRepository | None, Depends(optional_directory)],
 ) -> JoinResponse:
     """Join the team the code belongs to, recording the player's consent.
 
     Joining before the moderator starts the session is fine: teams join first, then the
     game starts. Only a stopped session refuses; the file's end-time doesn't. A signed-in
     player (a Clerk token, with accounts on) also becomes a member of the team, with their own
-    consent time; the response is the same.
+    consent time; the response is the same. If they also ticked `upcomingHunts`, that is
+    recorded as a consent to hear about upcoming hunts, with source `join`.
     """
     now = clock().astimezone(UTC)
     found = sessions.find_team(body.code)
@@ -103,6 +107,8 @@ def join(
         raise ApiError(
             status.HTTP_409_CONFLICT, "already in another team", "already_in_another_team"
         ) from None
+    if person is not None and body.upcoming_hunts:
+        record_join_consent(people, person.pid, now)
     logger.info(
         "Team joined session %s team %s participant %s first=%s",
         session.id,

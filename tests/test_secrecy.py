@@ -268,6 +268,16 @@ def every_route_response(
             client.put(f"/directory/people/{UNKNOWN}/role", json={"role": "admin"})  # 401
         ],
         ("GET", "/directory/people"): [client.get("/directory/people")],  # 401
+        ("GET", "/me"): [client.get("/me"), client.get("/me", headers=ORGANISER)],  # 401, then 200
+        ("PATCH", "/me"): [client.patch("/me", json={})],  # 401
+        ("PUT", "/me/consents/upcoming-hunts"): [
+            client.put("/me/consents/upcoming-hunts", json={"granted": False})  # 401
+        ],
+        ("GET", "/me/hunts"): [client.get("/me/hunts"), client.get("/me/hunts", headers=ORGANISER)],
+        ("GET", "/sessions/{session}/participants/{participant}/members"): [
+            client.get(f"/sessions/{SESSION}/participants/{UNKNOWN}/members"),  # 401
+            client.get(f"/sessions/{SESSION}/participants/{UNKNOWN}/members", headers=ORGANISER),
+        ],  # 404 for a team the caller isn't in
         ("POST", "/sessions/{session}/moderators"): [
             client.post(f"/sessions/{SESSION}/moderators", json={"email": "a@example.com"})
         ],  # 401

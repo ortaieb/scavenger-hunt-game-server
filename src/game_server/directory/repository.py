@@ -4,7 +4,7 @@ A `pid` comes from `uuid4()`: never derived from an email or a Clerk id, since a
 an email could recompute its hash.
 """
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Literal
@@ -16,6 +16,8 @@ from game_server.config import Settings, get_settings
 from game_server.database import Database, directory_database_config, open_database
 
 PersonStatus = Literal["active", "erasing"]
+ConsentSource = Literal["join", "profile"]
+PROFILE_FIELDS = frozenset({"display_name", "home_area", "locale"})
 
 
 class DirectoryNotConfiguredError(Exception):
@@ -74,8 +76,21 @@ class Profile:
     updated_at: datetime
 
 
+@dataclass(frozen=True)
+class Consent:
+    """A person's upcoming-hunts consent: in force or not, and since when.
+
+    `since` is when the open grant was given, else when the latest one was withdrawn (None if
+    they never granted one). `wording_version` is that of the grant `since` refers to.
+    """
+
+    granted: bool
+    since: datetime | None
+    wording_version: str | None
+
+
 class DirectoryRepository:
-    """The `directory.people` and `directory.profiles` tables."""
+    """The `directory.people`, `directory.profiles` and `directory.contact_consents` tables."""
 
     def __init__(self, database: Database) -> None:
         self._database = database
@@ -227,6 +242,78 @@ class DirectoryRepository:
             ).fetchone()
         return None if row is None else Profile(*row)
 
+    def update_profile(self, pid: UUID, changes: Mapping[str, str | None], now: datetime) -> bool:
+        """Set the given profile fields (`display_name`, `home_area`, `locale`; None clears the
+        first two) on an active person, leaving the others; False if there is no such person."""
+        unknown = set(changes) - PROFILE_FIELDS
+        if unknown:
+            raise ValueError(f"not profile fields: {sorted(unknown)}")
+        with self._database.connection() as conn:
+            return (
+                conn.execute(
+                    "UPDATE directory.profiles f SET"
+                    " display_name = CASE WHEN %(set_name)s THEN %(name)s ELSE f.display_name END,"
+                    " home_area = CASE WHEN %(set_area)s THEN %(area)s ELSE f.home_area END,"
+                    " locale = CASE WHEN %(set_locale)s THEN %(locale)s ELSE f.locale END,"
+                    " updated_at = %(now)s"
+                    " FROM directory.people p"
+                    " WHERE f.pid = %(pid)s AND p.pid = f.pid AND p.status = 'active'",
+                    {
+                        "set_name": "display_name" in changes,
+                        "name": changes.get("display_name"),
+                        "set_area": "home_area" in changes,
+                        "area": changes.get("home_area"),
+                        "set_locale": "locale" in changes,
+                        "locale": changes.get("locale"),
+                        "now": now,
+                        "pid": pid,
+                    },
+                ).rowcount
+                > 0
+            )
+
+    def upcoming_hunts_consent(self, pid: UUID) -> Consent:
+        """Whether the person's upcoming-hunts consent is in force, and since when."""
+        with self._database.connection() as conn:
+            row = conn.execute(
+                "SELECT withdrawn_at IS NULL, coalesce(withdrawn_at, granted_at), wording_version"
+                " FROM directory.contact_consents"
+                " WHERE pid = %s AND purpose = 'upcoming_hunts'"
+                " ORDER BY id DESC LIMIT 1",
+                (pid,),
+            ).fetchone()
+        return Consent(False, None, None) if row is None else Consent(*row)
+
+    def grant_upcoming_hunts(
+        self, pid: UUID, wording_version: str, source: ConsentSource, now: datetime
+    ) -> bool:
+        """Record a grant for an active person; False if one is already in force (nothing is
+        added) or there is no such person."""
+        with self._database.connection() as conn:
+            return (
+                conn.execute(
+                    "INSERT INTO directory.contact_consents"
+                    " (pid, purpose, granted_at, wording_version, source)"
+                    " SELECT p.pid, 'upcoming_hunts', %s, %s, %s FROM directory.people p"
+                    " WHERE p.pid = %s AND p.status = 'active'"
+                    " ON CONFLICT (pid, purpose) WHERE withdrawn_at IS NULL DO NOTHING",
+                    (now, wording_version, source, pid),
+                ).rowcount
+                > 0
+            )
+
+    def withdraw_upcoming_hunts(self, pid: UUID, now: datetime) -> bool:
+        """End the grant in force, keeping its row; False if none was in force."""
+        with self._database.connection() as conn:
+            return (
+                conn.execute(
+                    "UPDATE directory.contact_consents SET withdrawn_at = %s"
+                    " WHERE pid = %s AND purpose = 'upcoming_hunts' AND withdrawn_at IS NULL",
+                    (now, pid),
+                ).rowcount
+                > 0
+            )
+
     def display_names(self, pids: Collection[UUID]) -> dict[UUID, str]:
         """The display names of those of these people who have one."""
         with self._database.connection() as conn:
@@ -255,3 +342,13 @@ def get_directory(settings: Annotated[Settings, Depends(get_settings)]) -> Direc
     Raises `DirectoryNotConfiguredError` if the directory's URL isn't set.
     """
     return DirectoryRepository(directory_database(settings))
+
+
+def optional_directory(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> DirectoryRepository | None:
+    """Dependency providing the directory's repository, or None when there isn't one."""
+    try:
+        return get_directory(settings)
+    except DirectoryNotConfiguredError:
+        return None

@@ -4,29 +4,37 @@ FastAPI's `HTTPException` only has `detail`; clients branch on `code` instead of
 """
 
 from collections.abc import Mapping
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 
 class ApiError(Exception):
-    """An error response: `{"detail": ..., "code": ...}` with the given status and headers."""
+    """An error response: `{"detail": ..., "code": ...}` with the given status and headers,
+    and any `extra` keys beside them."""
 
     def __init__(
-        self, status_code: int, detail: str, code: str, headers: Mapping[str, str] | None = None
+        self,
+        status_code: int,
+        detail: str,
+        code: str,
+        headers: Mapping[str, str] | None = None,
+        extra: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
         self.code = code
         self.headers = dict(headers or {})
+        self.extra = dict(extra or {})
 
 
 async def api_error(_request: Request, exc: ApiError) -> JSONResponse:
     """Render an `ApiError`."""
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail, "code": exc.code},
+        content={"detail": exc.detail, "code": exc.code, **exc.extra},
         headers=exc.headers,
     )
 

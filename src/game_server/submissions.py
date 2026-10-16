@@ -98,6 +98,15 @@ class ParticipantRecord:
 
 
 @dataclass(frozen=True)
+class Membership:
+    """A team a person joined."""
+
+    session: UUID
+    participant: UUID
+    team: str
+
+
+@dataclass(frozen=True)
 class ArrivalOutcome:
     """The team's active arrival, and whether this call created it."""
 
@@ -397,6 +406,27 @@ class SubmissionStore:
                 (session, participant, pid),
             ).fetchone()
         return row is not None
+
+    def memberships(self, pid: UUID) -> list[Membership]:
+        """The teams the person joined, newest first."""
+        with self._database.connection() as conn:
+            rows = conn.execute(
+                "SELECT m.session, m.participant, p.team FROM team_members m"
+                " JOIN participants p ON p.id = m.participant"
+                " WHERE m.pid = %s ORDER BY m.joined_at DESC, m.session",
+                (pid,),
+            ).fetchall()
+        return [Membership(*row) for row in rows]
+
+    def team_members(self, session: UUID, participant: UUID) -> list[UUID]:
+        """The pids of the team's members, in the order they joined."""
+        with self._database.connection() as conn:
+            rows = conn.execute(
+                "SELECT pid FROM team_members WHERE session = %s AND participant = %s"
+                " ORDER BY joined_at, pid",
+                (session, participant),
+            ).fetchall()
+        return [pid for (pid,) in rows]
 
     def record(self, submission: NewSubmission) -> RecordedSubmission:
         """Record `submission` in a transaction of its own."""

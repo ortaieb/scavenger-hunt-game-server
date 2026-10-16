@@ -18,6 +18,7 @@ from game_server import (
     moderator_routes,
     overview,
     photos,
+    profile,
     proximity,
     review,
     ruling,
@@ -113,6 +114,7 @@ def create_app() -> FastAPI:
     app.include_router(photos.router)
     app.include_router(directory_routes.router)
     app.include_router(moderator_routes.router)
+    app.include_router(profile.router)
     if settings.mcp_enabled:
         mount_mcp(app, settings)
 

@@ -581,13 +581,14 @@ token (or with accounts off) joining works as it always did. `/arrive` and `/cha
 the caller's `pid` the same way, when there is one.
 
 ```json
-{ "code": "FOX-7Q2K", "consent": true }
+{ "code": "FOX-7Q2K", "consent": true, "upcomingHunts": false }
 ```
 
-| Field     | Rules |
-|-----------|-------|
-| `code`    | The team's join code: 1–64 characters, matched ignoring case and surrounding spaces |
-| `consent` | Must be JSON `true`, strictly: `false`, `"true"`, `1`, `null` and a missing field are all rejected |
+| Field           | Rules |
+|-----------------|-------|
+| `code`          | The team's join code: 1–64 characters, matched ignoring case and surrounding spaces |
+| `consent`       | Must be JSON `true`, strictly: `false`, `"true"`, `1`, `null` and a missing field are all rejected |
+| `upcomingHunts` | Optional JSON boolean, default `false`. `true` records a [consent to hear about upcoming hunts](#put-meconsentsupcoming-hunts) for a signed-in player, with source `join`, under the current wording. The box on the join screen starts unticked; it is never assumed, and without a token it is ignored |
 
 **Consent** is the legal basis for handling players' photos. The join screen shows a checkbox,
 **unticked by default**: *"I agree to my photos and checkpoint locations being used as described
@@ -1685,6 +1686,100 @@ app calls it after a `401 provisioning_required`, then takes a fresh token and r
 | `409` | `erasing` | The person is being erased |
 | `429` | `too_many_requests` | Called again within `GAME_SERVER_PROVISION_INTERVAL_SECONDS`; see `Retry-After` |
 | `503` | `directory_unavailable`, `clerk_unavailable` | No directory or no Clerk key, or Clerk can't be reached to read a new person's email |
+
+### The profile
+
+All of these need `Authorization: Bearer <Clerk session token>` (`401 unauthorised` otherwise) and
+the users directory (`503 directory_unavailable` without it). Bodies use camelCase keys. The
+email address is never returned. Profile reads and writes go through the directory's own
+repository; nothing else reads its tables.
+
+#### `GET /me`
+
+```json
+{
+  "pid": "5b1f5d3e-8f0e-4f64-9d57-2f6d4a3e7c10",
+  "displayName": "Ada",
+  "homeArea": "W4",
+  "locale": "en-GB",
+  "role": "player",
+  "upcomingHunts": {"granted": true, "since": "2026-10-03T09:30:00Z", "wordingVersion": "2026-10-16"}
+}
+```
+
+`displayName` and `homeArea` are `null` until set. `role` is read from the directory.
+`upcomingHunts.since` is when the grant in force was given, or, if it was withdrawn, when it was
+(`null` for someone who never granted it). `404 unknown_person` if the directory has no profile
+for the caller.
+
+#### `PATCH /me`
+
+Any of `displayName`, `homeArea` and `locale`; a field that isn't sent stays as it is. The answer
+is the new `GET /me`.
+
+| Field | Rules |
+|---|---|
+| `displayName` | 1–40 characters after trimming; `""` or `null` clears it |
+| `homeArea` | A UK postcode district such as `W4` or `SW1A`, any case (stored upper-case); **never a full postcode**. `""` or `null` clears it |
+| `locale` | One the app supports: only `en-GB` today |
+
+Anything else is `422` with `code: invalid_profile` and a code for each bad field, and nothing
+changes. The values are never echoed back:
+
+```json
+{"detail": "invalid profile", "code": "invalid_profile",
+ "fields": {"homeArea": "invalid_home_area"}}
+```
+
+The field codes are `invalid_display_name`, `invalid_home_area` and `unsupported_locale`. A field
+the endpoint doesn't know is a plain `422`.
+
+#### `PUT /me/consents/upcoming-hunts`
+
+```json
+{"granted": true, "wordingVersion": "2026-10-16"}
+```
+
+Marketing email to individuals needs their specific consent (PECR), so every grant is a row of
+its own, with the version of the wording the person saw and its source (`profile`, or `join`).
+The wording of each version is kept in the code (`directory/consents.py`), so what was agreed
+can always be shown again.
+
+- `granted: true` adds a row. It needs a `wordingVersion` the server knows, else
+  `422 unknown_wording`.
+- `granted: false` sets `withdrawn_at` on the row in force; the row stays.
+- Repeating either changes nothing, so granting, withdrawing and granting again leaves two rows,
+  the first withdrawn.
+
+The answer is the `upcomingHunts` object of `GET /me`.
+
+#### `GET /me/hunts`
+
+The hunts the caller joined as a team member, newest first. Only the caller's own.
+
+```json
+{"hunts": [{
+  "session": "aeffe667-4f9f-4108-b5e2-56ae821fe413",
+  "participant": "8a27f678-9351-4727-accd-5ccbb569f30d",
+  "name": "Hyde Park Saturday Hunt",
+  "team": "Red Foxes",
+  "date": "2026-10-03T10:00:00+01:00",
+  "checkpoints": {"completed": 1, "total": 3},
+  "points": 7
+}]}
+```
+
+`date` is the hunt's planned start. `points` is what the team would score if the session finished
+now (lower is better; see [Scoring](#scoring)). A hunt whose session or team is no longer in the
+sessions file is left out.
+
+#### `GET /sessions/{session}/participants/{participant}/members`
+
+The display names of the team's members, in the order they joined, for the team's members only:
+`{"members": [{"displayName": "Ada", "you": false}, …]}`. `displayName` is `null` for a member who
+hasn't set one. Never an email address or a `pid`. `401` without a token; `404` for an unknown
+session or participant, or a team the caller isn't a member of (the same as for a team that
+doesn't exist).
 
 ### `POST /internal/clerk-events`
 

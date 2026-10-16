@@ -9,8 +9,10 @@ from game_server.directory.repository import (
     DirectoryNotConfiguredError,
     DirectoryRepository,
     Identity,
+    Listed,
     Person,
     Profile,
+    RoleChange,
     get_directory,
 )
 
@@ -18,7 +20,9 @@ __all__ = [
     "DirectoryNotConfiguredError",
     "DirectoryRepository",
     "Identity",
+    "Listed",
     "Person",
     "Profile",
+    "RoleChange",
     "get_directory",
 ]

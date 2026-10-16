@@ -1,14 +1,15 @@
 """`directory.clerk_outbox`: writes to Clerk, kept until they land.
 
-Each row asks for one person's identity (pid and role) to be written to their Clerk user. What
-is written is read when the row is sent, so a row never pushes a stale role. A worker claims due
+Each row asks for one write about one person: their identity (pid and role) written to their
+Clerk user, or their active Clerk sessions revoked (after a demotion). What is written is read
+when the row is sent, so a row never pushes a stale role. A worker claims due
 rows by leasing them (pushing `next_attempt_at` past the send), so two workers never send one
 row at once and a crashed worker's rows come back after the lease.
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import Depends
@@ -18,7 +19,7 @@ from game_server.config import Settings, get_settings
 from game_server.database import Database
 from game_server.directory.repository import directory_database
 
-PAYLOAD = {"write": "identity"}
+WriteKind = Literal["identity", "revoke_sessions"]
 LEASE = timedelta(minutes=2)
 FIRST_RETRY = timedelta(seconds=30)
 LONGEST_RETRY = timedelta(hours=1)
@@ -39,6 +40,7 @@ class Write:
     clerk_user_id: str
     role: str
     attempts: int
+    kind: WriteKind = "identity"
 
 
 class ClerkOutbox:
@@ -47,13 +49,13 @@ class ClerkOutbox:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    def enqueue(self, pid: UUID, now: datetime) -> None:
-        """Ask for the person's identity to be written to Clerk, from `now`."""
+    def enqueue(self, pid: UUID, now: datetime, kind: WriteKind = "identity") -> None:
+        """Ask for a write about the person to Clerk, from `now`."""
         with self._database.connection() as conn:
             conn.execute(
                 "INSERT INTO directory.clerk_outbox (pid, payload, next_attempt_at, created_at)"
                 " VALUES (%s, %s, %s, %s)",
-                (pid, Jsonb(PAYLOAD), now, now),
+                (pid, Jsonb({"write": kind}), now, now),
             )
 
     def claim(self, now: datetime, limit: int) -> list[Write]:
@@ -71,7 +73,8 @@ class ClerkOutbox:
                 " FROM due, directory.people p"
                 " LEFT JOIN directory.role_grants g ON g.pid = p.pid"
                 " WHERE o.id = due.id AND p.pid = o.pid"
-                " RETURNING o.id, o.pid, p.clerk_user_id, coalesce(g.role, 'player'), o.attempts",
+                " RETURNING o.id, o.pid, p.clerk_user_id, coalesce(g.role, 'player'), o.attempts,"
+                " coalesce(o.payload->>'write', 'identity')",
                 {"now": now, "limit": limit, "lease": now + LEASE},
             ).fetchall()
         return sorted((Write(*row) for row in rows), key=lambda write: write.id)

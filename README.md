@@ -507,6 +507,13 @@ working as before, on the one login. Game code never writes SQL against `directo
 `DirectoryRepository`. The migrating login (Flyway's) must be allowed to create roles, as
 PostgreSQL's own `postgres` user is.
 
+**Roles.** The directory holds each person's platform role (`player`, `organiser`, `admin`),
+and every role check reads it there, so a change takes effect at once. Admins change roles
+through [`PUT /directory/people/{pid}/role`](docs/api.md#roles-and-moderators); the first admin
+is made with `uv run python -m game_server.directory grant-admin --clerk-user-id user_…`.
+Moderator routes and the hunt designer accept a Clerk token alongside the moderator codes and the
+organiser key, which stay until the web app has switched over.
+
 **Provisioning.** Clerk never asks the server anything while it mints a session token, so the
 directory writes each person's `pid` and role into their Clerk user ahead of time (the user's
 `external_id`, and its public metadata, which the token's claims copy). A person is created by

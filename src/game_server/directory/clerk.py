@@ -15,6 +15,7 @@ from uuid import UUID
 import httpx
 from clerk_backend_api import Clerk
 from clerk_backend_api.models import ClerkBaseError, User
+from clerk_backend_api.models.getsessionlistop import QueryParamStatus
 from fastapi import Depends
 
 from game_server.config import Settings, get_settings
@@ -51,6 +52,10 @@ class ClerkUsers(Protocol):
 
     def identities(self) -> Iterator[ClerkIdentity]:
         """Every Clerk user's identity, page by page."""
+        ...
+
+    def revoke_sessions(self, user_id: str) -> int:
+        """End every active session of the user, so their tokens can't be refreshed; how many."""
         ...
 
 
@@ -97,6 +102,18 @@ class ClerkApi:
             if len(users) < PAGE_SIZE:
                 return
             offset += PAGE_SIZE
+
+    def revoke_sessions(self, user_id: str) -> int:
+        """End every active session of the user, so their tokens can't be refreshed; how many."""
+        try:
+            sessions = self._clerk.sessions.list(
+                user_id=user_id, status=QueryParamStatus.ACTIVE, limit=100
+            )
+            for session in sessions:
+                self._clerk.sessions.revoke(session_id=session.id)
+        except (ClerkBaseError, httpx.HTTPError) as exc:
+            raise ClerkError(type(exc).__name__) from None
+        return len(sessions)
 
 
 def _primary_email(user: User) -> str | None:

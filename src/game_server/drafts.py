@@ -254,14 +254,28 @@ class DraftStore:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    def create(self, draft_id: UUID, request: DraftRequest, runner: str, now: datetime) -> None:
-        """Store a new `running` draft; `DesignerBusyError` if another is still running."""
+    def create(
+        self,
+        draft_id: UUID,
+        request: DraftRequest,
+        runner: str,
+        now: datetime,
+        pid: UUID | None = None,
+    ) -> None:
+        """Store a new `running` draft, made by `pid` if known; `DesignerBusyError` if another
+        is still running."""
         try:
             with self._database.transaction() as conn:
                 conn.execute(
-                    "INSERT INTO hunt_drafts (id, status, request, runner, created_at)"
-                    " VALUES (%s, 'running', %s, %s, %s)",
-                    (draft_id, Jsonb(request.model_dump(mode="json", by_alias=True)), runner, now),
+                    "INSERT INTO hunt_drafts (id, status, request, runner, created_at, pid)"
+                    " VALUES (%s, 'running', %s, %s, %s, %s)",
+                    (
+                        draft_id,
+                        Jsonb(request.model_dump(mode="json", by_alias=True)),
+                        runner,
+                        now,
+                        pid,
+                    ),
                 )
         except pg_errors.UniqueViolation as exc:  # hunt_drafts_one_running
             raise DesignerBusyError from exc

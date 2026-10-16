@@ -10,15 +10,15 @@ import logging
 from datetime import UTC, timedelta
 from functools import lru_cache
 from math import ceil
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from svix.webhooks import Webhook, WebhookVerificationError
 
-from game_server.auth import current_clerk_user
+from game_server.auth import Principal, current_clerk_user, require_role
 from game_server.clock import Clock, get_clock
 from game_server.config import Settings, get_settings
 from game_server.directory.clerk import ClerkError, ClerkUsers, get_clerk_users
@@ -29,6 +29,7 @@ from game_server.directory.repository import (
     DirectoryRepository,
     directory_database,
 )
+from game_server.directory.roles import change_role
 from game_server.errors import ApiError
 from game_server.rate_limit import RateLimiter
 
@@ -174,3 +175,106 @@ def _person(clerk_user: str, directory: DirectoryRepository, clerk: ClerkUsers) 
     pid = directory.get_or_create_person(clerk_user, email)
     logger.info("Person %s created by provisioning", pid)
     return pid
+
+
+# --- roles (admin only) --------------------------------------------------------------------------
+
+Role = Literal["player", "organiser", "admin"]
+ROLES: tuple[Role, ...] = ("player", "organiser", "admin")
+
+
+class _KebabModel(BaseModel):
+    model_config = ConfigDict(
+        alias_generator=lambda name: name.replace("_", "-"), validate_by_name=True
+    )
+
+
+class RoleIn(BaseModel):
+    """The role to give."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Role
+
+
+class RoleOut(BaseModel):
+    """The person's role now, and whether this call changed it."""
+
+    pid: UUID
+    role: Role
+    changed: bool
+
+
+class PersonOut(_KebabModel):
+    """A person as listed for an admin."""
+
+    pid: UUID
+    display_name: str | None
+    role: str
+
+
+class PeopleOut(BaseModel):
+    """The people listed."""
+
+    people: list[PersonOut]
+
+
+@router.put(
+    "/directory/people/{pid}/role",
+    responses={
+        401: {"description": "No valid Clerk session token (code: unauthorised)"},
+        403: {"description": "Not an admin (code: forbidden)"},
+        404: {"description": "No such person (code: unknown_person)"},
+    },
+)
+def set_role(
+    pid: UUID,
+    body: RoleIn,
+    admin: Annotated[Principal, Depends(require_role("admin"))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    clerk: Annotated[ClerkUsers | None, Depends(get_clerk_users)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> RoleOut:
+    """Give a person a platform role. Admin only.
+
+    Logged in `role_changes` with who made it, then written to Clerk, which copies it into the
+    person's tokens. Removing a role also revokes their active Clerk sessions; the server reads
+    roles from the directory, so it stops honouring the old one at once.
+    """
+    directory, outbox = directory_and_outbox(settings)
+    change = change_role(
+        directory, outbox, clerk, pid, body.role, admin.pid, clock().astimezone(UTC)
+    )
+    if change is None:
+        raise ApiError(status.HTTP_404_NOT_FOUND, "unknown person", "unknown_person")
+    return RoleOut(pid=pid, role=body.role, changed=change.changed)
+
+
+@router.get(
+    "/directory/people",
+    responses={
+        401: {"description": "No valid Clerk session token (code: unauthorised)"},
+        403: {"description": "Not an admin (code: forbidden)"},
+        422: {"description": "A role that isn't player, organiser or admin"},
+    },
+)
+def list_people(
+    _admin: Annotated[Principal, Depends(require_role("admin"))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    role: Annotated[
+        str, Query(description="Comma-separated roles, e.g. `organiser,admin`")
+    ] = "organiser,admin",
+) -> PeopleOut:
+    """Active people with one of the roles: pid, display name and role. Admin only."""
+    wanted = {part.strip() for part in role.split(",") if part.strip()}
+    if not wanted or not wanted <= set(ROLES):
+        raise ApiError(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "role must be player, organiser or admin, comma-separated",
+            "invalid_role",
+        )
+    directory, _ = directory_and_outbox(settings)
+    listed = directory.people_with_roles(wanted)
+    return PeopleOut(
+        people=[PersonOut(pid=p.pid, display_name=p.display_name, role=p.role) for p in listed]
+    )

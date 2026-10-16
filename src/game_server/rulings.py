@@ -47,8 +47,11 @@ def record_ruling(
     ruling: Ruling,
     note: str | None,
     now: datetime,
+    pid: UUID | None = None,
 ) -> RecordedRuling | None:
     """Record a ruling on one of the session's submissions, inside the caller's transaction.
+
+    `pid` is the moderator who made it, when they signed in rather than used the code.
 
     None, and nothing recorded, when the session has no such submission. The effective
     verdict is read back from `ruled_submissions`, so the rule lives in one place.
@@ -60,9 +63,9 @@ def record_ruling(
     if earlier is None:
         return None
     conn.execute(
-        "INSERT INTO rulings (session, submission_id, ruling, note, ruled_at)"
-        " VALUES (%s, %s, %s, %s, %s)",
-        (session, submission, ruling, note, now),
+        "INSERT INTO rulings (session, submission_id, ruling, note, ruled_at, pid)"
+        " VALUES (%s, %s, %s, %s, %s, %s)",
+        (session, submission, ruling, note, now, pid),
     )
     row = conn.execute(
         "SELECT verdict, ruling, note, ruled_at, effective_verdict FROM ruled_submissions"

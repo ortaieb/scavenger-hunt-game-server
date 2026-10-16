@@ -14,9 +14,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from game_server.auth import Principal
 from game_server.checks.time_window import window_is_open
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.join import find_participant
+from game_server.membership import play_person, require_member
 from game_server.scoring import SessionResults, places, results_final, team_points
 from game_server.session_control import SessionClock, session_clock
 from game_server.session_runs import SessionRun, session_phase
@@ -145,7 +147,13 @@ def team_score(session: GameSession, team: Team, results: SessionResults, final:
 
 @router.get(
     "/sessions/{session}/participants/{participant}/state",
-    responses={404: {"description": "Unknown session, or a participant that didn't join it"}},
+    responses={
+        401: {"description": "Accounts required and no valid token (code: unauthorised)"},
+        404: {
+            "description": "Unknown session, a participant that didn't join it, or (with a "
+            "token) a team the caller isn't a member of"
+        },
+    },
 )
 def participant_state(
     session: UUID,
@@ -153,10 +161,12 @@ def participant_state(
     clock: Annotated[Clock, Depends(get_clock)],
     sessions: Annotated[SessionRepository, Depends(get_session_repository)],
     store: Annotated[SubmissionStore, Depends(get_submission_store)],
+    person: Annotated[Principal | None, Depends(play_person)],
 ) -> TeamStateOut:
     """The team's status, progress and, while playing, its current clue."""
     if sessions.get_session(session) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown session")
+    require_member(store, person, session, participant)
     joined = find_participant(store, sessions, session, participant)
     if joined is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown participant")

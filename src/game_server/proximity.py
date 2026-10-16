@@ -13,12 +13,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from game_server.auth import Principal
 from game_server.checks.geofence import within_proximity
 from game_server.checks.time_window import window_is_open
 from game_server.clock import Clock, get_clock
 from game_server.config import Settings, get_settings
 from game_server.geo import distance_m
 from game_server.lookup import find_checkpoint
+from game_server.membership import play_person, require_member
 from game_server.models import ProximityHint, ProximityHintRequest
 from game_server.rate_limit import RateLimiter
 from game_server.sessions import SessionRepository, get_session_repository
@@ -41,7 +43,11 @@ def get_hint_rate_limiter(settings: Annotated[Settings, Depends(get_settings)]) 
 @router.post(
     "/checkpoint/proximity",
     responses={
-        404: {"description": "Unknown session, or unknown checkpoint in the session"},
+        401: {"description": "Accounts required and no valid token (code: unauthorised)"},
+        404: {
+            "description": "Unknown session or checkpoint, or (with a token) a team the "
+            "caller isn't a member of"
+        },
         429: {"description": "Asked again too soon; see the Retry-After header"},
     },
 )
@@ -51,6 +57,7 @@ def proximity_hint(
     sessions: Annotated[SessionRepository, Depends(get_session_repository)],
     limiter: Annotated[RateLimiter, Depends(get_hint_rate_limiter)],
     store: Annotated[SubmissionStore, Depends(get_submission_store)],
+    person: Annotated[Principal | None, Depends(play_person)],
 ) -> ProximityHint:
     """Whether the player looks in range of an open checkpoint. Advisory only.
 
@@ -59,6 +66,7 @@ def proximity_hint(
     logs; nothing is stored and the coordinates are not logged.
     """
     now = clock().astimezone(UTC)
+    require_member(store, person, body.session, body.participant)
     session, checkpoint = find_checkpoint(sessions, body.session, body.checkpoint)
     wait = limiter.check((body.session, body.participant), now)
     if wait is not None:

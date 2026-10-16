@@ -18,12 +18,13 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from game_server.arrivals import Arrival
-from game_server.auth import Principal, optional_person
+from game_server.auth import Principal
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.config import Settings, get_settings
 from game_server.errors import ApiError
 from game_server.game_state import team_state
 from game_server.join import find_participant
+from game_server.membership import play_person, require_member
 from game_server.session_runs import session_phase
 from game_server.sessions import SessionRepository, get_session_repository
 from game_server.submissions import SubmissionStore, get_submission_store
@@ -82,7 +83,11 @@ def _conflict(detail: str, code: str) -> ApiError:
     responses={
         201: {"model": ArrivalOut, "description": "A new arrival with a fresh code"},
         200: {"description": "The team's active arrival at this checkpoint, unchanged"},
-        404: {"description": "Unknown session, participant or checkpoint"},
+        401: {"description": "Accounts required and no valid token (code: unauthorised)"},
+        404: {
+            "description": "Unknown session, participant or checkpoint, or (with a token) a "
+            "team the caller isn't a member of"
+        },
         409: {
             "description": "Not started, finished, ended, not current, or not open (codes: "
             "session_not_started, hunt_finished, session_stopped, not_current_checkpoint, "
@@ -99,12 +104,13 @@ def arrive(
     settings: Annotated[Settings, Depends(get_settings)],
     sessions: Annotated[SessionRepository, Depends(get_session_repository)],
     store: Annotated[SubmissionStore, Depends(get_submission_store)],
-    person: Annotated[Principal | None, Depends(optional_person)],
+    person: Annotated[Principal | None, Depends(play_person)],
 ) -> ArrivalOut:
     """Check in at the team's current checkpoint and get the pose and a one-time code."""
     now = clock().astimezone(UTC)
     if sessions.get_session(session) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown session")
+    require_member(store, person, session, participant)
     joined = find_participant(store, sessions, session, participant)
     if joined is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown participant")

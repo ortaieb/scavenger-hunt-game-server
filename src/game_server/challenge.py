@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, Upl
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
-from game_server.auth import Principal, optional_person
+from game_server.auth import Principal
 from game_server.checks import (
     Check,
     CheckResult,
@@ -28,6 +28,7 @@ from game_server.clock import Clock, Stopwatch, Timer, get_clock, get_timer
 from game_server.config import Settings, get_settings
 from game_server.join import find_participant
 from game_server.lookup import find_checkpoint
+from game_server.membership import play_person, require_member
 from game_server.models import (
     ChallengeMetadata,
     ChallengeVerdict,
@@ -325,7 +326,11 @@ def to_response(submission: NewSubmission, attempt: int) -> ChallengeVerdict:
     responses={
         200: {"model": ChallengeVerdict, "description": "Recorded; verdict `failed` or `pass`"},
         202: {"description": "Recorded; verdict `pending` (moderator review)"},
-        404: {"description": "Unknown session, checkpoint, or participant in the session"},
+        401: {"description": "Accounts required and no valid token (code: unauthorised)"},
+        404: {
+            "description": "Unknown session, checkpoint, or participant in the session, or "
+            "(with a token) a team the caller isn't a member of"
+        },
         413: {"description": "Image larger than the configured limit"},
         415: {"description": "Image part is not image/jpeg"},
         422: {"description": "Invalid metadata, or the image can't be decoded"},
@@ -351,7 +356,7 @@ def submit_challenge(
     submissions: Annotated[SubmissionStore, Depends(get_submission_store)],
     referee: Annotated[Referee, Depends(get_referee)],
     references: Annotated[ReferencePhotos, Depends(get_reference_photos)],
-    person: Annotated[Principal | None, Depends(optional_person)],
+    person: Annotated[Principal | None, Depends(play_person)],
 ) -> ChallengeVerdict:
     """Check the submission, record it as the next attempt, and return the verdict.
 
@@ -363,6 +368,7 @@ def submit_challenge(
     received_at = clock().astimezone(UTC)
     stopwatch = Stopwatch(timer)  # processing_ms: from now until the verdict is recorded
     parsed = parse_metadata(metadata)
+    require_member(submissions, person, parsed.session, parsed.participant)
     image = read_jpeg(challenge_image, settings.max_image_bytes)
     phash = hash_image(image)  # decoded outside the write lock: it's the slow part
     session, checkpoint = find_checkpoint(sessions, parsed.session, parsed.checkpoint)

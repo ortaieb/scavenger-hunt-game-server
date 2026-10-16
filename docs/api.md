@@ -1781,6 +1781,73 @@ hasn't set one. Never an email address or a `pid`. `401` without a token; `404` 
 session or participant, or a team the caller isn't a member of (the same as for a team that
 doesn't exist).
 
+### Erasure and export
+
+A person's own data rights. Both need a Clerk token (`401 unauthorised` otherwise) and the users
+directory (`503 directory_unavailable` without it).
+
+#### `DELETE /me`
+
+Erase the caller: everything the server holds about them, and their Clerk account. Optional
+body: `{"doNotContact": true}` if they ask never to be contacted again (any other field is a
+`422`). Answers `202` at once, `{"pid": "…", "status": "erasing"}`: the request is recorded and
+their Clerk sessions are revoked, so their tokens stop working within a minute; the rest runs in
+the background and is retried until it's done.
+
+What the job does:
+
+| Where | What happens |
+|---|---|
+| Photo files | Deleted, for every photo they sent |
+| `team_members`, `session_moderators` | Their rows deleted; `added_by` cleared where they added someone |
+| `submissions` | Kept for the team's results (which checkpoint, when, the verdicts), with `pid`, `lat`, `long`, `distance_m` and `phash` set to NULL, and the checks' `reason` and `detail` and the rejections' `message` cleared |
+| `referee_traces` | Their photos' traces deleted |
+| `rulings` | Notes on their photos cleared; `pid` cleared where they ruled |
+| `arrivals`, `hunt_drafts` | `pid` cleared |
+| Clerk | Their user deleted, unless Clerk started the erasure |
+| The directory | Their `people` row deleted: profile, consents, role and outbox go with it. With `doNotContact`, a keyed hash of their email goes on the suppression list first |
+
+Each step's time is kept in `directory.erasures` (`game_done_at`, `clerk_done_at`,
+`directory_done_at`, `completed_at`), which holds only the `pid`. An erased photo's fingerprint
+no longer counts in the duplicate check.
+
+#### `POST /directory/people/{pid}/erase`
+
+The same erasure, for a request that came another way. **Admin only** (`403 forbidden`
+otherwise). Same optional body, same `202`; `404 unknown_person` for a pid the directory doesn't
+know and never erased. The command line does the same and waits for the end:
+`uv run python -m game_server.directory erase --pid <pid> [--do-not-contact]`.
+
+Clerk's `user.deleted` [event](#post-internalclerk-events) erases the person too (source `clerk`:
+their Clerk user is gone already).
+
+#### `GET /me/export`
+
+Everything the server holds about the caller, by their `pid`, as a JSON file
+(`Content-Disposition: attachment`). No photos.
+
+```json
+{
+  "exportedAt": "…", "pid": "…",
+  "account": {"createdAt": "…", "lastSeenAt": "…"},
+  "profile": {"email": "…", "displayName": "…", "homeArea": "W4", "locale": "en-GB", "updatedAt": "…"},
+  "role": "player",
+  "consents": [{"purpose": "upcoming_hunts", "grantedAt": "…", "withdrawnAt": null,
+                "wordingVersion": "2026-10-16", "wording": "…", "source": "join"}],
+  "teams": [{"session": "…", "participant": "…", "team": "Red Foxes", "hunt": "…",
+             "joinedAt": "…", "photoConsentAt": "…"}],
+  "photos": [{"session": "…", "checkpoint": 1, "attempt": 1, "receivedAt": "…", "captureTime": "…",
+              "lat": 51.5, "long": -0.12, "verdict": "pass", "effectiveVerdict": "pass",
+              "checks": [{"check": "…", "outcome": "…", "confidence": 1.0, "reason": "…"}],
+              "rejections": []}],
+  "checkIns": [{"session": "…", "checkpoint": 1, "issuedAt": "…"}],
+  "rulings": [], "moderating": [], "drafts": []
+}
+```
+
+`rulings`, `moderating` and `drafts` are what they did as a moderator or organiser. A check's
+moderator-only `detail` is left out, as everywhere.
+
 ### `POST /internal/clerk-events`
 
 Clerk's webhook, reached only through the web app's pass-through. The body is checked against
@@ -1792,7 +1859,7 @@ changes nothing.
 |---|---|
 | `user.created` | The person is created with the primary email (if new), and a write to Clerk is queued |
 | `user.updated` | The profile's email follows a changed primary address |
-| `user.deleted` | The person is marked `erasing`, and their `pid` logged |
+| `user.deleted` | The person is [erased](#erasure-and-export) (source `clerk`): marked `erasing` and logged by `pid`, then the job runs in the background |
 
 Svix can deliver an event late, out of order or twice: each is idempotent, and an event for a
 person the directory doesn't know, or is erasing, changes nothing. Handled events, and other

@@ -460,10 +460,12 @@ class SubmissionTransaction:
         self._conn = conn
 
     def accepted_photos(self, session: UUID) -> tuple[AcceptedPhoto, ...]:
-        """Photos of this session's submissions whose effective verdict is not `failed`."""
+        """Photos of this session's submissions whose effective verdict is not `failed`, and
+        whose fingerprint wasn't erased with the person who sent them."""
         rows = self._conn.execute(
             "SELECT id, phash FROM ruled_submissions"
-            " WHERE session = %s AND effective_verdict != 'failed' ORDER BY id",
+            " WHERE session = %s AND effective_verdict != 'failed' AND phash IS NOT NULL"
+            " ORDER BY id",
             (session,),
         ).fetchall()
         return tuple(AcceptedPhoto(submission_id=id_, phash=from_hex(hex_)) for id_, hex_ in rows)

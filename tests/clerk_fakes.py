@@ -23,6 +23,7 @@ class FakeClerk:
         self.users: dict[str, ClerkIdentity] = {}
         self.writes: list[tuple[str, UUID, str]] = []
         self.revoked: list[str] = []
+        self.deleted: list[str] = []
         self.email_reads = 0
         self.fail_reads = False
         self.fail_writes = False
@@ -44,6 +45,13 @@ class FakeClerk:
             raise ClerkError("ConnectError")
         self.revoked.append(user_id)
         return 1
+
+    def delete_user(self, user_id: str) -> None:
+        if self.fail_writes:
+            raise ClerkError("ConnectError")
+        self.deleted.append(user_id)
+        self.users.pop(user_id, None)
+        self.emails.pop(user_id, None)
 
     def identities(self) -> Iterator[ClerkIdentity]:
         if self.fail_reads:

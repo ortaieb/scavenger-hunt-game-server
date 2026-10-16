@@ -22,6 +22,7 @@ from game_server.config import Settings, get_settings
 
 TIMEOUT_MS = 10_000
 PAGE_SIZE = 500  # the most Clerk lists at once
+HTTP_NOT_FOUND = 404
 
 
 class ClerkError(Exception):
@@ -56,6 +57,10 @@ class ClerkUsers(Protocol):
 
     def revoke_sessions(self, user_id: str) -> int:
         """End every active session of the user, so their tokens can't be refreshed; how many."""
+        ...
+
+    def delete_user(self, user_id: str) -> None:
+        """Delete the user and everything Clerk holds of them; a user already gone is fine."""
         ...
 
 
@@ -114,6 +119,17 @@ class ClerkApi:
         except (ClerkBaseError, httpx.HTTPError) as exc:
             raise ClerkError(type(exc).__name__) from None
         return len(sessions)
+
+    def delete_user(self, user_id: str) -> None:
+        """Delete the user and everything Clerk holds of them; a user already gone is fine."""
+        try:
+            self._clerk.users.delete(user_id=user_id)
+        except ClerkBaseError as exc:
+            if exc.status_code == HTTP_NOT_FOUND:
+                return
+            raise ClerkError(type(exc).__name__) from None
+        except httpx.HTTPError as exc:
+            raise ClerkError(type(exc).__name__) from None
 
 
 def _primary_email(user: User) -> str | None:

@@ -26,6 +26,7 @@ TABLES = [
     "referee_traces",
     "rulings",
     "session_codes",
+    "session_moderators",
     "session_runs",
     "submissions",
     "team_members",
@@ -101,7 +102,7 @@ def test_the_baseline_only_creates() -> None:
         r"\bCOMMIT\s*;",
     ):
         assert not re.search(destructive, sql)
-    assert sql.count("CREATE TABLE ") == len(TABLES) - 2  # all but Flyway's history and V3's
+    assert sql.count("CREATE TABLE ") == len(TABLES) - 3  # not Flyway's history, V3's or V4's
 
 
 # --- the settings and the one way to run Flyway ------------------------------------------------

@@ -108,9 +108,9 @@ def isolated_storage(
     monkeypatch.setenv("GAME_SERVER_DB_SSLMODE", "prefer")  # CI's server has no TLS
     monkeypatch.setenv("GAME_SERVER_IMAGE_BASE_PATH", str(tmp_path / "default-images"))
     db.execute(
-        "TRUNCATE session_codes, published_sessions, hunt_drafts, rulings, referee_traces,"
-        " referee_prompts, blocked_attempts, session_runs, arrivals, team_members, participants,"
-        " submissions"
+        "TRUNCATE session_codes, session_moderators, published_sessions, hunt_drafts, rulings,"
+        " referee_traces, referee_prompts, blocked_attempts, session_runs, arrivals,"
+        " team_members, participants, submissions"
         " RESTART IDENTITY"
     )
     db.execute(

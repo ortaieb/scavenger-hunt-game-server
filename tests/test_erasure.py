@@ -218,17 +218,20 @@ def submission_row(db: psycopg.Connection[DictRow], submission: int) -> DictRow:
 
 
 def every_value(db: psycopg.Connection[DictRow]) -> str:
-    """Every row of every table in the game's and the directory's schemas, as text."""
+    """Every row of every table in the game's and the directory's schemas, as text, in a fixed
+    order (tables by name, rows by their text), so two snapshots compare equal."""
     tables = db.execute(
         "SELECT table_schema, table_name FROM information_schema.tables"
         " WHERE table_schema IN ('public', 'directory') AND table_type = 'BASE TABLE'"
         " AND table_name <> 'flyway_schema_history'"
+        " ORDER BY table_schema, table_name"
     ).fetchall()
     dumped = []
     for table in tables:
         name = f'"{table["table_schema"]}"."{table["table_name"]}"'
         # The table names come from the catalogue, never from input.
-        rows = db.execute(f"SELECT t::text AS row FROM {name} t").fetchall()  # noqa: S608
+        query = f"SELECT t::text AS row FROM {name} t ORDER BY 1"  # noqa: S608
+        rows = db.execute(query).fetchall()
         dumped += [f"{table['table_schema']}.{table['table_name']}: {row['row']}" for row in rows]
     return "\n".join(dumped)
 

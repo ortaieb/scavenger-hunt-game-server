@@ -63,11 +63,18 @@ CONSENT_TEXT = (
 class JoinRequest(BaseModel):
     """Body of `POST /join`: a team's join code and the player's consent."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_by_name=True)
 
     code: str = Field(min_length=1, max_length=64, description="The team's join code")
     # Strict: only JSON `true` records consent; false, "true", 1 and a missing field don't.
     consent: StrictBool = Field(description=f"Must be true: the player ticked: {CONSENT_TEXT}")
+    # Optional, and only a signed-in player's counts. Never assumed: true only if the box,
+    # unticked to start with, was ticked.
+    upcoming_hunts: StrictBool = Field(
+        default=False,
+        alias="upcomingHunts",
+        description="The player ticked the box to hear about upcoming hunts",
+    )
 
     @field_validator("consent")
     @classmethod

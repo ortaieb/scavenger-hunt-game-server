@@ -1,7 +1,5 @@
 """OAuth in front of `/mcp`: the organiser key was a stopgap until this (#131)."""
 
-from fastapi import status
-from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 UNAUTHORISED_BODY = {"detail": "organiser or admin token required", "code": "unauthorised"}

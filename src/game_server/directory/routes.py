@@ -13,15 +13,16 @@ from math import ceil
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from svix.webhooks import Webhook, WebhookVerificationError
 
 from game_server.auth import Principal, current_clerk_user, require_role
 from game_server.clock import Clock, get_clock
 from game_server.config import Settings, get_settings
 from game_server.directory.clerk import ClerkError, ClerkUsers, get_clerk_users
+from game_server.directory.erasures import ErasureRecords
 from game_server.directory.events import handle_event
 from game_server.directory.outbox import ClerkOutbox
 from game_server.directory.repository import (
@@ -30,6 +31,7 @@ from game_server.directory.repository import (
     directory_database,
 )
 from game_server.directory.roles import change_role
+from game_server.erasure import ErasureJob, erasure_job, get_erasure_job, run_now
 from game_server.errors import ApiError
 from game_server.rate_limit import RateLimiter
 
@@ -82,8 +84,10 @@ def get_provision_rate_limiter(
 )
 async def clerk_event(
     request: Request,
+    background: BackgroundTasks,
     settings: Annotated[Settings, Depends(get_settings)],
     clock: Annotated[Clock, Depends(get_clock)],
+    clerk: Annotated[ClerkUsers | None, Depends(get_clerk_users)],
 ) -> Response:
     """Apply a Clerk user event (`user.created`, `user.updated`, `user.deleted`).
 
@@ -108,7 +112,11 @@ async def clerk_event(
         ) from None
     if isinstance(event, dict):
         directory, outbox = directory_and_outbox(settings)
-        await run_in_threadpool(handle_event, event, directory, outbox, clock().astimezone(UTC))
+        erasures = ErasureRecords(directory_database(settings))
+        now = clock().astimezone(UTC)
+        await run_in_threadpool(handle_event, event, directory, outbox, erasures, now)
+        if event.get("type") == "user.deleted":
+            background.add_task(run_now, erasure_job(settings, clock, clerk))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -278,3 +286,52 @@ def list_people(
     return PeopleOut(
         people=[PersonOut(pid=p.pid, display_name=p.display_name, role=p.role) for p in listed]
     )
+
+
+# --- erasure (admin only) ------------------------------------------------------------------------
+
+
+class EraseIn(BaseModel):
+    """An erasure's options: whether the person asked never to be contacted again."""
+
+    model_config = ConfigDict(extra="forbid", validate_by_name=True)
+
+    do_not_contact: bool = Field(default=False, alias="doNotContact")
+
+
+class ErasureOut(BaseModel):
+    """An erasure under way: the person's pid."""
+
+    pid: UUID
+    status: str = "erasing"
+
+
+@router.post(
+    "/directory/people/{pid}/erase",
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        401: {"description": "No valid Clerk session token (code: unauthorised)"},
+        403: {"description": "Not an admin (code: forbidden)"},
+        404: {"description": "No such person, and no erasure of them (code: unknown_person)"},
+        503: {"description": "No directory (code: directory_unavailable)"},
+    },
+)
+def erase_person(
+    pid: UUID,
+    admin: Annotated[Principal, Depends(require_role("admin"))],
+    settings: Annotated[Settings, Depends(get_settings)],
+    job: Annotated[ErasureJob, Depends(get_erasure_job)],
+    background: BackgroundTasks,
+    body: Annotated[EraseIn | None, Body()] = None,
+) -> ErasureOut:
+    """Erase a person, for a request that came another way (by email, say). Admin only.
+
+    The same job as `DELETE /me`: recorded at once, the rest in the background.
+    """
+    directory, _ = directory_and_outbox(settings)
+    if directory.status(pid) is None and job.find(pid) is None:
+        raise ApiError(status.HTTP_404_NOT_FOUND, "unknown person", "unknown_person")
+    job.request(pid, "admin", body is not None and body.do_not_contact)
+    logger.info("Erasure of person %s requested by %s", pid, admin.pid)
+    background.add_task(run_now, job, pid)
+    return ErasureOut(pid=pid)

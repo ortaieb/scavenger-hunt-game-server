@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from game_server import (
     arrive,
     challenge,
+    erasure_routes,
     game_state,
     health,
     join,
@@ -33,6 +34,7 @@ from game_server.designer_runners import AgentRunner, interrupt_left_running
 from game_server.directory import routes as directory_routes
 from game_server.directory.sync import start_clerk_sync
 from game_server.drafts import DraftStore
+from game_server.erasure import start_erasure_sweep
 from game_server.logging_config import configure_logging
 from game_server.mcp_server.server import mount_mcp
 from game_server.sessions import load_session_repository
@@ -44,7 +46,8 @@ GREETING = "Hello, World!"
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Open the database's connection pool and the designer's agent runner before serving;
     on shutdown, stop any design run, then close the pool. With the directory and a Clerk
-    key, the outbox's writes to Clerk are sent in the background.
+    key, the outbox's writes to Clerk are sent in the background; with the directory,
+    unfinished erasures are retried in the background.
 
     The pool connects in the background, so an unreachable database doesn't stop startup:
     `/health` reports it unavailable until it answers. Drafts a previous process left
@@ -58,6 +61,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await runner.open()
     app.state.agent_runner = runner
     clerk_sync = start_clerk_sync(settings, get_clock())
+    sweep = start_erasure_sweep(settings, get_clock())
     manager = getattr(app.state, "mcp_session_manager", None)
     mcp: AbstractAsyncContextManager[None] = manager.run() if manager else nullcontext()
     try:
@@ -66,6 +70,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         if clerk_sync is not None:
             await clerk_sync.stop()
+        if sweep is not None:
+            await sweep.stop()
         await runner.close()
         close_databases()
 
@@ -115,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(directory_routes.router)
     app.include_router(moderator_routes.router)
     app.include_router(profile.router)
+    app.include_router(erasure_routes.router)
     if settings.mcp_enabled:
         mount_mcp(app, settings)
 

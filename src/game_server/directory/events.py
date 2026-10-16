@@ -1,7 +1,8 @@
 """Clerk's user events, once their signature is checked: what each does to the directory.
 
 Svix delivers events late, out of order or twice, so every handler is idempotent, and an event
-for a person the directory doesn't know, or is erasing, changes nothing.
+for a person the directory doesn't know, or is erasing, changes nothing. `user.deleted` records
+an erasure, which the erasure job carries out (see `game_server.erasure`).
 """
 
 import logging
@@ -9,6 +10,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
+from game_server.directory.erasures import ErasureRecords
 from game_server.directory.outbox import ClerkOutbox
 from game_server.directory.repository import DirectoryRepository
 
@@ -26,7 +28,11 @@ def primary_email(user: Mapping[str, Any]) -> str | None:
 
 
 def handle_event(
-    event: Mapping[str, Any], directory: DirectoryRepository, outbox: ClerkOutbox, now: datetime
+    event: Mapping[str, Any],
+    directory: DirectoryRepository,
+    outbox: ClerkOutbox,
+    erasures: ErasureRecords,
+    now: datetime,
 ) -> None:
     """Apply one Clerk event. Other event types, and malformed ones, are ignored."""
     data = event.get("data")
@@ -38,7 +44,7 @@ def handle_event(
     elif kind == "user.updated":
         _updated(data, directory)
     elif kind == "user.deleted":
-        _deleted(data["id"], directory)
+        _deleted(data["id"], directory, erasures, now)
 
 
 def _created(
@@ -66,7 +72,12 @@ def _updated(user: Mapping[str, Any], directory: DirectoryRepository) -> None:
         logger.info("Person %s changed their email", person.pid)
 
 
-def _deleted(user_id: str, directory: DirectoryRepository) -> None:
+def _deleted(
+    user_id: str, directory: DirectoryRepository, erasures: ErasureRecords, now: datetime
+) -> None:
     person = directory.find_person(user_id)
-    if person is not None and directory.mark_erasing(person.pid):
-        logger.info("Person %s deleted in Clerk: marked erasing", person.pid)
+    if person is None:
+        return
+    erasures.request(person.pid, "clerk", do_not_contact=False, now=now)
+    if directory.mark_erasing(person.pid):
+        logger.info("Person %s deleted in Clerk: to be erased", person.pid)

@@ -77,6 +77,25 @@ class Profile:
 
 
 @dataclass(frozen=True)
+class Account:
+    """When a person's account was made and when they were last seen."""
+
+    created_at: datetime
+    last_seen_at: datetime
+
+
+@dataclass(frozen=True)
+class ConsentRecord:
+    """One consent row: a grant, withdrawn or not."""
+
+    purpose: str
+    granted_at: datetime
+    withdrawn_at: datetime | None
+    wording_version: str
+    source: str
+
+
+@dataclass(frozen=True)
 class Consent:
     """A person's upcoming-hunts consent: in force or not, and since when.
 
@@ -221,6 +240,32 @@ class DirectoryRepository:
                 (email, pid, email),
             ).rowcount
         return changed > 0
+
+    def status(self, pid: UUID) -> PersonStatus | None:
+        """The person's status, or None if the directory doesn't have them."""
+        with self._database.connection() as conn:
+            row = conn.execute(
+                "SELECT status FROM directory.people WHERE pid = %s", (pid,)
+            ).fetchone()
+        return None if row is None else row[0]
+
+    def account(self, pid: UUID) -> Account | None:
+        """When the person's account was made and last seen, or None if there is none."""
+        with self._database.connection() as conn:
+            row = conn.execute(
+                "SELECT created_at, last_seen_at FROM directory.people WHERE pid = %s", (pid,)
+            ).fetchone()
+        return None if row is None else Account(*row)
+
+    def consent_history(self, pid: UUID) -> list[ConsentRecord]:
+        """Every consent the person gave, oldest first, withdrawn or not."""
+        with self._database.connection() as conn:
+            rows = conn.execute(
+                "SELECT purpose, granted_at, withdrawn_at, wording_version, source"
+                " FROM directory.contact_consents WHERE pid = %s ORDER BY id",
+                (pid,),
+            ).fetchall()
+        return [ConsentRecord(*row) for row in rows]
 
     def mark_erasing(self, pid: UUID) -> bool:
         """Mark an active person as being erased; True if they were active."""

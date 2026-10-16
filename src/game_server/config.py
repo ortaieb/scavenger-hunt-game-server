@@ -142,6 +142,12 @@ class Settings(BaseSettings):
     # reconcile with Clerk.
     clerk_sync_interval_seconds: float = Field(default=10, gt=0)
     clerk_reconcile_hour_utc: int = Field(default=3, ge=0, le=23)
+    # The key of the keyed hash (HMAC-SHA256) of an email kept on the suppression list when an
+    # erased person asked not to be contacted, so the address itself is never kept. Unset: such
+    # an erasure waits, unfinished, until it's set. Never logged.
+    suppression_key: SecretStr | None = None
+    # How often unfinished erasures are retried in the background.
+    erasure_sweep_interval_seconds: float = Field(default=60, gt=0)
 
     @field_validator("mcp_allowed_hosts", "clerk_authorized_parties", mode="before")
     @classmethod

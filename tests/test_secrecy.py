@@ -270,6 +270,14 @@ def every_route_response(
         ("GET", "/directory/people"): [client.get("/directory/people")],  # 401
         ("GET", "/me"): [client.get("/me"), client.get("/me", headers=ORGANISER)],  # 401, then 200
         ("PATCH", "/me"): [client.patch("/me", json={})],  # 401
+        ("DELETE", "/me"): [client.request("DELETE", "/me")],  # 401: never erase the sentinel
+        ("GET", "/me/export"): [
+            client.get("/me/export"),  # 401
+            client.get("/me/export", headers=ORGANISER),  # 200: nothing of the game's secrets
+        ],
+        ("POST", "/directory/people/{pid}/erase"): [
+            client.post(f"/directory/people/{UNKNOWN}/erase")  # 401
+        ],
         ("PUT", "/me/consents/upcoming-hunts"): [
             client.put("/me/consents/upcoming-hunts", json={"granted": False})  # 401
         ],

@@ -194,8 +194,11 @@ def test_an_update_for_an_unknown_or_erasing_person_is_ignored(
 # --- user.deleted --------------------------------------------------------------------------------
 
 
-def test_a_deleted_user_is_marked_erasing_and_logged_by_pid(
-    client: TestClient, directory: DirectoryRepository, caplog: pytest.LogCaptureFixture
+def test_a_deleted_user_is_erased_once_and_logged_by_pid(
+    client: TestClient,
+    directory: DirectoryRepository,
+    db: psycopg.Connection[DictRow],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     pid = directory.get_or_create_person("user_a", "a@example.com")
 
@@ -204,11 +207,15 @@ def test_a_deleted_user_is_marked_erasing_and_logged_by_pid(
             deleted = {"type": "user.deleted", "data": {"id": "user_a", "deleted": True}}
             assert send(client, deleted) == 204
 
-    person = directory.find_person("user_a")
-    assert person is not None
-    assert person.status == "erasing"
-    logged = [r.getMessage() for r in caplog.records if "erasing" in r.getMessage()]
-    assert logged == [f"Person {pid} deleted in Clerk: marked erasing"]
+    assert directory.find_person("user_a") is None
+    erasure = db.execute("SELECT source, completed_at FROM directory.erasures").fetchone()
+    assert erasure is not None
+    assert erasure["source"] == "clerk"
+    assert erasure["completed_at"] is not None
+    logged = [r.getMessage() for r in caplog.records if "to be erased" in r.getMessage()]
+    assert logged == [f"Person {pid} deleted in Clerk: to be erased"]
+    assert "user_a" not in caplog.text
+    assert "a@example.com" not in caplog.text
 
 
 def test_a_deleted_unknown_user_changes_nothing(

@@ -760,6 +760,69 @@ their checkpoint, so they must be the organisers' own, with nobody in shot:
 Upload the photos **before** a sessions file that names them. Otherwise the new deploy can't
 start, and Railway keeps traffic on the old one.
 
+### Production accounts: Clerk domain and database privacy
+
+Once the web-app is ready with Clerk integration, add accounts to production using a domain you own
+and a Clerk production instance.
+
+**Goal:** the game-server answers on no public address (only Railway's private network), and only
+the web app is public with a production Clerk instance.
+
+**Checklist** (some steps are infrastructure, outside this repo):
+
+1. **Domain.** Buy a domain or pick a subdomain you control. The game-server is private, so only
+   the web app's public address matters: `https://play.example.com` or similar. Point it at
+   Railway through a custom domain, configured in the Railway project's settings.
+2. **Clerk production instance.** In your Clerk dashboard, create a production instance (or use an
+   existing one). Note the instance's short slug (e.g. `your-slug`).
+3. **Clerk DNS records.** The production instance needs DNS records, listed in Clerk's dashboard
+   (Deployments → Production → Frontend API). Add them to your domain so Clerk's Frontend API is
+   reachable at `https://clerk.play.example.com` (or your chosen domain). Without these, every
+   token verification fails.
+4. **OAuth (optional).** If you want Google or Apple sign-in, add your own OAuth credentials to
+   Clerk (Clerk's guide: Integrations → Social Connections). Clerk's shared credentials don't work
+   for production.
+5. **Clerk webhook.** Set up a Clerk webhook directed to `https://play.example.com/webhooks/clerk`
+   (the web-app relays it here to `/internal/clerk-events` on the game-server's private network).
+   Copy the signing secret for the next step.
+6. **Secrets.** On the game-server service in Railway's GitHub `production` environment, set:
+   ```text
+   GAME_SERVER_AUTH_MODE=required
+   GAME_SERVER_CLERK_JWT_KEY=<production PEM public key from Clerk Dashboard>
+   GAME_SERVER_CLERK_ISSUER=https://<your-slug>.clerk.accounts.dev
+   GAME_SERVER_CLERK_AUTHORIZED_PARTIES=https://play.example.com
+   GAME_SERVER_CLERK_SECRET_KEY=<sk_live_... from Clerk Dashboard>
+   GAME_SERVER_CLERK_WEBHOOK_SECRET=<Svix signing secret from the webhook>
+   GAME_SERVER_SUPPRESSION_KEY=<a long random string, 32+ chars, for email suppression>
+   GAME_SERVER_WEB_APP_URL=https://play.example.com
+   ```
+   Mark those containing `_KEY` or `_SECRET` as sealed, so they don't appear in logs.
+7. **Web-app secrets.** The web-app also needs production Clerk keys and the game-server's private
+   URL. In the web-app's GitHub `production` environment, set:
+   ```text
+   VITE_CLERK_PUBLISHABLE_KEY=<pk_live_... from Clerk>
+   GAME_SERVER_URL=http://<service-name>.railway.internal:<port>
+   CLERK_API_KEY=<sk_live_... from Clerk, same as game-server>
+   CLERK_WEBHOOK_SECRET=<Svix secret, same as game-server>
+   ```
+   Replace `<service-name>` and `<port>` with the game-server's Railway service name and port.
+8. **Game-server networking.** In Railway's game-server service, remove the public domain so
+   traffic can't reach it. Only the web-app on the private network can call it.
+9. **Database role passwords.** See [The users directory's logins on Railway](#the-users-directorys-logins-on-railway): give the two roles strong
+   passwords, then point both services at them. The game-server uses both, the migrations service
+   uses the owner.
+10. **Test.** After deploying, check `/health` answers `200` and a user can sign in, provision
+    themselves, and their `pid` and `role` appear in their token. Run the three-checkpoint hunt
+    end to end.
+
+**In the production Clerk instance**, turn on the same settings as your development instance
+(Clerk's docs → Restriction & Freeauth settings), then:
+
+- **Signing methods:** email, SMS (if wanted), and any Google/Apple OAuth you set up.
+- **Attributes:** email (required), first and last name (optional).
+- **Social sign-in:** pick Google and/or Apple if you set up credentials above.
+- **New user flow:** pick the same settings as development.
+
 ## License
 
 See [LICENSE](LICENSE).

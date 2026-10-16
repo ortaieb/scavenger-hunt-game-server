@@ -7,6 +7,7 @@ accepted ones as a session, playable at once.
 
 import logging
 from collections.abc import Sequence
+from datetime import UTC
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -41,7 +42,8 @@ from game_server.drafts import (
     get_draft_store,
 )
 from game_server.errors import ApiError
-from game_server.organiser import require_organiser
+from game_server.moderators import SessionModerators, get_session_moderators
+from game_server.organiser import OrganiserAccess, organiser_access, require_organiser
 from game_server.organiser_services import (
     DesignerDisabledError,
     DraftNotEditableError,
@@ -62,7 +64,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/designer/drafts",
     dependencies=[Depends(require_organiser)],
-    responses={401: {"description": "Organiser key required (code: organiser_unauthorised)"}},
+    responses={
+        401: {"description": "Organiser key or token required (code: organiser_unauthorised)"},
+        403: {"description": "Signed in, but not an organiser or admin (code: forbidden)"},
+    },
 )
 
 DRAFTS_LISTED = 50
@@ -208,10 +213,11 @@ def start_design(
     clock: Annotated[Clock, Depends(get_clock)],
     store: Annotated[DraftStore, Depends(get_draft_store)],
     runner: Annotated[DesignerRunner, Depends(get_designer_runner)],
+    organiser: Annotated[OrganiserAccess, Depends(organiser_access)],
 ) -> DraftCreatedOut:
     """Start designing a hunt; follow the draft at `Location`. One run at a time."""
     try:
-        draft_id = start_design_service(store, runner, clock, body)
+        draft_id = start_design_service(store, runner, clock, body, organiser.pid)
     except DesignerDisabledError as exc:
         raise ApiError(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc), "designer_disabled") from None
     except DesignerBusyError:
@@ -347,14 +353,21 @@ def publish_draft(
     store: Annotated[DraftStore, Depends(get_draft_store)],
     sessions: Annotated[SessionRepository, Depends(get_session_repository)],
     codes: Annotated[CodeSource, Depends(get_code_source)],
+    organiser: Annotated[OrganiserAccess, Depends(organiser_access)],
+    moderators: Annotated[SessionModerators, Depends(get_session_moderators)],
 ) -> PublicationOut:
-    """Publish the accepted checkpoints as a session, playable at once, with fresh codes."""
+    """Publish the accepted checkpoints as a session, playable at once, with fresh codes.
+
+    A signed-in organiser becomes the session's first moderator.
+    """
     try:
         session = publish_service(store, draft, body, settings, sessions, codes, clock)
     except UnknownDraftError:
         raise _unknown_draft() from None
     except DraftNotReadyError as exc:
         raise ApiError(status.HTTP_409_CONFLICT, str(exc), "draft_not_ready") from None
+    if organiser.pid is not None:
+        moderators.add(session.id, organiser.pid, organiser.pid, clock().astimezone(UTC))
     return PublicationOut.of(session)
 
 

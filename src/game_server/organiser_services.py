@@ -79,9 +79,13 @@ class UnknownCheckpointError(Exception):
 
 
 def start_design(
-    store: DraftStore, runner: DesignerRunner, clock: Clock, request: DraftRequest
+    store: DraftStore,
+    runner: DesignerRunner,
+    clock: Clock,
+    request: DraftRequest,
+    pid: UUID | None = None,
 ) -> UUID:
-    """Create a draft and start its run; the new draft's id.
+    """Create a draft and start its run; the new draft's id. `pid`: the organiser, if signed in.
 
     Raises `DesignerDisabledError` if the runner can't run, `DesignerBusyError` if another
     design is running.
@@ -89,7 +93,7 @@ def start_design(
     if not runner.available():
         raise DesignerDisabledError("the hunt designer is not available")
     draft_id = uuid4()
-    store.create(draft_id, request, runner.name, clock().astimezone(UTC))
+    store.create(draft_id, request, runner.name, clock().astimezone(UTC), pid)
     logger.info("Draft %s created status running runner %s", draft_id, runner.name)
     runner.start(draft_id, request)
     return draft_id
@@ -218,12 +222,13 @@ def rule(
     ruling: Ruling,
     note: str | None,
     clock: Clock,
+    pid: UUID | None = None,
 ) -> RecordedRuling | None:
     """Record the moderator's ruling; None if the submission isn't in the session.
 
     The note may describe the photo, so it's never logged.
     """
-    recorded = store.rule(session.id, submission, ruling, note, clock().astimezone(UTC))
+    recorded = store.rule(session.id, submission, ruling, note, clock().astimezone(UTC), pid)
     if recorded is not None:
         logger.info(
             "Moderator ruling session %s submission %d %s verdict %s -> %s first=%s",

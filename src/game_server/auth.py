@@ -9,16 +9,22 @@ the token; whether a route requires one is for the route to decide from `Setting
 Nothing here logs a token, a claim or a Clerk user id.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import jwt
 from fastapi import Depends, Header, status
 
+from game_server.bearer import bearer_token
 from game_server.config import Settings, get_settings
+from game_server.directory.repository import (
+    DirectoryNotConfiguredError,
+    DirectoryRepository,
+    directory_database,
+)
 from game_server.errors import ApiError
-from game_server.moderation import bearer_token
 
 ROLES = ("player", "organiser", "admin")
 LEEWAY_SECONDS = 5
@@ -135,3 +141,56 @@ def optional_person(
     if settings.auth_mode == "off" or authorization is None:
         return None
     return current_person(settings, authorization)
+
+
+# --- roles and permissions -----------------------------------------------------------------------
+
+Permission = Literal["play", "design", "moderate_any_session", "manage_roles"]
+
+# The one map of who may do what. Moderating the sessions someone was added to is per hunt: an
+# organiser or admin with a `session_moderators` row (see `moderation`).
+PERMISSIONS: dict[Permission, frozenset[str]] = {
+    "play": frozenset({"player", "organiser", "admin"}),
+    "design": frozenset({"organiser", "admin"}),
+    "moderate_any_session": frozenset({"admin"}),
+    "manage_roles": frozenset({"admin"}),
+}
+# Roles that may moderate a session they were added to.
+MODERATOR_ROLES = frozenset({"organiser", "admin"})
+
+
+def can(role: str, permission: Permission) -> bool:
+    """Whether a platform role has a permission."""
+    return role in PERMISSIONS[permission]
+
+
+class ForbiddenError(ApiError):
+    """`403`: signed in, but not allowed to do this."""
+
+    def __init__(self) -> None:
+        super().__init__(status.HTTP_403_FORBIDDEN, "not allowed", "forbidden")
+
+
+def effective_role(person: Principal, settings: Settings) -> str:
+    """The person's role now: the directory's, which is the source of truth, so a demotion takes
+    effect at once; the token's when there's no directory."""
+    try:
+        database = directory_database(settings)
+    except DirectoryNotConfiguredError:
+        return person.role
+    return DirectoryRepository(database).role(person.pid)
+
+
+def require_role(*roles: str) -> Callable[..., Principal]:
+    """A dependency: the caller, if their current role is one of `roles`; else 401 or 403."""
+
+    def dependency(
+        person: Annotated[Principal, Depends(current_person)],
+        settings: Annotated[Settings, Depends(get_settings)],
+    ) -> Principal:
+        role = effective_role(person, settings)
+        if role not in roles:
+            raise ForbiddenError
+        return Principal(pid=person.pid, role=role, session_id=person.session_id)
+
+    return dependency

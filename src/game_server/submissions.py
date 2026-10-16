@@ -404,7 +404,13 @@ class SubmissionStore:
             return transaction.record(submission)
 
     def rule(
-        self, session: UUID, submission: int, ruling: Ruling, note: str | None, now: datetime
+        self,
+        session: UUID,
+        submission: int,
+        ruling: Ruling,
+        note: str | None,
+        now: datetime,
+        pid: UUID | None = None,
     ) -> RecordedRuling | None:
         """Record the moderator's ruling on one of the session's submissions; None if no such
         submission is in the session.
@@ -414,7 +420,7 @@ class SubmissionStore:
         can't both be the first.
         """
         with self.transaction(session) as transaction:
-            return transaction.rule(session, submission, ruling, note, now)
+            return transaction.rule(session, submission, ruling, note, now, pid)
 
 
 class SubmissionTransaction:
@@ -612,10 +618,16 @@ class SubmissionTransaction:
         return recorded
 
     def rule(
-        self, session: UUID, submission: int, ruling: Ruling, note: str | None, now: datetime
+        self,
+        session: UUID,
+        submission: int,
+        ruling: Ruling,
+        note: str | None,
+        now: datetime,
+        pid: UUID | None = None,
     ) -> RecordedRuling | None:
         """See `SubmissionStore.rule`."""
-        return record_ruling(self._conn, session, submission, ruling, note, now)
+        return record_ruling(self._conn, session, submission, ruling, note, now, pid)
 
 
 def _session_run(conn: Connection[TupleRow], session: UUID) -> SessionRun | None:

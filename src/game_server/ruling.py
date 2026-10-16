@@ -13,10 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.models import VerdictStatus
-from game_server.moderation import require_moderator
+from game_server.moderation import ModeratorAccess, moderator_access
 from game_server.organiser_services import rule
 from game_server.rulings import RecordedRuling, Ruling, StoredRuling
-from game_server.sessions import GameSession
 from game_server.submissions import SubmissionStore, get_submission_store
 
 router = APIRouter()
@@ -85,7 +84,7 @@ class SubmissionRulingOut(_KebabModel):
     },
 )
 def rule_on_submission(
-    session: Annotated[GameSession, Depends(require_moderator)],
+    access: Annotated[ModeratorAccess, Depends(moderator_access)],
     submission: Annotated[int, Path(ge=1, le=MAX_SUBMISSION_ID)],
     body: RulingIn,
     response: Response,
@@ -97,7 +96,7 @@ def rule_on_submission(
     Allowed while the session runs and after it stops: the results aren't final until every
     `pending` photo is ruled on. Posting again replaces the ruling.
     """
-    recorded = rule(store, session, submission, body.ruling, body.note, clock)
+    recorded = rule(store, access.session, submission, body.ruling, body.note, clock, access.pid)
     if recorded is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown submission")
     if recorded.first:

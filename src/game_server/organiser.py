@@ -1,18 +1,21 @@
-"""Authorising the organiser's endpoints (the hunt designer) with the organiser key.
+"""Authorising the organiser's endpoints (the hunt designer): the organiser key, or a token.
 
-A stopgap like the moderator code, until real accounts exist. The moderator code can't do it:
-it belongs to a session, and a draft exists before any session does. The key is one shared
-secret, `GAME_SERVER_ORGANISER_KEY`, presented as `Authorization: Bearer <key>`.
+The key is one shared secret, `GAME_SERVER_ORGANISER_KEY`, presented as
+`Authorization: Bearer <key>`. With accounts, a Clerk session token works too, for a person whose
+role is `organiser` or `admin`; the key goes later (#120).
 """
 
 import secrets
+from dataclasses import dataclass
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Depends, Header, status
 
+from game_server.auth import ForbiddenError, can, current_person, effective_role
+from game_server.bearer import bearer_token, is_session_token
 from game_server.config import Settings, get_settings
 from game_server.errors import ApiError
-from game_server.moderation import bearer_token
 
 UNAUTHORISED_BODY = {"detail": "organiser key required", "code": "organiser_unauthorised"}
 
@@ -42,10 +45,35 @@ def organiser_key_matches(settings: Settings, authorization: str | None) -> bool
     return secrets.compare_digest(token.strip().encode(), expected.encode())
 
 
-def require_organiser(
+@dataclass(frozen=True)
+class OrganiserAccess:
+    """Who is organising: the person, or None for the organiser key."""
+
+    pid: UUID | None
+
+
+def organiser_access(
     settings: Annotated[Settings, Depends(get_settings)],
     authorization: Annotated[str | None, Header()] = None,
-) -> None:
-    """Pass if the request presents the organiser key; else the same 401, whatever the reason."""
+) -> OrganiserAccess:
+    """Pass with the organiser key, or a valid token whose current role may design hunts.
+
+    A token (a JWT, with accounts on) must be valid (else 401) and its person an organiser or
+    admin (else `403 forbidden`). Anything else is taken as a key: the same 401 whatever the
+    reason.
+    """
+    token = bearer_token(authorization)
+    if token is not None and settings.auth_mode != "off" and is_session_token(token):
+        person = current_person(settings, authorization)
+        if not can(effective_role(person, settings), "design"):
+            raise ForbiddenError
+        return OrganiserAccess(person.pid)
     if not organiser_key_matches(settings, authorization):
         raise OrganiserUnauthorisedError
+    return OrganiserAccess(None)
+
+
+def require_organiser(
+    access: Annotated[OrganiserAccess, Depends(organiser_access)],
+) -> None:
+    """Pass if the request may organise (see `organiser_access`)."""

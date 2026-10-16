@@ -241,7 +241,13 @@ class FakeSubmissions:
     calls: list[tuple[UUID, int, Ruling, str | None, datetime]] = field(default_factory=list)
 
     def rule(
-        self, session: UUID, submission: int, ruling: Ruling, note: str | None, now: datetime
+        self,
+        session: UUID,
+        submission: int,
+        ruling: Ruling,
+        note: str | None,
+        now: datetime,
+        pid: UUID | None = None,
     ) -> RecordedRuling | None:
         self.calls.append((session, submission, ruling, note, now))
         return self.recorded

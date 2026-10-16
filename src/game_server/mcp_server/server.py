@@ -143,6 +143,6 @@ def mount_mcp(app: FastAPI, settings: Settings, clock: Clock = utc_now) -> None:
     )
     manager: StreamableHTTPSessionManager = server.session_manager
     # A Route of an ASGI app, not a Mount: a Mount would redirect `/mcp` to `/mcp/`.
-    guard = OrganiserGuard(manager.handle_request, settings, clock)
+    guard = OrganiserGuard(manager.handle_request)
     app.router.routes.append(Route(MCP_PATH, guard, include_in_schema=False))
     app.state.mcp_session_manager = manager

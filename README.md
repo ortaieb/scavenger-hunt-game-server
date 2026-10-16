@@ -100,6 +100,8 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_PROVISION_INTERVAL_SECONDS` | `5` | One `/me/provision` per Clerk user per this many seconds (> 0) |
 | `GAME_SERVER_CLERK_SYNC_INTERVAL_SECONDS` | `10` | How often queued writes to Clerk are sent (> 0) |
 | `GAME_SERVER_CLERK_RECONCILE_HOUR_UTC` | `3` | The UTC hour (0–23) of the nightly reconcile with Clerk |
+| `GAME_SERVER_SUPPRESSION_KEY` | unset | The key of the keyed hash (HMAC-SHA256) kept on the suppression list when an [erased](#erasure) person asked never to be contacted again, so their address isn't kept. Unset: such an erasure waits, unfinished, until it's set. Never logged |
+| `GAME_SERVER_ERASURE_SWEEP_INTERVAL_SECONDS` | `60` | How often unfinished [erasures](#erasure) are retried in the background (> 0) |
 | `GAME_SERVER_DESIGNER_RUNNER` | `agent` | What fills a draft: `agent`, the [hunt designer](#hunt-designer) (needs `GAME_SERVER_ANTHROPIC_API_KEY`: without it, starting a design answers `503`), or `stub`, a fixed hunt for local development and the web app's tests |
 | `GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS` | `1` | How long the `stub` runner takes (≥ 0) |
 | `GAME_SERVER_DESIGNER_MIN_SPACING_M` | `150` | The least distance between two of a draft's checkpoints, in metres; see the [draft rules](docs/api.md#draft-rules) |
@@ -521,6 +523,43 @@ Logs name people by `pid` only.
 In Clerk's Dashboard, add a webhook endpoint for `user.created`, `user.updated` and
 `user.deleted` pointing at the web app's pass-through, and set its signing secret as
 `GAME_SERVER_CLERK_WEBHOOK_SECRET`. The game server has no public domain of its own.
+
+#### Erasure
+
+Under UK GDPR a person can ask to be erased, and we must act within a month. The game knows
+people only by `pid`, so one job erases them (see
+[`src/game_server/erasure.py`](src/game_server/erasure.py) and
+[the API](docs/api.md#erasure-and-export)): their photo files, team memberships and moderator
+rows; in their photos and check-ins their `pid`, where they stood, the photo's fingerprint, the
+referee's reasons and trace, and ruling notes; their Clerk user; and their directory rows. Their
+team's results stay, with nobody attached. If they asked never to be contacted again, a keyed
+hash of their email goes on the suppression list (it needs `GAME_SERVER_SUPPRESSION_KEY`).
+
+It starts from `DELETE /me`, from Clerk's `user.deleted`, or from an admin:
+[`POST /directory/people/{pid}/erase`](docs/api.md#post-directorypeoplepiderase) or, for a request
+that came by email:
+
+```bash
+uv run python -m game_server.directory erase --pid <pid> [--do-not-contact]
+```
+
+Each step's time is kept in `directory.erasures`, and every step can run twice, so a failed
+erasure is simply retried: in the background every `GAME_SERVER_ERASURE_SWEEP_INTERVAL_SECONDS`.
+An erasure waits, unfinished, without a Clerk secret key (unless Clerk started it), or without
+the suppression key when the person asked not to be contacted. The person can't be told yet:
+there's no email provider, so the job only logs that it's done.
+
+**After any database restore, erase everyone again before the database takes traffic.** A backup
+still holds the people erased since it was taken (backups keep that data only until they roll
+off), and the restore loses their `erasures` rows too, so save the list first:
+
+1. Before restoring: `uv run python -m game_server.directory list-erasures > erasures.txt`
+   (pids only, one a line; keep it with the restore's notes and delete it after).
+2. Restore, and keep the game server stopped.
+3. `uv run python -m game_server.directory replay-erasures --pids erasures.txt`: it erases again
+   everyone in the table and in the file, and finishes any unfinished erasure. Exit status 0 when
+   all are done; else read the log, fix what it names, and run it again.
+4. Start the game server.
 
 ## Deploying on Railway
 

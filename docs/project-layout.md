@@ -30,6 +30,8 @@ src/game_server/
   proximity.py       # `POST /checkpoint/proximity` advisory hint
   health.py          # `GET /health` readiness check
   join.py            # `POST /join`, and find_participant for later endpoints
+  erasure.py         # the erasure job (right to be forgotten), GameRecords (a person's game rows), the sweep
+  erasure_routes.py  # `DELETE /me` (erasure) and `GET /me/export`
   moderation.py      # require_moderator: a moderator's Clerk token (Bearer)
   errors.py          # ApiError: {detail, code} error responses
   session_runs.py    # SessionRun and session_phase (scheduled / running / stopped)

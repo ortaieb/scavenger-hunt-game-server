@@ -1,6 +1,6 @@
 """The moderator's photo endpoints: a player's photo, and a checkpoint's reference photos.
 
-The only endpoints that serve photos, and only with the session's moderator code. Each photo
+The only endpoints that serve photos, and only to a moderator of the session. Each photo
 is served the way the referee saw it (`prepare_image`: upright, EXIF stripped, long edge at
 most `referee_max_image_edge`), never cached. Each one served is logged by session and
 submission, or checkpoint and position: never by path, since a file name can describe the
@@ -30,7 +30,7 @@ NO_STORE = {"Cache-Control": "no-store"}
 MAX_SUBMISSION_ID = 2**63 - 1  # BIGINT
 PHOTO_RESPONSES: dict[int | str, dict[str, object]] = {
     200: {"content": {JPEG_CONTENT_TYPE: {}}, "description": "The photo, as the referee saw it"},
-    401: {"description": "Moderator code required (code: moderator_unauthorised)"},
+    401: {"description": "Moderator token required (code: unauthorised)"},
 }
 
 

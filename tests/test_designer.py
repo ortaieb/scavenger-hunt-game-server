@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from conftest import SignIn
 from designer_fakes import (
     DESIGN,
     HOUSE,
@@ -40,8 +41,7 @@ from game_server.drafts import DraftRequest, DraftResult, DraftStore
 from game_server.geo import distance_m
 from game_server.sessions import get_session_repository, parse_sessions
 
-KEY = "SENTINEL-ORGANISER-KEY-7c1e9a"
-AUTH = {"Authorization": f"Bearer {KEY}"}
+AUTH: dict[str, str] = {}  # the signed-in organiser's headers, set for each test
 T0 = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
 BODY = {"area": "Chiswick, London", "theme": "The Thames and brewing history"}
 
@@ -68,9 +68,15 @@ def designer_app(settings: Settings, now: list[datetime], runner: StubRunner | N
     return app
 
 
+@pytest.fixture(autouse=True)
+def signed_in_organiser(sign_in: SignIn) -> None:
+    AUTH.clear()
+    AUTH.update(sign_in("organiser"))
+
+
 @pytest.fixture
 def client(now: list[datetime], runner: StubRunner) -> Iterator[TestClient]:
-    settings = Settings(organiser_key=KEY, designer_runner="stub")
+    settings = Settings(designer_runner="stub")
     with TestClient(designer_app(settings, now, runner)) as test_client:
         yield test_client
 
@@ -286,7 +292,7 @@ def test_another_design_can_start_once_the_first_is_ready(
 def test_the_agent_runner_is_unavailable(
     now: list[datetime], db: psycopg.Connection[DictRow]
 ) -> None:
-    settings = Settings(organiser_key=KEY, designer_runner="agent")  # no Anthropic key either
+    settings = Settings(designer_runner="agent")  # no Anthropic key either
     with TestClient(designer_app(settings, now, runner=None)) as test_client:
         response = start(test_client)
 
@@ -365,16 +371,15 @@ ROUTES = [
     ("GET", "/designer/drafts", None),
     ("GET", f"/designer/drafts/{uuid4()}", None),
 ]
-UNAUTHORISED = {"detail": "organiser key required", "code": "organiser_unauthorised"}
 
 
 @pytest.mark.parametrize(("method", "path", "body"), ROUTES, ids=["start", "list", "read"])
 @pytest.mark.parametrize(
     "authorization",
-    [None, f"Basic {KEY}", "Bearer wrong-key-but-long-enough-000"],
-    ids=["no-header", "other-scheme", "wrong-key"],
+    [None, "Basic abc", "Bearer wrong-token-but-long-enough-000"],
+    ids=["no-header", "other-scheme", "bad-token"],
 )
-def test_every_route_needs_the_key(
+def test_every_route_needs_a_token(
     client: TestClient,
     db: psycopg.Connection[DictRow],
     method: str,
@@ -387,21 +392,23 @@ def test_every_route_needs_the_key(
     response = client.request(method, path, json=body, headers=headers)
 
     assert response.status_code == 401
-    assert response.json() == UNAUTHORISED
-    assert response.headers["www-authenticate"] == "Bearer"
+    assert response.json()["code"] == "unauthorised"
     assert drafts_in(db) == 0
 
 
 @pytest.mark.parametrize(("method", "path", "body"), ROUTES, ids=["start", "list", "read"])
-def test_without_a_key_configured_every_route_is_401(
-    now: list[datetime], runner: StubRunner, method: str, path: str, body: Any
+def test_a_player_is_forbidden_every_route(
+    client: TestClient,
+    sign_in: SignIn,
+    db: psycopg.Connection[DictRow],
+    method: str,
+    path: str,
+    body: dict[str, Any] | None,
 ) -> None:
-    settings = Settings(designer_runner="stub")
-    with TestClient(designer_app(settings, now, runner)) as test_client:
-        response = test_client.request(method, path, json=body, headers=AUTH)
+    response = client.request(method, path, json=body, headers=sign_in("player"))
 
-    assert response.status_code == 401
-    assert response.json() == UNAUTHORISED
+    assert response.status_code == 403
+    assert drafts_in(db) == 0
 
 
 @pytest.mark.parametrize(
@@ -409,7 +416,7 @@ def test_without_a_key_configured_every_route_is_401(
     [("/designer/drafts", {"checkpoints": 2}), ("/designer/drafts/not-a-uuid", None)],
     ids=["bad-body", "bad-id"],
 )
-def test_the_key_is_checked_before_the_request(
+def test_the_token_is_checked_before_the_request(
     client: TestClient, path: str, body: dict[str, Any] | None
 ) -> None:
     method = "POST" if body is not None else "GET"
@@ -444,7 +451,6 @@ def test_one_line_when_created_and_one_when_finished(
             str(checkpoint["place"]["location"]["lat"]),
         ):
             assert secret not in caplog.text
-    assert KEY not in caplog.text
 
 
 # --- the route -----------------------------------------------------------------------------
@@ -498,7 +504,7 @@ def agent_env(monkeypatch: pytest.MonkeyPatch, maps: FakeMaps) -> None:
 
 
 def agent_app(now: list[datetime]) -> Any:
-    return designer_app(Settings(organiser_key=KEY, designer_runner="agent"), now, runner=None)
+    return designer_app(Settings(designer_runner="agent"), now, runner=None)
 
 
 @pytest.fixture

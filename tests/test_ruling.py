@@ -29,7 +29,7 @@ from game_server.submissions import NewSubmission, SubmissionStore
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 OTHER = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 MODERATOR = "MOD-8H3T-QX"
-OTHER_MODERATOR = "MOD-2KV9-ZP"
+ADMIN: dict[str, str] = {}  # the signed-in admin's headers, set for each test
 FOX, HERON, OWL = "FOX-7Q2K", "HERON-4MXP", "OWL-9KD3"
 START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 DURING = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
@@ -49,14 +49,13 @@ TIMEOUT = RefereeReport(
 )
 
 
-def session_json(session_id: str, moderator: str, suffix: str = "") -> dict[str, Any]:
+def session_json(session_id: str, suffix: str = "") -> dict[str, Any]:
     return {
         "id": session_id,
         "name": "Hunt",
         "location": "Here",
         "start-time": START.isoformat(),
         "end-time": (START + timedelta(hours=3)).isoformat(),
-        "moderator-code": moderator,
         "checkpoints": [
             {
                 "sequence": n,
@@ -81,17 +80,19 @@ def now() -> list[datetime]:
     return [DURING]
 
 
+@pytest.fixture(autouse=True)
+def signed_in_admin(admin_headers: dict[str, str]) -> None:
+    ADMIN.clear()
+    ADMIN.update(admin_headers)
+
+
 @pytest.fixture
 def client(
     now: list[datetime], tmp_path: Path, load_sessions: Callable[[str], SessionRepository]
 ) -> Iterator[TestClient]:
     app = create_app()
     settings = Settings(image_base_path=tmp_path / "images")
-    sessions = load_sessions(
-        json.dumps(
-            [session_json(SESSION, MODERATOR), session_json(OTHER, OTHER_MODERATOR, "-OTHER")]
-        )
-    )
+    sessions = load_sessions(json.dumps([session_json(SESSION), session_json(OTHER, "-OTHER")]))
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: sessions
     app.dependency_overrides[get_clock] = lambda: lambda: now[0]
@@ -100,7 +101,7 @@ def client(
 
 
 def moderate(client: TestClient, action: str) -> Response:
-    headers = {"Authorization": f"Bearer {MODERATOR}"}
+    headers = ADMIN
     if action == "overview":
         return client.get(f"/sessions/{SESSION}/overview", headers=headers)
     return client.post(f"/sessions/{SESSION}/{action}", headers=headers)
@@ -113,13 +114,12 @@ def rule(
     note: str | None = None,
     *,
     session: str = SESSION,
-    code: str = MODERATOR,
 ) -> Response:
     body: dict[str, Any] = {"ruling": ruling} if note is None else {"ruling": ruling, "note": note}
     return client.post(
         f"/sessions/{session}/submissions/{submission}/ruling",
         json=body,
-        headers={"Authorization": f"Bearer {code}"},
+        headers=ADMIN,
     )
 
 
@@ -297,10 +297,10 @@ def test_each_ruling_is_logged_without_the_note(
 
 @pytest.mark.parametrize(
     "authorization",
-    [None, "Bearer MOD-WRONG-1", f"Bearer {OTHER_MODERATOR}", f"Bearer {FOX}"],
-    ids=["no-code", "wrong", "other-session", "join-code"],
+    [None, "Bearer MOD-WRONG-1", f"Bearer {MODERATOR}", f"Bearer {FOX}"],
+    ids=["no-token", "wrong", "retired-moderator-code", "join-code"],
 )
-def test_moderator_code_required(
+def test_a_moderator_token_is_required(
     client: TestClient,
     store: SubmissionStore,
     db: psycopg.Connection[DictRow],
@@ -316,15 +316,10 @@ def test_moderator_code_required(
     )
 
     assert response.status_code == 401
-    assert response.json() == {
-        "detail": "moderator code required",
-        "code": "moderator_unauthorised",
-    }
-    assert response.headers["WWW-Authenticate"] == "Bearer"
     assert db.execute("SELECT * FROM rulings").fetchall() == []
 
 
-def test_the_code_is_checked_before_the_body(client: TestClient) -> None:
+def test_the_token_is_checked_before_the_body(client: TestClient) -> None:
     response = client.post(f"/sessions/{SESSION}/submissions/1/ruling", json={"ruling": "maybe"})
 
     assert response.status_code == 401
@@ -346,7 +341,7 @@ def test_another_sessions_submission_is_404(
 
     assert response.status_code == 404
     assert response.json() == {"detail": "unknown submission"}
-    assert rule(client, elsewhere, session=OTHER, code=OTHER_MODERATOR).status_code == 201
+    assert rule(client, elsewhere, session=OTHER).status_code == 201
     assert db.execute("SELECT session FROM rulings").fetchall() == [{"session": UUID(OTHER)}]
 
 
@@ -389,7 +384,7 @@ def test_an_invalid_body_is_422(
     response = client.post(
         f"/sessions/{SESSION}/submissions/{submission}/ruling",
         json=body,
-        headers={"Authorization": f"Bearer {MODERATOR}"},
+        headers=ADMIN,
     )
 
     assert response.status_code == 422
@@ -408,7 +403,7 @@ def test_a_malformed_submission_id_is_422(client: TestClient, submission: str) -
     response = client.post(
         f"/sessions/{SESSION}/submissions/{submission}/ruling",
         json={"ruling": "approve"},
-        headers={"Authorization": f"Bearer {MODERATOR}"},
+        headers=ADMIN,
     )
 
     assert response.status_code == 422

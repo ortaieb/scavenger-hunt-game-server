@@ -322,7 +322,6 @@ class PublicationOut(_KebabModel):
 
     session: UUID
     name: str
-    moderator_code: str | None
     teams: list[TeamCodeOut]
 
     @classmethod
@@ -331,7 +330,6 @@ class PublicationOut(_KebabModel):
         return cls(
             session=session.id,
             name=session.name,
-            moderator_code=session.moderator_code,
             teams=[TeamCodeOut(name=t.name, join_code=t.join_code) for t in session.teams],
         )
 

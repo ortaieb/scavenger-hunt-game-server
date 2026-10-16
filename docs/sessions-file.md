@@ -62,7 +62,6 @@ The file is a JSON list of sessions. Abridged from [`sessions.example.json`](../
 | `teams[].name`             | 1–40 characters, unique within the session ignoring case. Shown to the team |
 | `teams[].join-code`        | 6–32 letters, digits or `-`; surrounding spaces are trimmed. Unique **across the whole file**, ignoring case, because joining finds the session by the code alone. A credential (see *Secrecy*) |
 | `teams[].order`            | Every checkpoint `sequence` in the session, each exactly once: the order this team visits them. Position 1 is its first checkpoint |
-| `moderator-code`           | Optional. Authorises the moderator's endpoints for this session: same format as `join-code`, unique across the file **and different from every join code**. A credential (see *Secrecy*). Without one, the session can't be moderated |
 
 A checkpoint's **visual challenge** tells the referee what to look for in the photo:
 
@@ -142,24 +141,6 @@ Guidance for moderators:
 - **Don't rename a team or change its order once it has joined.** Its progress is stored
   under its name.
 
-**Moderator code.** Each session can have a `moderator-code`, which the moderator presents
-to the moderator-only endpoints (start and stop the session, the overview, the traces, rulings
-on photos) as `Authorization: Bearer <code>`. It's a stopgap until real accounts exist.
-
-- **Same format as a join code**: 6–32 letters, digits or `-`, surrounding spaces stripped,
-  compared ignoring case.
-- **Unique across the whole file, and different from every join code**, so no code can open
-  two doors. A clash is reported at the later entry's path, saying what it clashes with:
-  `[1].moderator-code: same as a join code`. The code itself is never shown.
-- **A session without one can't be moderated**: every moderator call for it gets a `401`.
-- On a moderator route, an unknown session is `404 {"detail": "unknown session"}`. A missing
-  header, another scheme, a wrong code or a session without a code all get the same `401`
-  with `WWW-Authenticate: Bearer`, so a caller can't tell why:
-  `{"detail": "moderator code required", "code": "moderator_unauthorised"}`. A session's code
-  works for that session only, and is compared in constant time.
-- **Pick one nobody can guess and keep it to the moderators.** Like join codes, it's never
-  returned by an endpoint or logged.
-
 Unknown fields are rejected everywhere. If the file can't be read, isn't valid JSON, breaks any
 rule above or repeats a session id, the server **refuses to start**. The error lists each
 problem as `path: message`, e.g. `[0].checkpoints[1].proximity: Input should be greater than 0`.
@@ -178,12 +159,11 @@ the file, in two tables:
 | Table | Content |
 |-------|---------|
 | `published_sessions` | `id` (the session's UUID), `document` (the session in exactly the sessions-file shape), `draft` (the designer draft it came from, if any) and `published_at` |
-| `session_codes` | Every published join and moderator `code`, normalised (upper case, no surrounding spaces), with its `session` and `kind` (`join` or `moderator`). The code is the primary key, so the database refuses a code used twice, even if two publishes race |
+| `session_codes` | Every published join `code`, normalised (upper case, no surrounding spaces), with its `session` and `kind` (always `join`). The code is the primary key, so the database refuses a code used twice, even if two publishes race |
 
 **What's checked.** Publishing holds a session to the same rules as the file: times, team
 orders, code formats and unique team names. Also, its id must be unused, and every join code
-and its moderator code must differ from each other and from every code in the file and every
-published code. Each problem is reported at its path, as the file loader does, and never with a
+must differ from every code in the file and every published code. Each problem is reported at its path, as the file loader does, and never with a
 value, e.g. `teams[1].join-code: already in use`; then nothing is stored.
 
 **No reference photos.** There are no files to resolve, so a published session has none, and the
@@ -227,14 +207,9 @@ is added without being covered.
   any endpoint: FastAPI's default would return the whole body, code included. The every-route
   secrecy test checks that no response, on success or error paths, echoes a sentinel join code.
 
-**Moderator codes** are credentials like join codes: excluded from `repr`, never returned
-by an endpoint, never logged, and never echoed by a validation error (the `Authorization`
-header's value included). The every-route secrecy test checks that a sentinel moderator code
-appears in no response and no log line.
-
 **The one deliberate exception: publishing.** When the organiser publishes a designer draft,
 [`POST /designer/drafts/{draft}/publish`](api.md#post-designerdraftsdraftpublish) returns the
-new session's join codes and moderator code, and
+new session's join codes, and
 [`GET …/publication`](api.md#get-designerdraftsdraftpublication) returns them again, so the
 organiser can hand them out. These are the only responses with codes in them, and only for the
 organiser's key; the codes are still never logged. The every-route secrecy test covers both and
@@ -251,7 +226,7 @@ photo or says how many a checkpoint has. Only the moderator sees them: the
 [traces](api.md#get-sessionssessiontraces) list the ones sent with each photo, by position and
 hash, the [review queue](api.md#get-sessionssessionreview) says how many each checkpoint has,
 and [`…/reference-photos/{position}`](api.md#get-sessionssessioncheckpointssequencereference-photosposition)
-serves each one, with the moderator code. Startup errors and the referee's warnings name an
+serves each one, to a moderator. Startup errors and the referee's warnings name an
 entry by its position, never its path. The every-route secrecy test gives a reference photo a
 sentinel file name and checks no response mentions it.
 

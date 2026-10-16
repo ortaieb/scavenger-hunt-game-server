@@ -26,7 +26,7 @@ from game_server.submissions import BLOCKED_KEPT, NewSubmission, SubmissionStore
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 OTHER = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 MODERATOR = "MOD-8H3T-QX"
-OTHER_MODERATOR = "MOD-2KV9-ZP"
+ADMIN: dict[str, str] = {}  # the signed-in admin's headers, set for each test
 FOX, HERON, OWL = "FOX-7Q2K", "HERON-4MXP", "OWL-9KD3"
 START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 DURING = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
@@ -36,14 +36,13 @@ LAT, LONG = 51.5034, -0.1276
 PHOTOS = count(300)  # distinct seeds: no photo is a duplicate of another
 
 
-def session_json(session_id: str, moderator: str, suffix: str = "") -> dict[str, Any]:
+def session_json(session_id: str, suffix: str = "") -> dict[str, Any]:
     return {
         "id": session_id,
         "name": "Hunt",
         "location": "Here",
         "start-time": START.isoformat(),
         "end-time": (START + timedelta(hours=3)).isoformat(),
-        "moderator-code": moderator,
         "checkpoints": [
             {
                 "sequence": n,
@@ -68,17 +67,19 @@ def now() -> list[datetime]:
     return [DURING]
 
 
+@pytest.fixture(autouse=True)
+def signed_in_admin(admin_headers: dict[str, str]) -> None:
+    ADMIN.clear()
+    ADMIN.update(admin_headers)
+
+
 @pytest.fixture
 def client(
     now: list[datetime], tmp_path: Path, load_sessions: Callable[[str], SessionRepository]
 ) -> Iterator[TestClient]:
     app = create_app()
     settings = Settings(image_base_path=tmp_path / "images")
-    sessions = load_sessions(
-        json.dumps(
-            [session_json(SESSION, MODERATOR), session_json(OTHER, OTHER_MODERATOR, "-OTHER")]
-        )
-    )
+    sessions = load_sessions(json.dumps([session_json(SESSION), session_json(OTHER, "-OTHER")]))
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: sessions
     app.dependency_overrides[get_clock] = lambda: lambda: now[0]
@@ -87,8 +88,7 @@ def client(
 
 
 def moderate(client: TestClient, action: str, session: str = SESSION) -> Response:
-    code = MODERATOR if session == SESSION else OTHER_MODERATOR
-    headers = {"Authorization": f"Bearer {code}"}
+    headers = ADMIN
     if action == "overview":
         return client.get(f"/sessions/{session}/overview", headers=headers)
     return client.post(f"/sessions/{session}/{action}", headers=headers)
@@ -567,25 +567,19 @@ def test_the_overview_shows_blocked_attempts_as_they_happen(client: TestClient) 
 
 @pytest.mark.parametrize(
     "authorization",
-    [None, "Bearer MOD-WRONG-1", f"Bearer {OTHER_MODERATOR}", f"Bearer {FOX}"],
-    ids=["no-code", "wrong", "other-session", "join-code"],
+    [None, "Bearer MOD-WRONG-1", f"Bearer {MODERATOR}", f"Bearer {FOX}"],
+    ids=["no-token", "wrong", "retired-moderator-code", "join-code"],
 )
-def test_moderator_code_required(client: TestClient, authorization: str | None) -> None:
+def test_a_moderator_token_is_required(client: TestClient, authorization: str | None) -> None:
     headers = {"Authorization": authorization} if authorization else {}
 
     response = client.get(f"/sessions/{SESSION}/overview", headers=headers)
 
     assert response.status_code == 401
-    assert response.json() == {
-        "detail": "moderator code required",
-        "code": "moderator_unauthorised",
-    }
 
 
 def test_unknown_session_is_404(client: TestClient) -> None:
-    response = client.get(
-        f"/sessions/{uuid4()}/overview", headers={"Authorization": f"Bearer {MODERATOR}"}
-    )
+    response = client.get(f"/sessions/{uuid4()}/overview", headers=ADMIN)
 
     assert response.status_code == 404
     assert response.json() == {"detail": "unknown session"}

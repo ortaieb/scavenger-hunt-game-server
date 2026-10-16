@@ -1,6 +1,6 @@
 """The game-day tools: start a session, watch it and finish it, through the same services as
-`/sessions/{session}/start`, `/stop` and `/overview`. They need no moderator code: the organiser
-key stands in for it (see `auth`)."""
+`/sessions/{session}/start`, `/stop` and `/overview`. They need an organiser's token
+(see `auth`)."""
 
 from datetime import UTC
 from uuid import UUID

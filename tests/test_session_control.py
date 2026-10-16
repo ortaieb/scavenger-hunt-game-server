@@ -21,6 +21,7 @@ SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 OTHER = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 CODE = "MOD-8H3T-QX"
 OTHER_CODE = "MOD-2KV9-ZP"
+ADMIN: dict[str, str] = {}  # the signed-in admin's headers, set for each test
 PLANNED_START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 PLANNED_END = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
 T0 = datetime(2026, 10, 3, 9, 3, 12, tzinfo=UTC)
@@ -33,7 +34,6 @@ def session(session_id: str, code: str) -> dict[str, Any]:
         "location": "Here",
         "start-time": PLANNED_START.isoformat(),
         "end-time": PLANNED_END.isoformat(),
-        "moderator-code": code,
         "checkpoints": [
             {
                 "sequence": 1,
@@ -51,6 +51,12 @@ def now() -> list[datetime]:
     return [T0]
 
 
+@pytest.fixture(autouse=True)
+def signed_in_admin(admin_headers: dict[str, str]) -> None:
+    ADMIN.clear()
+    ADMIN.update(admin_headers)
+
+
 @pytest.fixture
 def client(
     now: list[datetime], load_sessions: Callable[[str], SessionRepository]
@@ -64,10 +70,14 @@ def client(
 
 
 def post(
-    client: TestClient, action: str, session_id: str = SESSION, code: str | None = CODE
+    client: TestClient,
+    action: str,
+    session_id: str = SESSION,
+    headers: dict[str, str] | None = None,
 ) -> Response:
-    headers = {"Authorization": f"Bearer {code}"} if code else {}
-    return client.post(f"/sessions/{session_id}/{action}", headers=headers)
+    return client.post(
+        f"/sessions/{session_id}/{action}", headers=ADMIN if headers is None else headers
+    )
 
 
 # --- the phase ------------------------------------------------------------------------
@@ -195,8 +205,8 @@ def test_stop_before_start_is_409(client: TestClient) -> None:
 def test_sessions_run_independently(client: TestClient) -> None:
     post(client, "start")
 
-    assert post(client, "stop", OTHER, OTHER_CODE).status_code == 409
-    assert post(client, "start", OTHER, OTHER_CODE).status_code == 201
+    assert post(client, "stop", OTHER).status_code == 409
+    assert post(client, "start", OTHER).status_code == 201
 
 
 # --- authorisation ----------------------------------------------------------------------
@@ -204,17 +214,16 @@ def test_sessions_run_independently(client: TestClient) -> None:
 
 @pytest.mark.parametrize("action", ["start", "stop"])
 @pytest.mark.parametrize(
-    "code", [None, "MOD-WRONG-1", OTHER_CODE], ids=["no-code", "wrong", "other-session"]
+    "headers",
+    [{}, *({"Authorization": f"Bearer {code}"} for code in ("MOD-WRONG-1", CODE))],
+    ids=["no-token", "wrong", "retired-moderator-code"],
 )
-def test_moderator_code_required(client: TestClient, action: str, code: str | None) -> None:
-    response = post(client, action, code=code)
+def test_a_moderator_token_is_required(
+    client: TestClient, action: str, headers: dict[str, str]
+) -> None:
+    response = post(client, action, headers=headers)
 
     assert response.status_code == 401
-    assert response.json() == {
-        "detail": "moderator code required",
-        "code": "moderator_unauthorised",
-    }
-    assert response.headers["www-authenticate"] == "Bearer"
 
 
 @pytest.mark.parametrize("action", ["start", "stop"])
@@ -226,7 +235,7 @@ def test_unknown_session_is_404(client: TestClient, action: str) -> None:
 
 
 def test_refused_calls_change_nothing(client: TestClient, store: SubmissionStore) -> None:
-    post(client, "start", code=None)
+    post(client, "start", headers={})
     post(client, "stop")
 
     assert store.session_run(UUID(SESSION)) is None

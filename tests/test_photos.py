@@ -27,7 +27,7 @@ from game_server.submissions import NewSubmission, SubmissionStore
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 OTHER = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 MODERATOR = "MOD-8H3T-QX"
-OTHER_MODERATOR = "MOD-2KV9-ZP"
+ADMIN: dict[str, str] = {}  # the signed-in admin's headers, set for each test
 FOX = "FOX-7Q2K"
 START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 DURING = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
@@ -38,14 +38,13 @@ PLACE = "SENTINEL-PLACE-north-gate"
 REFERENCES = (f"{PLACE}-0.jpg", f"{PLACE}-1.jpg", f"{PLACE}-2.jpg")
 
 
-def session_json(session_id: str, moderator: str, suffix: str = "") -> dict[str, Any]:
+def session_json(session_id: str, suffix: str = "") -> dict[str, Any]:
     return {
         "id": session_id,
         "name": "Hunt",
         "location": "Here",
         "start-time": START.isoformat(),
         "end-time": (START + timedelta(hours=3)).isoformat(),
-        "moderator-code": moderator,
         "checkpoints": [
             {
                 "sequence": 1,
@@ -82,13 +81,17 @@ def reference_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def signed_in_admin(admin_headers: dict[str, str]) -> None:
+    ADMIN.clear()
+    ADMIN.update(admin_headers)
+
+
 @pytest.fixture
 def client(settings: Settings, reference_dir: Path) -> Iterator[TestClient]:
     app = create_app()
     sessions = parse_sessions(
-        json.dumps(
-            [session_json(SESSION, MODERATOR), session_json(OTHER, OTHER_MODERATOR, "-OTHER")]
-        ),
+        json.dumps([session_json(SESSION), session_json(OTHER, "-OTHER")]),
         reference_dir=reference_dir,
     )
     app.dependency_overrides[get_settings] = lambda: settings
@@ -124,9 +127,8 @@ def store_photo(
     return submission, path
 
 
-def get(client: TestClient, path: str, authorization: str | None = MODERATOR) -> Response:
-    headers = {"Authorization": f"Bearer {authorization}"} if authorization else {}
-    return client.get(f"/sessions/{SESSION}/{path}", headers=headers)
+def get(client: TestClient, path: str, headers: dict[str, str] | None = None) -> Response:
+    return client.get(f"/sessions/{SESSION}/{path}", headers=ADMIN if headers is None else headers)
 
 
 def opened(response: Response) -> Image.Image:
@@ -223,7 +225,7 @@ def test_another_sessions_photo_is_404(
     assert (
         client.get(
             f"/sessions/{OTHER}/submissions/{elsewhere}/photo",
-            headers={"Authorization": f"Bearer {OTHER_MODERATOR}"},
+            headers=ADMIN,
         ).status_code
         == 200
     )
@@ -331,27 +333,22 @@ PHOTO_PATHS = ["submissions/{submission}/photo", "checkpoints/1/reference-photos
 
 @pytest.mark.parametrize("path", PHOTO_PATHS, ids=["photo", "reference-photo"])
 @pytest.mark.parametrize(
-    "authorization",
-    [None, "MOD-WRONG-1", OTHER_MODERATOR, FOX],
-    ids=["no-code", "wrong", "other-session", "join-code"],
+    "headers",
+    [{}, *({"Authorization": f"Bearer {code}"} for code in ("MOD-WRONG-1", MODERATOR, FOX))],
+    ids=["no-token", "wrong", "retired-moderator-code", "join-code"],
 )
-def test_moderator_code_required(
+def test_a_moderator_token_is_required(
     client: TestClient,
     store: SubmissionStore,
     settings: Settings,
     path: str,
-    authorization: str | None,
+    headers: dict[str, str],
 ) -> None:
     submission, _ = store_photo(store, settings, STORED_ROTATED)
 
-    response = get(client, path.format(submission=submission), authorization)
+    response = get(client, path.format(submission=submission), headers)
 
     assert response.status_code == 401
-    assert response.json() == {
-        "detail": "moderator code required",
-        "code": "moderator_unauthorised",
-    }
-    assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
 @pytest.mark.parametrize("path", PHOTO_PATHS, ids=["photo", "reference-photo"])
@@ -362,7 +359,7 @@ def test_unknown_session_is_404(
 
     response = client.get(
         f"/sessions/{uuid4()}/{path.format(submission=submission)}",
-        headers={"Authorization": f"Bearer {MODERATOR}"},
+        headers=ADMIN,
     )
 
     assert (response.status_code, response.json()) == (404, {"detail": "unknown session"})

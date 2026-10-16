@@ -14,7 +14,6 @@ from test_ruling import (
     LONG,
     MODERATOR,
     OTHER,
-    OTHER_MODERATOR,
     SESSION,
     session_json,
     submit,
@@ -29,16 +28,11 @@ from game_server.sessions import SessionRepository, get_session_repository, pars
 from game_server.submissions import SubmissionStore
 
 UNKNOWN = "00000000-0000-4000-8000-000000000000"
-HEADERS = {"Authorization": f"Bearer {MODERATOR}"}
 
 
 @pytest.fixture
 def repository() -> SessionRepository:
-    return parse_sessions(
-        json.dumps(
-            [session_json(SESSION, MODERATOR), session_json(OTHER, OTHER_MODERATOR, "-OTHER")]
-        )
-    )
+    return parse_sessions(json.dumps([session_json(SESSION), session_json(OTHER, "-OTHER")]))
 
 
 @pytest.fixture
@@ -198,6 +192,7 @@ def test_the_overview_holds_no_coordinate_clue_scene_or_code(
 
 
 def test_the_routes_and_the_tools_answer_alike(
+    admin_headers: dict[str, str],
     database: Database,
     repository: SessionRepository,
     services: McpServices,
@@ -210,11 +205,11 @@ def test_the_routes_and_the_tools_answer_alike(
     app.dependency_overrides[get_clock] = lambda: lambda: NOW
     # Inside the `with`: leaving it closes the app's database pool, which the tool shares.
     with TestClient(app) as client:
-        started = client.post(f"/sessions/{SESSION}/start", headers=HEADERS)
-        route_overview = client.get(f"/sessions/{SESSION}/overview", headers=HEADERS)
+        started = client.post(f"/sessions/{SESSION}/start", headers=admin_headers)
+        route_overview = client.get(f"/sessions/{SESSION}/overview", headers=admin_headers)
         tool_overview = ok(call(services, "session_overview"))
         tool_again = ok(call(services, "start_session"))
-        stopped = client.post(f"/sessions/{SESSION}/stop", headers=HEADERS)
+        stopped = client.post(f"/sessions/{SESSION}/stop", headers=admin_headers)
         tool_stopped = ok(call(services, "stop_session"))
 
     assert started.status_code == 201

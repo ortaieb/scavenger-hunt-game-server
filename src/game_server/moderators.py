@@ -1,4 +1,4 @@
-"""`session_moderators`: who moderates a session, by pid, alongside its moderator code."""
+"""`session_moderators`: who moderates a session, by pid."""
 
 from datetime import datetime
 from typing import Annotated

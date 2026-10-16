@@ -52,7 +52,7 @@ def settings() -> Settings:
 
 @pytest.fixture
 def repository() -> SessionRepository:
-    sessions = [session_json(SESSION, MODERATOR), session_json(OTHER, "OTHER-MOD", suffix="-O")]
+    sessions = [session_json(SESSION), session_json(OTHER, suffix="-O")]
     for session in sessions:
         for checkpoint in session["checkpoints"]:
             checkpoint.pop("reference-photos", None)

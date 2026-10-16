@@ -69,7 +69,7 @@ SESSION_NOT_STARTED = ("session hasn't started", "session_not_started")
     responses={
         201: {"model": SessionClock, "description": "Started now"},
         200: {"description": "Already running: the same clock"},
-        401: {"description": "Moderator code required"},
+        401: {"description": "Moderator token required"},
         404: {"description": "Unknown session"},
         409: {"description": "The session has ended (code: session_stopped)"},
     },
@@ -96,7 +96,7 @@ def start_session(
     responses={
         201: {"model": SessionClock, "description": "Stopped now"},
         200: {"description": "Already stopped: the same clock"},
-        401: {"description": "Moderator code required"},
+        401: {"description": "Moderator token required"},
         404: {"description": "Unknown session"},
         409: {"description": "The session hasn't started (code: session_not_started)"},
     },

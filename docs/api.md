@@ -1237,6 +1237,13 @@ with `WWW-Authenticate: Bearer`. The key is checked before anything else in the 
 never returned, never logged, and a too-short key stops the server at startup without echoing
 it.
 
+**Or a token.** With accounts on, a Clerk session token works in the same header, for a person
+whose role is `organiser` or `admin` (read from the users directory, so a demotion takes effect
+at once). A token is a JWT, three dot-separated parts, and the key has no dots, so the two can't
+be confused. An invalid token gets `401 unauthorised`; a valid one for anyone else gets
+`403 forbidden`. A signed-in organiser's drafts record their `pid`, and publishing makes them the
+new session's first moderator. The key goes once the web app has switched over (#120).
+
 A draft holds coordinates and scenes, the answers to its clues, so only the organiser sees it.
 The server logs one line per draft created and per draft finished (its id, status, number of
 checkpoints, cost and error code), never its clues, scenes or coordinates.
@@ -1706,6 +1713,60 @@ Svix can deliver an event late, out of order or twice: each is idempotent, and a
 person the directory doesn't know, or is erasing, changes nothing. Handled events, and other
 event types, answer `204`, so Svix stops retrying. `503` (no secret, or no directory) makes it
 retry later.
+
+### Roles and moderators
+
+Platform roles live in the users directory: `player` (no grant), `organiser` and `admin`.
+Moderating a session is a per-hunt role. One map in [`auth.py`](../src/game_server/auth.py)
+says who may do what:
+
+| Permission | player | organiser | admin |
+|---|---|---|---|
+| Join a hunt and play | ✓ | ✓ | ✓ |
+| Design, edit and publish hunts |  | ✓ | ✓ |
+| Moderate a session: review queue, rulings, start and stop |  | Sessions they moderate | Any session |
+| Grant and remove roles |  |  | ✓ |
+
+Every moderator route (`/sessions/{session}/…`) takes the session's moderator code, as before,
+**or** a Clerk session token: an admin's, or an organiser's who was added as one of the
+session's moderators. An invalid token is `401 unauthorised`, a valid one for anyone else
+`403 forbidden`. Roles are read from the directory on each request, not from the token, so a
+demotion takes effect at once. A ruling made with a token records the moderator's `pid`.
+
+#### `PUT /directory/people/{pid}/role`
+
+Admin only (a token). `{"role": "player" | "organiser" | "admin"}`; `player` removes the grant.
+Each change is logged in `directory.role_changes` with who made it, then written to Clerk (or
+queued, if Clerk can't be reached), which copies it into the person's tokens. Removing a role
+also revokes the person's active Clerk sessions. Answers
+`{"pid": "…", "role": "organiser", "changed": true}`; `changed` is `false` when the person
+already had the role. `404 unknown_person`, `403 forbidden`, `401 unauthorised`.
+
+#### `GET /directory/people?role=organiser,admin`
+
+Admin only. Active people with any of the comma-separated roles (default `organiser,admin`):
+`{"people": [{"pid": "…", "display-name": "Bob", "role": "organiser"}]}`. `422 invalid_role`
+for a role that isn't one of the three.
+
+#### `POST /sessions/{session}/moderators`, `DELETE /sessions/{session}/moderators/{pid}`
+
+Add a moderator by email address: `{"email": "bob@example.com"}`. The directory resolves it to
+a `pid` (`404 no_account` without exactly one active account with that address, ignoring case),
+and only the `pid` is stored and logged. Only organisers and admins can moderate
+(`409 not_an_organiser` otherwise). `201` when added, `200` when they already were:
+`{"session": "…", "pid": "…"}`. `DELETE` answers `204`, or `404 not_a_moderator`.
+
+Admins change any session's moderators; an organiser only those of the sessions they moderate
+(else `403 forbidden`). The organiser key works too, until it goes (#120).
+
+#### The first admin
+
+Only an admin can grant roles, so the first one is made from the command line, with the
+directory's settings in the environment, once the person has signed in:
+
+```bash
+uv run python -m game_server.directory grant-admin --clerk-user-id user_…
+```
 
 ## Organiser MCP
 

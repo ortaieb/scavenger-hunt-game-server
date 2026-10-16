@@ -184,7 +184,9 @@ ROLES: tuple[Role, ...] = ("player", "organiser", "admin")
 
 
 class _KebabModel(BaseModel):
-    model_config = ConfigDict(alias_generator=lambda name: name.replace("_", "-"))
+    model_config = ConfigDict(
+        alias_generator=lambda name: name.replace("_", "-"), validate_by_name=True
+    )
 
 
 class RoleIn(BaseModel):

@@ -147,7 +147,7 @@ def recent_out(ruled: RecentRuling, checkpoints: _Checkpoints) -> RecentRulingOu
 @router.get(
     "/sessions/{session}/review",
     responses={
-        401: {"description": "Moderator code required (code: moderator_unauthorised)"},
+        401: {"description": "Moderator token required (code: unauthorised)"},
         404: {"description": "Unknown session"},
     },
 )

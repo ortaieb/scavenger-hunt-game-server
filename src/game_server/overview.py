@@ -199,7 +199,7 @@ def build_overview(store: SubmissionStore, session: GameSession, now: datetime) 
 @router.get(
     "/sessions/{session}/overview",
     responses={
-        401: {"description": "Moderator code required (code: moderator_unauthorised)"},
+        401: {"description": "Moderator token required (code: unauthorised)"},
         404: {"description": "Unknown session"},
     },
 )

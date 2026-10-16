@@ -186,7 +186,7 @@ def item_out(item: JudgedSubmission) -> SubmissionTraceOut:
 @router.get(
     "/sessions/{session}/traces",
     responses={
-        401: {"description": "Moderator code required (code: moderator_unauthorised)"},
+        401: {"description": "Moderator token required (code: unauthorised)"},
         404: {"description": "Unknown session"},
     },
 )

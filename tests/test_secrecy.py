@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 import anthropic
 import psycopg
 import pytest
+from conftest import SignIn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx2 import Response
@@ -46,7 +47,6 @@ PHOTO_NAME = "SENTINEL-PHOTO-fountain-north"  # a reference photo's file name sh
 MODERATOR_CODE = "SENTINEL-MOD-4Q"  # a credential: never in a response or a log line
 RIVALS = "SENTINEL-RIVALS-5d"  # another team: never in this team's state
 RIVAL_CODE = "SENTINEL-RIVAL-CODE-2W"
-ORGANISER_KEY = "SENTINEL-ORGANISER-KEY-3b9d"  # a credential: never in a response or a log
 NOTE = "SENTINEL-NOTE-6c"  # the moderator's note on a ruling may describe the photo: never logged
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 UNKNOWN = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
@@ -90,7 +90,6 @@ SESSIONS_JSON = json.dumps(
                 {"name": "Testers", "join-code": JOIN_CODE, "order": [1, 2]},
                 {"name": RIVALS, "join-code": RIVAL_CODE, "order": [2, 1]},
             ],
-            "moderator-code": MODERATOR_CODE,
         }
     ]
 )
@@ -113,6 +112,14 @@ def published_sentinels() -> list[GameSession]:
     return [GameSession.model_validate(session) for session in sessions]
 
 
+@pytest.fixture(autouse=True)
+def signed_in(sign_in: SignIn) -> None:
+    ORGANISER.clear()
+    ORGANISER.update(sign_in("organiser"))
+    MODERATOR.clear()
+    MODERATOR.update(sign_in("admin"))
+
+
 @pytest.fixture
 def client(
     tmp_path: Path,
@@ -130,9 +137,7 @@ def client(
     sdk = anthropic.Anthropic(api_key="test-key-not-used")
     referee = ClaudeReferee(sdk, "claude-haiku-4-5", max_image_edge=1568)
     app.dependency_overrides[get_referee] = lambda: referee
-    settings = Settings(
-        image_base_path=tmp_path / "images", organiser_key=ORGANISER_KEY, designer_runner="stub"
-    )
+    settings = Settings(image_base_path=tmp_path / "images", designer_runner="stub")
     app.dependency_overrides[get_settings] = lambda: settings
     (tmp_path / "reference").mkdir()
     (tmp_path / "reference" / f"{PHOTO_NAME}.jpg").write_bytes(jpeg(scene(4, (64, 48))))
@@ -281,7 +286,7 @@ def every_route_response(
     return responses
 
 
-ORGANISER = {"Authorization": f"Bearer {ORGANISER_KEY}"}
+ORGANISER: dict[str, str] = {}  # the signed-in organiser's headers, set for each test
 DRAFTS = ("POST", "/designer/drafts")
 DRAFT_LIST = ("GET", "/designer/drafts")
 DRAFT = ("GET", "/designer/drafts/{draft}")
@@ -364,7 +369,7 @@ def published_codes(responses: dict[tuple[str, str], list[Response]]) -> list[st
     """The codes the publish returned: credentials, for the organiser only."""
     [published] = [r for r in responses[PUBLISH] if r.status_code == 201]
     body = published.json()
-    return [body["moderator-code"], *(team["join-code"] for team in body["teams"])]
+    return [team["join-code"] for team in body["teams"]]
 
 
 def moderator_post(
@@ -373,7 +378,7 @@ def moderator_post(
     return client.post(f"/sessions/{session}/{action}", **kwargs)
 
 
-MODERATOR = {"Authorization": f"Bearer {MODERATOR_CODE}"}
+MODERATOR: dict[str, str] = {}  # the signed-in admin's headers, set for each test
 START = ("POST", "/sessions/{session}/start")
 STOP = ("POST", "/sessions/{session}/stop")
 OVERVIEW = ("GET", "/sessions/{session}/overview")
@@ -560,8 +565,7 @@ def test_no_route_ever_returns_the_scene(
             else:
                 assert not content_type.startswith("image/"), f"{route} served a photo"
             assert MODERATOR_CODE not in response.text, f"{route} leaked the moderator code"
-            assert ORGANISER_KEY not in response.text, f"{route} leaked the organiser key"
-    for secret in (MODERATOR_CODE, JOIN_CODE, ORGANISER_KEY, *published_codes(responses)):
+    for secret in (MODERATOR_CODE, JOIN_CODE, *published_codes(responses)):
         assert secret not in caplog.text.upper(), "a credential reached the logs"
     assert SENTINEL not in caplog.text, "the scene reached the logs"
     assert NOTE not in caplog.text, "a ruling's note reached the logs"
@@ -658,8 +662,7 @@ def record(
 
 def test_state_reveals_only_the_teams_own_score(client: TestClient, store: SubmissionStore) -> None:
     """Never another team's points, a per-checkpoint breakdown or a place at one checkpoint."""
-    moderator = {"Authorization": f"Bearer {MODERATOR_CODE}"}
-    client.post(f"/sessions/{SESSION}/start", headers=moderator)
+    client.post(f"/sessions/{SESSION}/start", headers=MODERATOR)
     testers, rivals = (
         client.post("/join", json={"code": code, "consent": True}).json()["participant"]
         for code in (JOIN_CODE, RIVAL_CODE)
@@ -669,11 +672,11 @@ def test_state_reveals_only_the_teams_own_score(client: TestClient, store: Submi
     pending = record(store, testers, 2, "pending", NOW + timedelta(minutes=2))
     url = f"/sessions/{SESSION}/participants/{testers}/state"
     states = [client.get(url)]
-    client.post(f"/sessions/{SESSION}/stop", headers=moderator)
+    client.post(f"/sessions/{SESSION}/stop", headers=MODERATOR)
     states.append(client.get(url))  # not final: the pending photo isn't ruled on yet
     client.post(
         f"/sessions/{SESSION}/submissions/{pending}/ruling",
-        headers=moderator,
+        headers=MODERATOR,
         json={"ruling": "reject"},
     )
     states.append(client.get(url))

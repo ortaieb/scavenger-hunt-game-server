@@ -44,6 +44,7 @@ from game_server.sessions import (
 
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 MODERATOR = "MOD-8H3T-QX"
+ADMIN: dict[str, str] = {}  # the signed-in admin's headers, set for each test
 FOX, HERON, OWL = "FOX-7Q2K", "HERON-4MXP", "OWL-3JD8"
 NOW = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
 LAT, LONG = 51.5034, -0.1276
@@ -86,7 +87,6 @@ def sessions_json() -> str:
                 "location": "Here",
                 "start-time": "2026-10-03T09:00:00Z",
                 "end-time": "2026-10-03T12:00:00Z",
-                "moderator-code": MODERATOR,
                 "checkpoints": [
                     {
                         **checkpoint,
@@ -267,6 +267,12 @@ def wrapper(mocker: MockerFixture) -> MagicMock:
     return mock
 
 
+@pytest.fixture(autouse=True)
+def signed_in_admin(admin_headers: dict[str, str]) -> None:
+    ADMIN.clear()
+    ADMIN.update(admin_headers)
+
+
 @pytest.fixture
 def client(
     tmp_path: Path, sessions: SessionRepository, wrapper: MagicMock, max_references: int
@@ -284,8 +290,7 @@ def client(
     app.dependency_overrides[get_session_repository] = lambda: sessions
     app.dependency_overrides[get_clock] = lambda: lambda: NOW
     with TestClient(app) as test_client:
-        moderator = {"Authorization": f"Bearer {MODERATOR}"}
-        assert test_client.post(f"/sessions/{SESSION}/start", headers=moderator).status_code == 201
+        assert test_client.post(f"/sessions/{SESSION}/start", headers=ADMIN).status_code == 201
         yield test_client
 
 
@@ -367,8 +372,7 @@ def test_the_trace_records_the_references_by_position_and_hash(
         {"position": 0, "sha256": hashlib.sha256(image_of(content[1])).hexdigest()},
         {"position": 1, "sha256": hashlib.sha256(image_of(content[3])).hexdigest()},
     ]
-    moderator = {"Authorization": f"Bearer {MODERATOR}"}
-    shown = client.get(f"/sessions/{SESSION}/traces", headers=moderator).json()
+    shown = client.get(f"/sessions/{SESSION}/traces", headers=ADMIN).json()
     assert shown["items"][0]["trace"]["references"] == trace["reference_photos"]
     for name in NAMES:  # never the path
         assert name not in json.dumps(trace, default=str)

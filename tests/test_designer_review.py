@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from conftest import SignIn
 from fastapi.testclient import TestClient
 from httpx2 import Response
 from pytest_mock import MockerFixture
@@ -46,8 +47,7 @@ from game_server.sessions import (
     parse_sessions,
 )
 
-KEY = "SENTINEL-ORGANISER-KEY-7c1e9a"
-AUTH = {"Authorization": f"Bearer {KEY}"}
+AUTH: dict[str, str] = {}  # the signed-in organiser's headers, set for each test
 NOW = datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
 FILE_SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 FILE_CODE = "FILE-FOX-1"
@@ -84,14 +84,10 @@ class FixedCodes:
     """Hands out queued codes first, then fresh ones: forces a clash."""
 
     joins: list[str] = field(default_factory=list)
-    moderators: list[str] = field(default_factory=list)
     fresh: SecretCodes = field(default_factory=SecretCodes)
 
     def join_code(self) -> str:
         return self.joins.pop(0) if self.joins else self.fresh.join_code()
-
-    def moderator_code(self) -> str:
-        return self.moderators.pop(0) if self.moderators else self.fresh.moderator_code()
 
 
 @pytest.fixture
@@ -109,10 +105,16 @@ def codes() -> FixedCodes:
     return FixedCodes()
 
 
+@pytest.fixture(autouse=True)
+def signed_in_organiser(sign_in: SignIn) -> None:
+    AUTH.clear()
+    AUTH.update(sign_in("organiser"))
+
+
 @pytest.fixture
 def client(repository: SessionRepository, codes: FixedCodes) -> Iterator[TestClient]:
     app = create_app()
-    settings = Settings(organiser_key=KEY)
+    settings = Settings()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_session_repository] = lambda: repository
     app.dependency_overrides[get_clock] = lambda: lambda: NOW
@@ -367,7 +369,7 @@ def test_publishing_three_accepted_and_one_rejected(
 
     assert response.status_code == 201
     body = response.json()
-    assert set(body) == {"session", "name", "moderator-code", "teams"}
+    assert set(body) == {"session", "name", "teams"}
     assert body["name"] == "Chiswick river hunt"
     assert [t["name"] for t in body["teams"]] == ["Red Foxes", "Blue Herons"]
     session = repository.get_session(UUID(body["session"]))
@@ -398,13 +400,15 @@ def test_each_join_code_works_and_teams_start_apart(
     assert [team.order for team in session.teams] == [(1, 2, 3), (2, 3, 1)]
 
 
-def test_the_moderator_code_opens_the_overview(client: TestClient, store: DraftStore) -> None:
+def test_the_publishing_organiser_moderates_the_session(
+    client: TestClient, store: DraftStore
+) -> None:
     _, response = published_with_one_rejected(client, store)
     body = response.json()
 
     overview = client.get(
         f"/sessions/{body['session']}/overview",
-        headers={"Authorization": f"Bearer {body['moderator-code']}"},
+        headers=AUTH,
     )
 
     assert overview.status_code == 200
@@ -537,7 +541,7 @@ def test_the_route_is_measured_without_the_rejected_ones(
         {"name": ""},
         {"end-time": "2026-10-11T09:00:00+01:00"},
         {"start-time": "2026-10-11T10:00:00"},
-        {"moderator-code": "MOD-CHOSEN-1"},
+        {"checkpoints": []},
     ],
     ids=[
         "no-teams",
@@ -580,25 +584,20 @@ def test_generated_codes_meet_the_sessions_file_format() -> None:
     codes = SecretCodes()
 
     for _ in range(50):
-        join, moderator = codes.join_code(), codes.moderator_code()
-        assert CODE_FORMAT.match(join) and CODE_FORMAT.match(moderator)
+        join = codes.join_code()
+        assert CODE_FORMAT.match(join)
         word, chars = join.split("-")
         assert word in JOIN_WORDS
         assert len(chars) == 4 and set(chars) <= set(UNAMBIGUOUS)
-        assert len(moderator) >= 12
-        assert set(moderator.replace("-", "").removeprefix("MOD")) <= set(UNAMBIGUOUS)
 
 
 def test_issued_codes_are_unused_and_all_different() -> None:
     taken = {"FOX-2222"}
-    source = FixedCodes(
-        joins=["FOX-2222", "OWL-3333", "OWL-3333", "ELK-4444"], moderators=["OWL-3333"]
-    )
+    source = FixedCodes(joins=["FOX-2222", "OWL-3333", "OWL-3333", "ELK-4444"])
 
-    joins, moderator = issue_codes(2, source, lambda code: code in taken)
+    joins = issue_codes(2, source, lambda code: code in taken)
 
     assert joins == ["OWL-3333", "ELK-4444"]
-    assert moderator not in {*joins, *taken}
 
 
 def test_issuing_gives_up_after_too_many_clashes() -> None:
@@ -612,14 +611,12 @@ def test_a_clash_with_an_existing_code_is_drawn_again(
     client: TestClient, store: DraftStore, codes: FixedCodes
 ) -> None:
     codes.joins = [FILE_CODE, "FOX-7Q2K"]
-    codes.moderators = [FILE_CODE.lower()]
     draft = ready_draft(store)
     review(client, draft, p1="accepted", p2="accepted", p3="accepted", p4="accepted")
 
     body = publish(client, draft, teams=["Red Foxes"]).json()
 
     assert body["teams"] == [{"name": "Red Foxes", "join-code": "FOX-7Q2K"}]
-    assert body["moderator-code"].upper() != FILE_CODE
 
 
 def test_a_code_taken_by_a_racing_publish_is_drawn_again(
@@ -660,11 +657,11 @@ def test_one_line_per_publish_without_the_codes(
     body = response.json()
     lines = [r.getMessage() for r in caplog.records if r.name == "game_server.organiser_services"]
     assert lines == [f"Draft {draft} published as session {body['session']} teams 2 checkpoints 3"]
-    for code in (body["moderator-code"], *(t["join-code"] for t in body["teams"])):
+    for code in (t["join-code"] for t in body["teams"]):
         assert code not in caplog.text
 
 
-def test_the_review_routes_need_the_organiser_key(client: TestClient, store: DraftStore) -> None:
+def test_the_review_routes_need_an_organiser_token(client: TestClient, store: DraftStore) -> None:
     draft = ready_draft(store)
     url = f"/designer/drafts/{draft}"
 
@@ -676,4 +673,4 @@ def test_the_review_routes_need_the_organiser_key(client: TestClient, store: Dra
 
     for response in responses:
         assert response.status_code == 401
-        assert response.json()["code"] == "organiser_unauthorised"
+        assert response.json()["code"] == "unauthorised"

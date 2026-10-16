@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from conftest import SignIn
 from fastapi.testclient import TestClient
 from mcp_fakes import NOW, call_tool, error_of, stub_runner, stub_services
 from test_designer_review import HUNT, FixedCodes, ready_draft
@@ -24,7 +25,6 @@ from game_server.mcp_server.services import McpServices
 from game_server.organiser_services import DesignerDisabledError
 from game_server.sessions import SessionRepository, get_session_repository
 
-KEY = "SENTINEL-ORGANISER-KEY-7c1e9a"
 DESIGN = {"area": "Chiswick, London", "theme": "Brewing"}
 WEB = "https://play.example/"
 
@@ -37,7 +37,7 @@ def runner(database: Database) -> Iterator[StubRunner]:
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(organiser_key=KEY, web_app_url=WEB)
+    return Settings(web_app_url=WEB)
 
 
 @pytest.fixture
@@ -316,7 +316,7 @@ def test_publishing_returns_the_session_and_its_codes(
     assert publication["name"] == HUNT["name"]
     assert [team["name"] for team in publication["teams"]] == HUNT["teams"]
     assert all(team["join-code"] for team in publication["teams"])
-    assert publication["moderator-code"]
+    assert "moderator-code" not in publication
     found = store.get(draft)
     assert found is not None
     assert (found.status, str(found.published_session)) == ("published", publication["session"])
@@ -389,7 +389,7 @@ def test_the_codes_are_never_logged(
 
     publication = ok(call_tool(services, settings, "publish_hunt", publish_args(draft)))
 
-    codes = [publication["moderator-code"], *(team["join-code"] for team in publication["teams"])]
+    codes = [team["join-code"] for team in publication["teams"]]
     assert "published as session" in caplog.text
     for code in codes:
         assert code not in caplog.text
@@ -431,7 +431,6 @@ def test_design_review_and_publish_a_playable_session(
     found = repository.find_team(publication["teams"][0]["join-code"])
     assert found is not None
     assert (found[0].id, found[1].name) == (session_id, "Red Foxes")
-    assert repository.moderator_code(session_id) is not None
     listed = ok(call_tool(services, settings, "list_sessions"))
     assert [(s["id"], s["source"], s["phase"]) for s in listed["sessions"]] == [
         (str(session_id), "published", "scheduled")
@@ -439,7 +438,11 @@ def test_design_review_and_publish_a_playable_session(
 
 
 def test_the_route_and_the_tool_publish_equal_sessions(
-    database: Database, settings: Settings, runner: StubRunner, store: DraftStore
+    sign_in: SignIn,
+    database: Database,
+    settings: Settings,
+    runner: StubRunner,
+    store: DraftStore,
 ) -> None:
     repository = SessionRepository().beside(
         __import__("game_server.published_sessions", fromlist=["x"]).PublishedSessionRows(database)
@@ -458,7 +461,7 @@ def test_the_route_and_the_tool_publish_equal_sessions(
         response = client.post(
             f"/designer/drafts/{via_route}/publish",
             json=HUNT,
-            headers={"Authorization": f"Bearer {KEY}"},
+            headers=sign_in("organiser"),
         )
         tool = ok(call_tool(services, settings, "publish_hunt", publish_args(via_tool)))
     assert response.status_code == 201
@@ -467,8 +470,7 @@ def test_the_route_and_the_tool_publish_equal_sessions(
         session = repository.get_session(UUID(publication["session"]))
         assert session is not None
         document = session.model_dump(mode="json", by_alias=True)
-        for credential in ("id", "moderator-code"):
-            document.pop(credential)
+        document.pop("id")
         for team in document["teams"]:
             team.pop("join-code")
         return document

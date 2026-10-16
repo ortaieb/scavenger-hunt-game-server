@@ -206,7 +206,6 @@ def build_session(
     accepted: Sequence[DraftCheckpoint],
     request: PublishRequest,
     join_codes: Sequence[str],
-    moderator_code: str,
     session_id: UUID | None = None,
 ) -> GameSession:
     """The session: checkpoints 1…n in route order; team i starts at checkpoint i (mod n)."""
@@ -237,7 +236,6 @@ def build_session(
         end_time=request.end_time,
         checkpoints=checkpoints,
         teams=teams,
-        moderator_code=moderator_code,
     )
 
 
@@ -256,34 +254,23 @@ class CodeSource(Protocol):
         """A team's join code, e.g. `FOX-7Q2K`."""
         ...
 
-    def moderator_code(self) -> str:
-        """A moderator code, at least 12 characters."""
-        ...
-
 
 class SecretCodes:
-    """Codes from `secrets`: a short word and four unambiguous characters for a team, and
-    `MOD-` and twelve for the moderator."""
+    """Codes from `secrets`: a short word and four unambiguous characters for a team."""
 
     def join_code(self) -> str:
         """`FOX-7Q2K`: 8 characters, about 18 million codes (20 words, 31 characters)."""
         return f"{secrets.choice(JOIN_WORDS)}-{_chars(4)}"
-
-    def moderator_code(self) -> str:
-        """`MOD-7Q2K-XJ4M-9PRT`: 12 random characters from 31."""
-        return "MOD-" + "-".join(_chars(4) for _ in range(3))
 
 
 def _chars(count: int) -> str:
     return "".join(secrets.choice(UNAMBIGUOUS) for _ in range(count))
 
 
-def issue_codes(
-    teams: int, source: CodeSource, in_use: Callable[[str], bool]
-) -> tuple[list[str], str]:
-    """A fresh join code per team and a moderator code: each unused and all different.
+def issue_codes(teams: int, source: CodeSource, in_use: Callable[[str], bool]) -> list[str]:
+    """A fresh join code per team: each unused and all different.
 
-    A clash, with an existing code or another of these, draws again.
+    A clash draws again.
     """
     issued: set[str] = set()
 
@@ -295,13 +282,7 @@ def issue_codes(
                 return code
         raise RuntimeError(f"no unused code after {CODE_ATTEMPTS} attempts")
 
-    joins = [draw(source.join_code) for _ in range(teams)]
-    return joins, draw(source.moderator_code)
-
-
-def publication_of(session: GameSession) -> tuple[list[tuple[str, str]], str | None]:
-    """A published session's teams with their join codes, and its moderator code."""
-    return [(team.name, team.join_code) for team in session.teams], session.moderator_code
+    return [draw(source.join_code) for _ in range(teams)]
 
 
 def get_code_source() -> CodeSource:

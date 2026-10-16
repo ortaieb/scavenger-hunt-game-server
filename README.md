@@ -91,7 +91,6 @@ then fall back to defaults. Real environment variables win over `.env`.
 | `GAME_SERVER_ARRIVAL_CODE_TTL_SECONDS` | `600` | How long an [arrival's](docs/api.md#post-sessionssessionparticipantsparticipantarrive) one-time code stays valid, in seconds (> 0) |
 | `GAME_SERVER_PROXIMITY_HINT_INTERVAL_SECONDS` | `10` | Minimum seconds between [proximity hints](docs/api.md#post-checkpointproximity) per (session, participant) (> 0) |
 | `GAME_SERVER_PHASH_MAX_DISTANCE` | `6` | Hamming distance (0–32 of 64 bits) at or below which a photo is a [duplicate](docs/api.md#submission-checks) of an accepted one |
-| `GAME_SERVER_ORGANISER_KEY` | unset | The [hunt designer's](docs/api.md#hunt-designer) key, at least 24 characters. Unset: nobody can use the designer. Never logged |
 | `GAME_SERVER_AUTH_MODE` | `off` | Clerk session tokens: `off` (not checked, today's behaviour), `optional` (checked when sent) or `required`. Anything but `off` needs the three settings below, or the server won't start. With accounts on, only a team's signed-in members can [play as that team](docs/api.md#playing-as-a-team-who-may-call): `required` demands a token on the four play routes, `optional` checks one when it's sent |
 | `GAME_SERVER_CLERK_JWT_KEY` | unset | Clerk's PEM public key (Dashboard → API keys), so a check makes no network call. In a one-line variable, write the line breaks as `\n` |
 | `GAME_SERVER_CLERK_ISSUER` | unset | Clerk's Frontend API URL, which every token's `iss` must equal |
@@ -303,16 +302,16 @@ CI does not auto-fix. Run `make check` locally before pushing to catch the same 
 The [hunt designer](docs/api.md#hunt-designer) turns an area and a theme into a draft hunt for
 the organiser to review: an agent on the Claude Agent SDK picks real places from OpenStreetMap,
 orders them into a walkable loop, and writes their clues and challenges. The web app's designer
-screen drives it through the API:
+screen drives it through the API, with an organiser's or admin's Clerk session token (`$TOKEN`):
 
 ```bash
 curl -X POST http://localhost:8000/designer/drafts \
-  -H "Authorization: Bearer $GAME_SERVER_ORGANISER_KEY" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"area": "Chiswick, London", "theme": "Painters, brewers and the river"}'
 # 202 {"id": "…", "status": "running"}: follow GET /designer/drafts/{id} until it's ready or failed
 ```
 
-It needs `GAME_SERVER_ORGANISER_KEY` and `GAME_SERVER_ANTHROPIC_API_KEY`. A run takes minutes
+It needs `GAME_SERVER_ANTHROPIC_API_KEY`, and the Clerk settings (`GAME_SERVER_CLERK_*`) so a token can be checked. A run takes minutes
 and costs up to `GAME_SERVER_DESIGNER_MAX_BUDGET_USD` (default $1). It's bounded by its turns,
 its budget and `GAME_SERVER_DESIGNER_DEADLINE_SECONDS` (default 5 minutes), and one runs at a
 time. Players' requests are served as usual while it runs. A draft whose run is cut short by a
@@ -351,21 +350,22 @@ with the Agent SDK and prints its version, to check the platform can run it.
 ## Organiser MCP
 
 The [organiser MCP server](docs/api.md#organiser-mcp) lets the organiser run the game from
-Claude. It's one endpoint, `/mcp`, inside the game-server, behind the organiser key. To turn it
-on, set `GAME_SERVER_MCP_ENABLED=true`, `GAME_SERVER_ORGANISER_KEY` and
-`GAME_SERVER_MCP_ALLOWED_HOSTS`. The allowed hosts are the `Host` the game-server sees: in
-production that's the host Claude's requests arrive on through the web app's relay.
+Claude. It's one endpoint, `/mcp`, inside the game-server. To turn it
+on, set `GAME_SERVER_MCP_ENABLED=true` and `GAME_SERVER_MCP_ALLOWED_HOSTS`. The allowed hosts
+are the `Host` the game-server sees: in production that's the host Claude's requests arrive on
+through the web app's relay.
 
-To connect Claude Code to a local server, with the key taken from your shell's environment:
+**It has no sign-in of its own yet.** The organiser key is gone, and OAuth
+([#131](https://github.com/ortaieb/scavenger-hunt-game-server/issues/131)) is not in, so don't
+turn `/mcp` on where anything but the relay can reach it.
+
+To try it against a local server:
 
 ```bash
 GAME_SERVER_MCP_ENABLED=true GAME_SERVER_MCP_ALLOWED_HOSTS='localhost:*,127.0.0.1:*' \
-  uv run python -m game_server   # with GAME_SERVER_ORGANISER_KEY set
-claude mcp add --transport http scavenger-hunt http://localhost:8000/mcp \
-  --header "Authorization: Bearer $GAME_SERVER_ORGANISER_KEY"
+  uv run python -m game_server
+claude mcp add --transport http scavenger-hunt http://localhost:8000/mcp
 ```
-
-`claude mcp add` stores the header as written, key included, in Claude Code's configuration.
 
 ### On Railway
 
@@ -378,21 +378,15 @@ forwards to the game server. On the game server's Railway service:
 | `GAME_SERVER_MCP_ENABLED` | `true` |
 | `GAME_SERVER_MCP_ALLOWED_HOSTS` | The `Host` the game server sees from the relay: its Railway domain (for example `game-server-production.up.railway.app`), or its private one (`<service>.railway.internal:<port>`) if the relay uses the private network. A request with another `Host` gets `421`; check the deploy log's `Invalid Host header` line for the value to add |
 | `GAME_SERVER_WEB_APP_URL` | The web app's base URL, for the tools' links to `/moderator` and `/designer` |
-| `GAME_SERVER_ORGANISER_KEY` | Already set for the hunt designer (sealed); the same key opens `/mcp` |
 
-Connect Claude Code to the relay, with the key read from your shell's environment and never
-written to a committed file:
+Connect Claude Code to the relay:
 
 ```bash
-export GAME_SERVER_ORGANISER_KEY=…   # in your shell profile or a secrets manager, not in the repo
-claude mcp add --transport http scavenger-hunt https://<web-app>/mcp \
-  --header "Authorization: Bearer $GAME_SERVER_ORGANISER_KEY"
+claude mcp add --transport http scavenger-hunt https://<web-app>/mcp
 ```
 
-A claude.ai custom connector can't be set up this way unless claude.ai lets a connector send a
-request header (a beta feature); check, and record below whether it can. Until OAuth
-([#131](https://github.com/ortaieb/scavenger-hunt-game-server/issues/131)) replaces the key,
-Claude Code is the supported client.
+OAuth ([#131](https://github.com/ortaieb/scavenger-hunt-game-server/issues/131)) is what will
+let a claude.ai custom connector in too; until then, Claude Code is the supported client.
 
 **Checking it end to end on production** (a manual run, as it needs a phone and the relay):
 
@@ -511,8 +505,7 @@ PostgreSQL's own `postgres` user is.
 and every role check reads it there, so a change takes effect at once. Admins change roles
 through [`PUT /directory/people/{pid}/role`](docs/api.md#roles-and-moderators); the first admin
 is made with `uv run python -m game_server.directory grant-admin --clerk-user-id user_…`.
-Moderator routes and the hunt designer accept a Clerk token alongside the moderator codes and the
-organiser key, which stay until the web app has switched over.
+Moderator routes and the hunt designer take a Clerk token.
 
 **Provisioning.** Clerk never asks the server anything while it mints a session token, so the
 directory writes each person's `pid` and role into their Clerk user ahead of time (the user's
@@ -580,8 +573,6 @@ Set these up once in the dashboard (they can't be declared in `railway.toml`):
      `/app/data/hunt/sessions.json`. Upload it with `railway volume` or the dashboard.
    - Optionally `GAME_SERVER_ANTHROPIC_API_KEY` (sealed) to turn on the
      [referee](docs/api.md#referee-visual-challenge) and the [hunt designer](#hunt-designer).
-   - Optionally `GAME_SERVER_ORGANISER_KEY` (sealed) to open the
-     [hunt designer](docs/api.md#hunt-designer) to the organiser.
    - Optionally the hunt designer's model, limits and deadline, if the defaults don't suit:
      `GAME_SERVER_DESIGNER_MODEL`, `GAME_SERVER_DESIGNER_MAX_TURNS`,
      `GAME_SERVER_DESIGNER_MAX_BUDGET_USD` and `GAME_SERVER_DESIGNER_DEADLINE_SECONDS`.

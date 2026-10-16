@@ -32,7 +32,7 @@ START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 END = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
 PLACES = {1: (51.50, -0.10), 2: (51.51, -0.11), 3: (51.52, -0.12)}
 ROUTES = {"FOX-7Q2K": [1, 2, 3], "HERON-4MXP": [2, 3, 1]}
-MODERATOR = {"Authorization": "Bearer MOD-8H3T-QX"}
+MODERATOR: dict[str, str] = {}  # the signed-in admin's headers, set for each test
 
 
 def sessions_file() -> str:
@@ -44,7 +44,6 @@ def sessions_file() -> str:
                 "location": "Here",
                 "start-time": START.isoformat(),
                 "end-time": END.isoformat(),
-                "moderator-code": "MOD-8H3T-QX",
                 "checkpoints": [
                     {
                         "sequence": n,
@@ -95,6 +94,12 @@ class PassingReferee:
 @pytest.fixture
 def clock() -> list[datetime]:
     return [START + timedelta(minutes=5)]
+
+
+@pytest.fixture(autouse=True)
+def signed_in_admin(admin_headers: dict[str, str]) -> None:
+    MODERATOR.clear()
+    MODERATOR.update(admin_headers)
 
 
 @pytest.fixture

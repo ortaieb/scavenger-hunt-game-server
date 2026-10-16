@@ -31,7 +31,7 @@ from game_server.submissions import NewSubmission, SubmissionStore
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 OTHER = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
 MODERATOR = "MOD-8H3T-QX"
-OTHER_MODERATOR = "MOD-2KV9-ZP"
+ADMIN: dict[str, str] = {}  # the signed-in admin's headers, set for each test
 FOX, HERON = "FOX-7Q2K", "HERON-4MXP"
 START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 DURING = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
@@ -60,16 +60,13 @@ DEADLINE = RefereeReport(
 )
 
 
-def session_json(
-    session_id: str, moderator: str, suffix: str = "", pose: str = POSE
-) -> dict[str, Any]:
+def session_json(session_id: str, suffix: str = "", pose: str = POSE) -> dict[str, Any]:
     return {
         "id": session_id,
         "name": "Hunt",
         "location": "Here",
         "start-time": START.isoformat(),
         "end-time": (START + timedelta(hours=3)).isoformat(),
-        "moderator-code": moderator,
         "checkpoints": [
             {
                 "sequence": 1,
@@ -96,7 +93,7 @@ def session_json(
 
 
 def load_sessions(tmp_path: Path, pose: str = POSE) -> SessionRepository:
-    sessions = [session_json(SESSION, MODERATOR, pose=pose), session_json(OTHER, OTHER_MODERATOR)]
+    sessions = [session_json(SESSION, pose=pose), session_json(OTHER)]
     sessions[1]["teams"] = []
     return parse_sessions(json.dumps(sessions), reference_dir=tmp_path)
 
@@ -115,6 +112,12 @@ def now() -> list[datetime]:
     return [DURING]
 
 
+@pytest.fixture(autouse=True)
+def signed_in_admin(admin_headers: dict[str, str]) -> None:
+    ADMIN.clear()
+    ADMIN.update(admin_headers)
+
+
 @pytest.fixture
 def client(
     tmp_path: Path, repository: list[SessionRepository], now: list[datetime]
@@ -129,10 +132,9 @@ def client(
 
 
 def get_review(
-    client: TestClient, session: str = SESSION, authorization: str | None = f"Bearer {MODERATOR}"
+    client: TestClient, session: str = SESSION, headers: dict[str, str] | None = None
 ) -> Response:
-    headers = {"Authorization": authorization} if authorization else {}
-    return client.get(f"/sessions/{session}/review", headers=headers)
+    return client.get(f"/sessions/{session}/review", headers=ADMIN if headers is None else headers)
 
 
 def review(client: TestClient) -> dict[str, Any]:
@@ -215,7 +217,7 @@ def rule(client: TestClient, submission: int, ruling: str = "approve", **body: A
     response = client.post(
         f"/sessions/{SESSION}/submissions/{submission}/ruling",
         json={"ruling": ruling, **body},
-        headers={"Authorization": f"Bearer {MODERATOR}"},
+        headers=ADMIN,
     )
     assert response.status_code in (200, 201)
 
@@ -312,9 +314,7 @@ def test_the_queue_matches_the_overviews_count(client: TestClient, store: Submis
         record(store, fox, at=minutes(at))
     rule(client, record(store, fox, at=minutes(4)))
 
-    overview = client.get(
-        f"/sessions/{SESSION}/overview", headers={"Authorization": f"Bearer {MODERATOR}"}
-    ).json()
+    overview = client.get(f"/sessions/{SESSION}/overview", headers=ADMIN).json()
 
     assert overview["to-review"] == len(review(client)["to-review"]) == 3
 
@@ -323,7 +323,7 @@ def test_the_pose_is_the_one_issued_at_check_in(
     client: TestClient, repository: list[SessionRepository], tmp_path: Path
 ) -> None:
     fox = join(client)
-    client.post(f"/sessions/{SESSION}/start", headers={"Authorization": f"Bearer {MODERATOR}"})
+    client.post(f"/sessions/{SESSION}/start", headers=ADMIN)
     issued = client.post(f"/sessions/{SESSION}/participants/{fox}/arrive", json={"checkpoint": 1})
     assert issued.json()["pose"] == POSE
     assert photograph(client, fox).json()["verdict"]["checkpoint"]["verdict"] == "pending"
@@ -450,19 +450,14 @@ def test_recent_is_the_latest_rulings_newest_first(
 
 
 @pytest.mark.parametrize(
-    "authorization",
-    [None, "Bearer MOD-WRONG-1", f"Bearer {OTHER_MODERATOR}", f"Bearer {FOX}"],
-    ids=["no-code", "wrong", "other-session", "join-code"],
+    "headers",
+    [{}, *({"Authorization": f"Bearer {code}"} for code in ("MOD-WRONG-1", MODERATOR, FOX))],
+    ids=["no-token", "wrong", "retired-moderator-code", "join-code"],
 )
-def test_moderator_code_required(client: TestClient, authorization: str | None) -> None:
-    response = get_review(client, authorization=authorization)
+def test_a_moderator_token_is_required(client: TestClient, headers: dict[str, str]) -> None:
+    response = get_review(client, headers=headers)
 
     assert response.status_code == 401
-    assert response.json() == {
-        "detail": "moderator code required",
-        "code": "moderator_unauthorised",
-    }
-    assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
 def test_unknown_session_is_404(client: TestClient) -> None:

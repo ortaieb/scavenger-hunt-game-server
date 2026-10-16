@@ -33,7 +33,7 @@ from game_server.config import DEFAULT_MAX_IMAGE_BYTES, Settings, get_settings
 from game_server.database import Database, get_database
 from game_server.imaging import UndecodableImageError, open_upright
 from game_server.models import Location
-from game_server.published_sessions import AlreadyPublishedError, CodeKind, PublishedSessionRows
+from game_server.published_sessions import AlreadyPublishedError, PublishedSessionRows
 from game_server.session_runs import SessionPhase, SessionRun, session_phase
 
 
@@ -119,7 +119,7 @@ def _strip(value: object) -> object:
     return value.strip() if isinstance(value, str) else value
 
 
-# A credential in the sessions file (a join code or a moderator code): 6-32 letters, digits
+# A credential in the sessions file (a join code): 6-32 letters, digits
 # or `-`, surrounding spaces stripped, compared ignoring case (see `normalise_join_code`).
 Credential = Annotated[
     str,
@@ -148,9 +148,6 @@ class GameSession(_SessionModel):
     checkpoints: tuple[Checkpoint, ...] = Field(min_length=1)
     # Optional: without teams, nobody can join the session.
     teams: tuple[Team, ...] = ()
-    # Optional: authorises the moderator's endpoints for this session. Without one, the
-    # session can't be moderated. A credential like a join code (hence repr=False).
-    moderator_code: Credential | None = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:
@@ -198,42 +195,26 @@ def _order_problem(order: tuple[int, ...], sequences: set[int]) -> str | None:
     return None
 
 
-def _index_codes(
-    sessions: Sequence[GameSession],
-) -> tuple[dict[str, tuple[GameSession, Team]], dict[UUID, str]]:
-    """Index join codes (to their team) and moderator codes (by session), normalised.
+def _index_codes(sessions: Sequence[GameSession]) -> dict[str, tuple[GameSession, Team]]:
+    """Index join codes (to their team), normalised.
 
-    Every code, of either kind, must be unique across the file: a moderator code can't
-    repeat another, nor equal any join code. A clash is reported at the later entry's path,
-    saying what it clashes with, never the code itself.
+    Every code must be unique across the file. A clash is reported at the later entry's path,
+    never the code itself.
     """
-    owners: dict[str, str] = {}  # normalised code -> "join code" or "moderator code"
     join_codes: dict[str, tuple[GameSession, Team]] = {}
-    moderator_codes: dict[UUID, str] = {}
     problems = []
-
-    def claim(code: str, kind: str, loc: tuple[str | int, ...]) -> bool:
-        earlier = owners.get(code)
-        if earlier is None:
-            owners[code] = kind
-            return True
-        problem = f"duplicate {kind}" if earlier == kind else f"same as a {earlier}"
-        problems.append(f"{_path(loc)}: {problem}")
-        return False
-
     for session_index, session in enumerate(sessions):
-        if session.moderator_code is not None:
-            code = normalise_join_code(session.moderator_code)
-            if claim(code, "moderator code", (session_index, "moderator-code")):
-                moderator_codes[session.id] = code
         for team_index, team in enumerate(session.teams):
             code = normalise_join_code(team.join_code)
-            if claim(code, "join code", (session_index, "teams", team_index, "join-code")):
+            if code in join_codes:
+                loc = (session_index, "teams", team_index, "join-code")
+                problems.append(f"{_path(loc)}: duplicate join code")
+            else:
                 join_codes[code] = (session, team)
     if problems:
         lines = [f"{len(problems)} validation error(s)", *(f"  {p}" for p in problems)]
         raise ValueError("\n".join(lines))
-    return join_codes, moderator_codes
+    return join_codes
 
 
 # The end of an open-ended window: a running session that hasn't been stopped.
@@ -296,31 +277,25 @@ def _check_reference_photo(
     return path, None
 
 
-_Claim = tuple[str, CodeKind, str]  # normalised code, its kind, its path
+_Claim = tuple[str, str]  # normalised code, its path
 
 
 def _code_claims(session: GameSession) -> list[_Claim]:
-    """Every code the session uses, normalised, with its kind and path."""
-    claims: list[_Claim] = []
-    if session.moderator_code is not None:
-        claims.append((normalise_join_code(session.moderator_code), "moderator", "moderator-code"))
-    for index, team in enumerate(session.teams):
-        claims.append((normalise_join_code(team.join_code), "join", f"teams[{index}].join-code"))
-    return claims
+    """Every code the session uses, normalised, with its path."""
+    return [
+        (normalise_join_code(team.join_code), f"teams[{index}].join-code")
+        for index, team in enumerate(session.teams)
+    ]
 
 
 def _repeated_codes(claims: Sequence[_Claim]) -> list[str]:
-    """A code the session uses twice, at the later use, saying what it repeats."""
-    first: dict[str, CodeKind] = {}
+    """A code the session uses twice, at the later use."""
+    seen: set[str] = set()
     problems = []
-    for code, kind, path in claims:
-        earlier = first.get(code)
-        if earlier is None:
-            first[code] = kind
-        elif earlier == kind:
-            problems.append(f"{path}: duplicate {kind} code")
-        else:
-            problems.append(f"{path}: same as a {earlier} code")
+    for code, path in claims:
+        if code in seen:
+            problems.append(f"{path}: duplicate join code")
+        seen.add(code)
     return problems
 
 
@@ -363,17 +338,14 @@ class _Indexed:
     teams_by_name: dict[str, Team]
     # Credentials: kept out of the repr.
     join_codes: dict[str, Team] = field(repr=False)
-    moderator_code: str | None = field(repr=False)
 
     @classmethod
     def of(cls, session: GameSession) -> "_Indexed":
-        moderator = session.moderator_code
         return cls(
             session=session,
             checkpoints={checkpoint.sequence: checkpoint for checkpoint in session.checkpoints},
             teams_by_name={team.name.casefold(): team for team in session.teams},
             join_codes={normalise_join_code(team.join_code): team for team in session.teams},
-            moderator_code=normalise_join_code(moderator) if moderator is not None else None,
         )
 
 
@@ -404,7 +376,7 @@ class SessionRepository:
             session.id: {checkpoint.sequence: checkpoint for checkpoint in session.checkpoints}
             for session in sessions
         }
-        self._teams_by_code, self._moderator_codes = _index_codes(sessions)
+        self._teams_by_code = _index_codes(sessions)
         self._teams_by_name = {
             session.id: {team.name.casefold(): team for team in session.teams}
             for session in sessions
@@ -469,7 +441,7 @@ class SessionRepository:
         found = self._teams_by_code.get(code)
         if found is not None:
             return found
-        published = self._published_by_code(code, "join")
+        published = self._published_by_code(code)
         if published is None or code not in published.join_codes:
             return None
         return published.session, published.join_codes[code]
@@ -480,13 +452,6 @@ class SessionRepository:
             return self._teams_by_name[session_id].get(name.casefold())
         published = self._published_session(session_id)
         return published.teams_by_name.get(name.casefold()) if published else None
-
-    def moderator_code(self, session_id: UUID) -> str | None:
-        """The session's moderator code, normalised; None if it can't be moderated."""
-        if session_id in self._sessions:
-            return self._moderator_codes.get(session_id)
-        published = self._published_session(session_id)
-        return published.moderator_code if published else None
 
     def reference_photos(self, session_id: UUID, sequence: int) -> tuple[Path, ...]:
         """The checkpoint's reference photos, resolved and checked at load, in file order.
@@ -508,14 +473,14 @@ class SessionRepository:
             return None
         return self._remember(GameSession.model_validate(document))
 
-    def _published_by_code(self, code: str, kind: CodeKind) -> _Indexed | None:
+    def _published_by_code(self, code: str) -> _Indexed | None:
         """The published session a normalised code belongs to, if any."""
         if self._rows is None:
             return None
         with self._lock:
             session_id = self._published_codes.get(code)
         if session_id is None:
-            session_id = self._rows.session_for_code(code, kind)
+            session_id = self._rows.session_for_code(code)
         return self._published_session(session_id) if session_id is not None else None
 
     def _remember(self, session: GameSession) -> _Indexed:
@@ -524,14 +489,12 @@ class SessionRepository:
             self._published[session.id] = indexed
             for code in indexed.join_codes:
                 self._published_codes[code] = session.id
-            if indexed.moderator_code is not None:
-                self._published_codes[indexed.moderator_code] = session.id
         return indexed
 
     def code_in_use(self, code: str) -> bool:
-        """Whether any session, in the file or published, uses this code, of either kind."""
+        """Whether any session, in the file or published, uses this code."""
         normalised = normalise_join_code(code)
-        if normalised in self._teams_by_code or normalised in self._moderator_codes.values():
+        if normalised in self._teams_by_code:
             return True
         return self._rows is not None and bool(self._rows.codes_in_use({normalised}))
 
@@ -554,7 +517,7 @@ class SessionRepository:
         problems = _no_reference_photos(checked) + self._taken(checked.id, claims)
         if problems:
             raise SessionPublishError(problems)
-        codes = [(code, kind) for code, kind, _ in claims]
+        codes = [code for code, _ in claims]
         try:
             self._rows.insert(checked.id, document, draft, codes)
         except AlreadyPublishedError:
@@ -571,11 +534,11 @@ class SessionRepository:
             self._rows is not None and self._rows.document(session_id) is not None
         ):
             problems.insert(0, "id: already in use")
-        file_codes = set(self._teams_by_code) | set(self._moderator_codes.values())
-        published = self._rows.codes_in_use({c for c, _, _ in claims}) if self._rows else set()
+        file_codes = set(self._teams_by_code)
+        published = self._rows.codes_in_use({c for c, _ in claims}) if self._rows else set()
         problems += [
             f"{path}: already in use"
-            for code, _, path in claims
+            for code, path in claims
             if code in file_codes or code in published
         ]
         return problems

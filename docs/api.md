@@ -8,7 +8,7 @@ The game server's endpoints, the rules they enforce, and the referee. Back to th
 A whole hunt can be played through the API. The moderator opens it, then each team plays:
 
 0. **Start** (moderator): [`POST /sessions/{session}/start`](#post-sessionssessionstart) with
-   the session's moderator code. Nothing counts until then: the planned `start-time` doesn't
+   a moderator's token. Nothing counts until then: the planned `start-time` doesn't
    start a session, and the planned `end-time` doesn't end one. Only
    [`POST …/stop`](#post-sessionssessionstop) does.
 1. **Join**: [`POST /join`](#post-join) with the team's code and the player's consent. It returns
@@ -67,7 +67,6 @@ PY
 GAME_SERVER_SESSIONS_FILE=sessions.json make run &   # then, in another shell:
 
 S=aeffe667-4f9f-4108-b5e2-56ae821fe413
-MOD=$(jq -r '.[0]["moderator-code"]' sessions.json)
 curl -s -X POST localhost:8000/sessions/$S/start -H "Authorization: Bearer $MOD" | jq .phase  # "running"
 P=$(curl -s localhost:8000/join -H 'content-type: application/json' \
       -d '{"code": "FOX-7Q2K", "consent": true}' | jq -r .participant)
@@ -746,8 +745,8 @@ team's route, and checks neither appears in any response while the team is on it
 shown to players, but never enforced. A session can start early or late and run past its
 planned end.
 
-No body; authorised with the session's [moderator code](../docs/sessions-file.md#game-sessions-and-checkpoints) as
-`Authorization: Bearer <code>`. It returns the **session clock**:
+No body; authorised with a moderator's Clerk token as
+`Authorization: Bearer <token>` (see [*Roles and moderators*](#roles-and-moderators)). It returns the **session clock**:
 
 ```json
 {
@@ -773,7 +772,7 @@ Times are UTC to the second, as everywhere in the API.
 |--------|------|
 | `201`  | Started now: `scheduled` → `running` |
 | `200`  | Already running: the same clock |
-| `401`  | Moderator code required (see *Moderator code*) |
+| `401`  | Token required |
 | `404`  | Unknown session |
 | `409`  | `{"detail": "session has ended", "code": "session_stopped"}`: it was stopped, and stopping is final |
 
@@ -786,7 +785,7 @@ would be a separate change. Same authorisation and response as start.
 |--------|------|
 | `201`  | Stopped now |
 | `200`  | Already stopped: the same clock |
-| `401`  | Moderator code required |
+| `401`  | Token required |
 | `404`  | Unknown session |
 | `409`  | `{"detail": "session hasn't started", "code": "session_not_started"}` |
 
@@ -837,11 +836,11 @@ session.
 | Status | When |
 |--------|------|
 | `200`  | As above |
-| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `401`  | `{"detail": "sign-in required", "code": "unauthorised"}`; `403 forbidden` for a token that may not moderate this session |
 | `404`  | Unknown session |
 
 Only the moderator can call it, so checkpoints are named. It never shows coordinates, clues,
-scenes, photos, join codes, participant ids or the moderator code.
+scenes, photos, join codes, participant ids or any credential.
 
 ## `GET /sessions/{session}/traces`
 
@@ -927,13 +926,13 @@ the page and its prompts are read in one snapshot, so they agree.
 | Status | When |
 |--------|------|
 | `200`  | As above |
-| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `401`  | `{"detail": "sign-in required", "code": "unauthorised"}`; `403 forbidden` for a token that may not moderate this session |
 | `404`  | Unknown session |
 | `422`  | `limit` outside 1–100, or `before` not a positive integer (up to 2⁶³−1) |
 
 Only the moderator can call it: it shows the scenes (the answers to the clues), the model's
 reasons and the checks' `detail`. It never shows coordinates, distances, clues, join codes,
-one-time codes, participant ids, the moderator code or the photos, nor the model's raw
+one-time codes, participant ids or the photos, nor the model's raw
 `response_text`.
 
 ## `GET /sessions/{session}/review`
@@ -988,12 +987,12 @@ Both lists are read in one snapshot, so a photo just ruled on is in one of them,
 | Status | When |
 |--------|------|
 | `200`  | As above |
-| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `401`  | `{"detail": "sign-in required", "code": "unauthorised"}`; `403 forbidden` for a token that may not moderate this session |
 | `404`  | Unknown session |
 
 Only the moderator can call it: it shows the scenes (the answers to the clues) and the
 referee's reasons. It never shows coordinates, distances, clues, join codes, one-time codes,
-participant ids or the moderator code, nor a reference photo's file name.
+participant ids, nor a reference photo's file name.
 
 ## `GET /sessions/{session}/submissions/{submission}/photo`
 
@@ -1007,7 +1006,7 @@ never changed.
 | Status | When |
 |--------|------|
 | `200`  | The JPEG |
-| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `401`  | `{"detail": "sign-in required", "code": "unauthorised"}`; `403 forbidden` for a token that may not moderate this session |
 | `404`  | Unknown session (`"unknown session"`), a submission that isn't in this session (`"unknown submission"`), or a photo whose file is gone (`"photo not found"`) |
 | `422`  | A `submission` that isn't a positive integer (up to 2⁶³−1) |
 
@@ -1024,12 +1023,12 @@ many there are.
 | Status | When |
 |--------|------|
 | `200`  | The JPEG |
-| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `401`  | `{"detail": "sign-in required", "code": "unauthorised"}`; `403 forbidden` for a token that may not moderate this session |
 | `404`  | Unknown session (`"unknown session"`) or checkpoint (`"unknown checkpoint"`), a position past the last (`"unknown reference photo"`), or a file gone since startup (`"photo not found"`) |
 | `422`  | A `sequence` below 1 or a negative `position` |
 
-**Photos and privacy.** These two are the only endpoints that serve photos, and only with the
-moderator code: no participant endpoint returns a photo, nor the scene, a checkpoint's name or a
+**Photos and privacy.** These two are the only endpoints that serve photos, and only to a
+moderator: no participant endpoint returns a photo, nor the scene, a checkpoint's name or a
 reference photo. Each photo served is logged on one line, by session and submission, or by
 session, checkpoint and position, never by the file's path (a file name can describe the
 place). The web app's privacy notice already tells players their photos are checked by an AI
@@ -1090,7 +1089,7 @@ What a ruling changes:
 |--------|------|
 | `201`  | The submission's first ruling |
 | `200`  | A ruling that replaces an earlier one |
-| `401`  | `{"detail": "moderator code required", "code": "moderator_unauthorised"}` |
+| `401`  | `{"detail": "sign-in required", "code": "unauthorised"}`; `403 forbidden` for a token that may not moderate this session |
 | `404`  | Unknown session (`"unknown session"`), or a submission that isn't in this session (`"unknown submission"`) |
 | `422`  | An invalid body: no or another `ruling`, a `note` that isn't text or is over 500 characters, or an unknown field. Or a `submission` that isn't a positive integer (up to 2⁶³−1) |
 
@@ -1219,30 +1218,22 @@ starting a design is a `503`. `stub` fills every draft, after
 `GAME_SERVER_DESIGNER_STUB_DELAY_SECONDS`, with the same `ready` hunt of three fictional
 checkpoints around a fixed point, for local development and the web app's tests.
 
-### Organiser key
+### Authorisation
 
-**Organiser only.** The moderator code can't authorise the designer: it belongs to a session,
-and a draft exists before any session does. So the designer has its own key, a stopgap like the
-moderator code until real accounts exist: `GAME_SERVER_ORGANISER_KEY`, at least 24 characters,
-presented as `Authorization: Bearer <key>` and compared in constant time.
+**Organiser only.** Every designer route takes a Clerk session token in
+`Authorization: Bearer <token>`, for a person whose role is `organiser` or `admin`. The role is
+read from the users directory on each request, so a demotion takes effect at once.
 
-A missing header, another scheme, a wrong key, or no key configured all get the same `401`, so
-a caller can't tell why:
+A missing header, another scheme or an invalid token gets `401`, the same body every time, so a
+caller can't tell why:
 
 ```json
-{"detail": "organiser key required", "code": "organiser_unauthorised"}
+{"detail": "sign-in required", "code": "unauthorised"}
 ```
 
-with `WWW-Authenticate: Bearer`. The key is checked before anything else in the request. It's
-never returned, never logged, and a too-short key stops the server at startup without echoing
-it.
-
-**Or a token.** With accounts on, a Clerk session token works in the same header, for a person
-whose role is `organiser` or `admin` (read from the users directory, so a demotion takes effect
-at once). A token is a JWT, three dot-separated parts, and the key has no dots, so the two can't
-be confused. An invalid token gets `401 unauthorised`; a valid one for anyone else gets
-`403 forbidden`. A signed-in organiser's drafts record their `pid`, and publishing makes them the
-new session's first moderator. The key goes once the web app has switched over (#120).
+with `WWW-Authenticate: Bearer`. A valid token for anyone else gets `403 forbidden`. The token is
+checked before anything else in the request, and is never logged. A signed-in organiser's drafts
+record their `pid`, and publishing makes them the new session's first moderator.
 
 A draft holds coordinates and scenes, the answers to its clues, so only the organiser sees it.
 The server logs one line per draft created and per draft finished (its id, status, number of
@@ -1272,7 +1263,7 @@ Unknown fields are rejected. The response is `202` with the draft's id, and its 
 | Status | When |
 |--------|------|
 | `202`  | Started |
-| `401`  | Organiser key required |
+| `401`  | Token required |
 | `409`  | `{"detail": "a design is already running", "code": "designer_busy"}` while another draft is `running`. One run at a time: an agent run is a separate process using about 1 GiB |
 | `422`  | Invalid body. As elsewhere, no submitted value is echoed |
 | `503`  | `{"detail": "the hunt designer is not available", "code": "designer_disabled"}` when the runner can't run, e.g. the `agent` runner with no Anthropic key. Nothing is stored |
@@ -1299,7 +1290,7 @@ The drafts, newest first, at most 50:
 ```
 
 `area` and `theme` are as requested; `checkpoints` is how many the draft has. Answers `200`, or
-`401` without the organiser key.
+`401` without a token.
 
 ### `GET /designer/drafts/{draft}`
 
@@ -1353,7 +1344,7 @@ Times are UTC to the second.
 | Status | When |
 |--------|------|
 | `200`  | As above |
-| `401`  | Organiser key required |
+| `401`  | Token required |
 | `404`  | `{"detail": "unknown draft"}` |
 | `422`  | `draft` isn't a UUID |
 
@@ -1457,15 +1448,14 @@ The session it publishes, with [published sessions](sessions-file.md#published-s
 - the teams in the body's order, team *i* starting at checkpoint *i* (mod n) of the route and
   going round it, so teams spread out;
 - **fresh codes**, from `secrets`: each team's join code is a short word and four characters
-  that can't be misread (no `0`/`O`, `1`/`I`/`L`), e.g. `FOX-7Q2K`; the moderator code is `MOD-`
-  and twelve such characters. A code already in use, by the file or a published session, is
+  that can't be misread (no `0`/`O`, `1`/`I`/`L`), e.g. `FOX-7Q2K`; a code already in use, by the file or a published session, is
   drawn again.
 
 The draft becomes `published`, with `published: {session, at}`.
 
 | Status | When |
 |--------|------|
-| `201`  | `{"session", "name", "moderator-code", "teams": [{"name", "join-code"}]}` |
+| `201`  | `{"session", "name", "teams": [{"name", "join-code"}]}` |
 | `404`  | `{"detail": "unknown draft"}` |
 | `409`  | `{"detail": …, "code": "draft_not_ready"}`, the `detail` saying which: the draft isn't `ready`, a checkpoint is still `pending`, fewer than 3 are `accepted`, or it's already published |
 | `422`  | Invalid body; or `{"detail": "draft problems", "problems": [...]}` when the accepted checkpoints break a rule (`too_close`, `route_too_long`, …) |
@@ -1479,7 +1469,7 @@ The same body as the publish response, for a published draft, so the codes can b
 if the page was closed. `404 {"detail": "not published"}` for a draft that isn't published, and
 `404 {"detail": "unknown draft"}` for one that doesn't exist.
 
-**These two responses are the only ones that return join codes or a moderator code**, and only
+**These two responses are the only ones that return join codes**, and only
 to the organiser: see *Secrecy* in [the sessions file](sessions-file.md#secrecy).
 
 ### Map data
@@ -1727,8 +1717,7 @@ says who may do what:
 | Moderate a session: review queue, rulings, start and stop |  | Sessions they moderate | Any session |
 | Grant and remove roles |  |  | ✓ |
 
-Every moderator route (`/sessions/{session}/…`) takes the session's moderator code, as before,
-**or** a Clerk session token: an admin's, or an organiser's who was added as one of the
+Every moderator route (`/sessions/{session}/…`) takes a Clerk session token: an admin's, or an organiser's who was added as one of the
 session's moderators. An invalid token is `401 unauthorised`, a valid one for anyone else
 `403 forbidden`. Roles are read from the directory on each request, not from the token, so a
 demotion takes effect at once. A ruling made with a token records the moderator's `pid`.
@@ -1757,7 +1746,7 @@ and only the `pid` is stored and logged. Only organisers and admins can moderate
 `{"session": "…", "pid": "…"}`. `DELETE` answers `204`, or `404 not_a_moderator`.
 
 Admins change any session's moderators; an organiser only those of the sessions they moderate
-(else `403 forbidden`). The organiser key works too, until it goes (#120).
+(else `403 forbidden`).
 
 #### The first admin
 
@@ -1777,16 +1766,10 @@ otherwise `/mcp` is a `404`. Claude reaches it through the web app's relay.
 
 ### Access
 
-- **The organiser key.** Every request needs the [organiser key](#organiser-key), checked before
-  anything else. A missing header, another scheme, a wrong key, or no key configured all get the
-  designer's `401 organiser_unauthorised` with `WWW-Authenticate: Bearer`. Through MCP, the key
-  covers every session's moderator actions, so moderator codes never pass through Claude. The
-  key is a stopgap until OAuth.
-- **Failed attempts are rate-limited** per client address. After a failure, the client's next
-  request within a second, with any key or none, gets `429` with `Retry-After` and
-  `{"detail": "too many failed attempts, try again shortly", "code": "organiser_rate_limited"}`.
-  Behind the relay, every request comes from the relay's address, so one failure makes all of
-  them wait that second.
+- **No game-server sign-in yet.** The organiser key is gone and OAuth in front of `/mcp`
+  ([#131](https://github.com/ortaieb/scavenger-hunt-game-server/issues/131)) is not in: the
+  server checks no credential on `/mcp`. Mount it (`GAME_SERVER_MCP_ENABLED=true`) only where
+  nothing but the web app's relay can reach it.
 - **DNS-rebinding protection.** A request whose `Host` isn't in
   `GAME_SERVER_MCP_ALLOWED_HOSTS` gets `421`. An `Origin`, if sent, must be one the SDK
   accepts: none are configured, so a browser page can't call `/mcp`.
@@ -1841,7 +1824,7 @@ Results are structured content with output schemas, in the routes' shapes (kebab
 | `list_hunt_drafts` | Read | none | The newest 50, as [`GET /designer/drafts`](#get-designerdrafts) |
 | `get_hunt_draft` | Read | `draft_id`, `wait_seconds` (0–20, default 0) | The draft in full, as [`GET /designer/drafts/{draft}`](#get-designerdraftsdraft). With `wait_seconds` it returns as soon as the status changes, or at the timeout |
 | `edit_hunt_checkpoint` | Write | `draft_id`, `position`, `edit` (as the [`PATCH` body](#patch-designerdraftsdraftcheckpointsposition)) | The checkpoint as saved |
-| `publish_hunt` | Write; **can't be undone** | `draft_id`, `request` (as the [`publish` body](#post-designerdraftsdraftpublish)) | The session, its join codes and its moderator code |
+| `publish_hunt` | Write; **can't be undone** | `draft_id`, `request` (as the [`publish` body](#post-designerdraftsdraftpublish)) | The session and its join codes |
 
 `publish_hunt` is the only tool that returns codes. They are credentials, for their holders
 only, and are never logged; its description tells Claude so.
@@ -1912,8 +1895,7 @@ the record. It works while the session runs and after it stops. The note may des
 so it is never logged. Errors: `unknown_session`, and `unknown_submission` for an id that isn't
 in that session.
 
-Through MCP, the [organiser key](#organiser-key) stands in for the session's moderator code. The
-record doesn't yet say who ruled.
+Through MCP, the record doesn't yet say who ruled.
 
 ## Referee (visual challenge)
 

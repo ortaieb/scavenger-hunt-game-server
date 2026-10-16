@@ -137,9 +137,8 @@ def register_hunt_tools(server: MCPServer, settings: Settings, run: McpServices)
     def publish_hunt(draft_id: UUID, request: PublishRequest) -> PublicationOut:
         """Publish the draft's accepted checkpoints as a session, playable at once. Final.
 
-        The result holds the session's join codes and its moderator code. They are credentials:
-        give each to its holders only (a team's join code to that team, the moderator code to
-        the moderator) and never repeat them elsewhere. No other tool returns them.
+        The result holds the session's join codes. They are credentials: give each to its
+        team only and never repeat them elsewhere. No other tool returns them.
         """
         try:
             session = services.publish_draft(

@@ -6,7 +6,6 @@ primary key makes the database refuse a code used twice, even when two publishes
 """
 
 from collections.abc import Collection, Sequence
-from typing import Literal
 from uuid import UUID
 
 from psycopg import errors as pg_errors
@@ -15,8 +14,6 @@ from pydantic import JsonValue
 
 from game_server.database import Database
 from game_server.session_runs import SessionRun
-
-CodeKind = Literal["join", "moderator"]
 
 
 class AlreadyPublishedError(Exception):
@@ -56,11 +53,11 @@ class PublishedSessionRows:
             session: SessionRun(started_at, stopped_at) for session, started_at, stopped_at in rows
         }
 
-    def session_for_code(self, code: str, kind: CodeKind) -> UUID | None:
-        """The published session a normalised code of this kind belongs to, if any."""
+    def session_for_code(self, code: str) -> UUID | None:
+        """The published session a normalised join code belongs to, if any."""
         with self._database.connection() as conn:
             row = conn.execute(
-                "SELECT session FROM session_codes WHERE code = %s AND kind = %s", (code, kind)
+                "SELECT session FROM session_codes WHERE code = %s AND kind = 'join'", (code,)
             ).fetchone()
         return None if row is None else row[0]
 
@@ -77,7 +74,7 @@ class PublishedSessionRows:
         session: UUID,
         document: JsonValue,
         draft: UUID | None,
-        codes: Sequence[tuple[str, CodeKind]],
+        codes: Sequence[str],
     ) -> None:
         """Store the session and its codes in one transaction; `AlreadyPublishedError` if
         the id or a code is taken, and then nothing is stored."""
@@ -90,8 +87,8 @@ class PublishedSessionRows:
                 )
                 with conn.cursor() as cursor:
                     cursor.executemany(
-                        "INSERT INTO session_codes (code, session, kind) VALUES (%s, %s, %s)",
-                        [(code, session, kind) for code, kind in codes],
+                        "INSERT INTO session_codes (code, session, kind) VALUES (%s, %s, 'join')",
+                        [(code, session) for code in codes],
                     )
         except pg_errors.UniqueViolation:
             # `from None`: the database's message quotes the duplicate key, a code.

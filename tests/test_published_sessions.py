@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from conftest import SignIn
 from fastapi.testclient import TestClient
 from psycopg.rows import DictRow
 from pytest_mock import MockerFixture
@@ -31,14 +32,13 @@ from game_server.submissions import SubmissionStore
 
 START = datetime(2026, 10, 10, 9, 0, tzinfo=UTC)
 FILE_SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
-FILE_CODE, FILE_MODERATOR = "FILE-FOX-1", "FILE-MOD-1"
-FOX, HERON, MODERATOR = "PUB-FOX-7Q", "PUB-HERON-4M", "PUB-MOD-8H3T"
+FILE_CODE = "FILE-FOX-1"
+FOX, HERON = "PUB-FOX-7Q", "PUB-HERON-4M"
 
 
 def session_json(
     session_id: str | UUID,
     codes: tuple[str, ...] = (FOX, HERON),
-    moderator: str | None = MODERATOR,
     **changes: Any,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
@@ -69,8 +69,6 @@ def session_json(
         ],
         **changes,
     }
-    if moderator is not None:
-        payload["moderator-code"] = moderator
     return payload
 
 
@@ -86,7 +84,7 @@ def rows(database: Database) -> PublishedSessionRows:
 @pytest.fixture
 def repository(rows: PublishedSessionRows) -> SessionRepository:
     """The file's sessions (one, with its own codes) beside the database."""
-    file_session = session_json(FILE_SESSION, codes=(FILE_CODE,), moderator=FILE_MODERATOR)
+    file_session = session_json(FILE_SESSION, codes=(FILE_CODE,))
     return parse_sessions(json.dumps([file_session])).beside(rows)
 
 
@@ -111,7 +109,6 @@ def test_a_published_session_is_served_like_a_file_session(repository: SessionRe
     assert repository.find_team(f" {FOX.lower()} ") == (session, session.teams[0])
     assert repository.get_team(session.id, "BLUE HERONS") == session.teams[1]
     assert repository.get_team(session.id, "Nobody") is None
-    assert repository.moderator_code(session.id) == MODERATOR
     assert repository.reference_photos(session.id, 1) == ()
 
 
@@ -119,7 +116,6 @@ def test_file_sessions_are_still_served(repository: SessionRepository) -> None:
     file_id = UUID(FILE_SESSION)
 
     assert repository.get_session(file_id) is not None
-    assert repository.moderator_code(file_id) == FILE_MODERATOR
     found = repository.find_team(FILE_CODE)
     assert found is not None
     assert found[0].id == file_id
@@ -139,11 +135,7 @@ def test_the_document_is_in_the_sessions_file_shape(
     reloaded = parse_sessions(json.dumps([row["document"]])).get_session(session.id)
     assert reloaded == session
     kinds = db.execute("SELECT code, kind FROM session_codes ORDER BY code").fetchall()
-    assert sorted((r["code"], r["kind"]) for r in kinds) == [
-        (FOX, "join"),
-        (HERON, "join"),
-        (MODERATOR, "moderator"),
-    ]
+    assert sorted((r["code"], r["kind"]) for r in kinds) == [(FOX, "join"), (HERON, "join")]
 
 
 def test_codes_are_stored_normalised(repository: SessionRepository) -> None:
@@ -152,14 +144,6 @@ def test_codes_are_stored_normalised(repository: SessionRepository) -> None:
     repository.publish_session(session)
 
     assert repository.find_team("PUB-FOX-7Q") == (session, session.teams[0])
-
-
-def test_a_session_without_a_moderator_code(repository: SessionRepository) -> None:
-    session = game_session(moderator=None)
-
-    repository.publish_session(session)
-
-    assert repository.moderator_code(session.id) is None
 
 
 # --- what publishing refuses --------------------------------------------------------------------
@@ -188,43 +172,9 @@ def test_a_join_code_already_published(
 ) -> None:
     repository.publish_session(game_session())
 
-    second = game_session(codes=("PUB-OWL-9K", FOX), moderator="PUB-MOD-2")
+    second = game_session(codes=("PUB-OWL-9K", FOX))
 
     assert refused(repository, db, second) == ["teams[1].join-code: already in use"]
-
-
-@pytest.mark.parametrize(
-    ("moderator", "path"),
-    [(FILE_CODE, "moderator-code"), (FILE_MODERATOR, "moderator-code")],
-    ids=["a-file-join-code", "the-file-moderator-code"],
-)
-def test_a_moderator_code_taken_by_the_file(
-    repository: SessionRepository,
-    db: psycopg.Connection[DictRow],
-    moderator: str,
-    path: str,
-) -> None:
-    problems = refused(repository, db, game_session(moderator=moderator))
-
-    assert problems == [f"{path}: already in use"]
-
-
-def test_a_moderator_code_equal_to_a_published_join_code(
-    repository: SessionRepository, db: psycopg.Connection[DictRow]
-) -> None:
-    repository.publish_session(game_session())
-
-    problems = refused(repository, db, game_session(codes=("PUB-OWL-9K",), moderator=HERON))
-
-    assert problems == ["moderator-code: already in use"]
-
-
-def test_a_moderator_code_equal_to_its_own_join_code(
-    repository: SessionRepository, db: psycopg.Connection[DictRow]
-) -> None:
-    problems = refused(repository, db, game_session(moderator=HERON))
-
-    assert problems == ["teams[1].join-code: same as a moderator code"]
 
 
 def test_a_join_code_used_twice_in_the_session(
@@ -239,12 +189,8 @@ def test_an_id_in_use(repository: SessionRepository, db: psycopg.Connection[Dict
     published = game_session()
     repository.publish_session(published)
 
-    in_the_file = refused(
-        repository, db, game_session(FILE_SESSION, codes=("PUB-A-1", "PUB-B-1"), moderator=None)
-    )
-    published_again = refused(
-        repository, db, game_session(published.id, codes=("PUB-C-1",), moderator=None)
-    )
+    in_the_file = refused(repository, db, game_session(FILE_SESSION, codes=("PUB-A-1", "PUB-B-1")))
+    published_again = refused(repository, db, game_session(published.id, codes=("PUB-C-1",)))
 
     assert in_the_file == ["id: already in use"]
     assert published_again == ["id: already in use"]
@@ -290,11 +236,11 @@ def test_problems_never_show_a_value(
     repository.publish_session(game_session())
 
     with pytest.raises(SessionPublishError) as raised:
-        repository.publish_session(game_session(codes=(FOX, FILE_CODE), moderator=HERON))
+        repository.publish_session(game_session(codes=(FOX, FILE_CODE)))
 
     message = str(raised.value)
-    assert message.startswith("3 validation error(s)")
-    for code in (FOX, FILE_CODE, HERON):
+    assert message.startswith("2 validation error(s)")
+    for code in (FOX, FILE_CODE):
         assert code not in message.upper()
 
 
@@ -313,7 +259,7 @@ def test_two_publishes_racing_for_one_code(
 
     def publish(other_code: str) -> str:
         repository = SessionRepository().beside(rows)  # as two server processes would
-        session = game_session(codes=(FOX, other_code), moderator=f"MOD-{other_code}")
+        session = game_session(codes=(FOX, other_code))
         barrier.wait()
         try:
             repository.publish_session(session)
@@ -325,7 +271,7 @@ def test_two_publishes_racing_for_one_code(
         outcomes = sorted(pool.map(publish, ["PUB-A-11", "PUB-B-22"]))
 
     assert outcomes == ["published", "teams[0].join-code: already in use"]
-    assert stored(db) == (1, 3)
+    assert stored(db) == (1, 2)
 
 
 def test_the_database_refuses_a_code_the_check_missed(
@@ -345,20 +291,20 @@ def test_the_database_refuses_a_code_the_check_missed(
     )
 
     with pytest.raises(SessionPublishError) as raised:
-        repository.publish_session(game_session(codes=("PUB-OWL-9K", FOX), moderator="PUB-MOD-2"))
+        repository.publish_session(game_session(codes=("PUB-OWL-9K", FOX)))
 
     assert raised.value.problems == ["teams[1].join-code: already in use"]
     assert len(checks) == 2
-    assert stored(db) == (1, 3)
+    assert stored(db) == (1, 2)
 
 
 def test_the_rows_refuse_a_taken_code(
     rows: PublishedSessionRows, db: psycopg.Connection[DictRow]
 ) -> None:
-    rows.insert(uuid4(), {}, None, [("CODE-1", "join")])
+    rows.insert(uuid4(), {}, None, ["CODE-1"])
 
     with pytest.raises(AlreadyPublishedError):
-        rows.insert(uuid4(), {}, None, [("CODE-2", "join"), ("CODE-1", "join")])
+        rows.insert(uuid4(), {}, None, ["CODE-2", "CODE-1"])
 
     assert stored(db) == (1, 1)
 
@@ -426,7 +372,6 @@ def test_file_sessions_never_query(
     repository.get_session(file_id)
     repository.get_checkpoint(file_id, 1)
     repository.get_team(file_id, "Red Foxes")
-    repository.moderator_code(file_id)
     repository.find_team(FILE_CODE)
 
     assert (document.call_count, by_code.call_count) == (0, 0)
@@ -443,7 +388,7 @@ def test_codes_are_never_in_a_repr_or_a_log(
     repository.find_team(FOX)
 
     indexed = _Indexed.of(game_session())
-    for code in (FOX, HERON, MODERATOR, FILE_CODE, FILE_MODERATOR):
+    for code in (FOX, HERON, FILE_CODE):
         assert code not in repr(repository)
         assert code not in repr(indexed)
         assert code not in caplog.text
@@ -462,7 +407,7 @@ def client(repository: SessionRepository) -> Iterator[TestClient]:
 
 
 def test_a_published_session_is_playable_at_once(
-    repository: SessionRepository, client: TestClient
+    sign_in: SignIn, repository: SessionRepository, client: TestClient
 ) -> None:
     session = game_session()
     repository.publish_session(session)
@@ -471,9 +416,7 @@ def test_a_published_session_is_playable_at_once(
         code: client.post("/join", json={"code": code, "consent": True}).json()
         for code in (FOX, HERON)
     }
-    started = client.post(
-        f"/sessions/{session.id}/start", headers={"Authorization": f"Bearer {MODERATOR}"}
-    )
+    started = client.post(f"/sessions/{session.id}/start", headers=sign_in("admin"))
 
     assert started.status_code == 201
     for code, first in ((FOX, "Clue 1"), (HERON, "Clue 2")):
@@ -491,14 +434,14 @@ def test_an_unknown_session_is_still_404(client: TestClient) -> None:
 
 
 def test_the_reference_photo_route_has_none_for_a_published_session(
-    repository: SessionRepository, client: TestClient
+    sign_in: SignIn, repository: SessionRepository, client: TestClient
 ) -> None:
     session = game_session()
     repository.publish_session(session)
 
     response = client.get(
         f"/sessions/{session.id}/checkpoints/1/reference-photos/1",
-        headers={"Authorization": f"Bearer {MODERATOR}"},
+        headers=sign_in("admin"),
     )
 
     assert response.status_code == 404
@@ -510,7 +453,7 @@ def test_the_reference_photo_route_has_none_for_a_published_session(
 def test_every_session_is_listed_with_its_source_and_phase(
     repository: SessionRepository, database: Database
 ) -> None:
-    first, second = game_session(), game_session(codes=("PUB-OWL-2A",), moderator=None)
+    first, second = game_session(), game_session(codes=("PUB-OWL-2A",))
     repository.publish_session(first)
     repository.publish_session(second)
     store = SubmissionStore(database)
@@ -539,7 +482,7 @@ def test_a_cold_repository_lists_the_published_sessions(
 
 
 def test_without_the_database_only_the_file_is_listed_all_scheduled() -> None:
-    file_session = session_json(FILE_SESSION, codes=(FILE_CODE,), moderator=FILE_MODERATOR)
+    file_session = session_json(FILE_SESSION, codes=(FILE_CODE,))
 
     listed = parse_sessions(json.dumps([file_session])).list_sessions()
 

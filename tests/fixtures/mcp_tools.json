@@ -1173,7 +1173,7 @@
   },
   {
     "name": "publish_hunt",
-    "description": "Publish the draft's accepted checkpoints as a session, playable at once. Final.\n\nThe result holds the session's join codes and its moderator code. They are credentials:\ngive each to its holders only (a team's join code to that team, the moderator code to\nthe moderator) and never repeat them elsewhere. No other tool returns them.\n",
+    "description": "Publish the draft's accepted checkpoints as a session, playable at once. Final.\n\nThe result holds the session's join codes. They are credentials: give each to its\nteam only and never repeat them elsewhere. No other tool returns them.\n",
     "inputSchema": {
       "type": "object",
       "$defs": {
@@ -1268,17 +1268,6 @@
           "title": "Name",
           "type": "string"
         },
-        "moderator-code": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Moderator-Code"
-        },
         "teams": {
           "items": {
             "$ref": "#/$defs/TeamCodeOut"
@@ -1290,7 +1279,6 @@
       "required": [
         "session",
         "name",
-        "moderator-code",
         "teams"
       ],
       "title": "PublicationOut",

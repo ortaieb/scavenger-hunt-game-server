@@ -79,7 +79,7 @@ class SubmissionRulingOut(_KebabModel):
     responses={
         201: {"model": SubmissionRulingOut, "description": "The submission's first ruling"},
         200: {"description": "Replaced the submission's earlier ruling"},
-        401: {"description": "Moderator code required (code: moderator_unauthorised)"},
+        401: {"description": "Moderator token required (code: unauthorised)"},
         404: {"description": "Unknown session, or a submission that isn't in it"},
     },
 )

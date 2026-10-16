@@ -15,9 +15,8 @@ from fastapi.testclient import TestClient
 from httpx2 import Response
 from psycopg.rows import DictRow
 from test_auth import ISSUER, ORIGIN, claims, private_pem, public_pem
-from test_designer_review import AUTH as KEY_AUTH
-from test_designer_review import HUNT, KEY, FixedCodes, ready_draft, review
-from test_ruling import MODERATOR, SESSION, session_json, submit
+from test_designer_review import AUTH, HUNT, FixedCodes, ready_draft, review
+from test_ruling import SESSION, session_json, submit
 
 from game_server.app import create_app
 from game_server.auth import PERMISSIONS, can
@@ -37,7 +36,6 @@ from game_server.sessions import SessionRepository, get_session_repository, pars
 from game_server.submissions import SubmissionStore
 
 NOW = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
-CODE_AUTH = {"Authorization": f"Bearer {MODERATOR}"}
 
 
 @pytest.fixture(scope="module")
@@ -52,7 +50,6 @@ def settings(key: rsa.RSAPrivateKey) -> Settings:
         clerk_jwt_key=public_pem(key),
         clerk_issuer=ISSUER,
         clerk_authorized_parties=[ORIGIN],
-        organiser_key=KEY,
     )
 
 
@@ -73,7 +70,7 @@ def outbox() -> ClerkOutbox:
 
 @pytest.fixture
 def repository(database: Database) -> SessionRepository:
-    sessions = parse_sessions(json.dumps([session_json(SESSION, MODERATOR)]))
+    sessions = parse_sessions(json.dumps([session_json(SESSION)]))
     return sessions.beside(PublishedSessionRows(database))
 
 
@@ -248,7 +245,8 @@ def test_the_directory_not_the_token_decides_the_role(
 
 
 def test_the_role_api_needs_a_token(client: TestClient, directory: DirectoryRepository) -> None:
-    assert put_role(client, person(directory, "bob"), "admin", KEY_AUTH).status_code == 401
+    retired_key = {"Authorization": "Bearer retired-key"}
+    assert put_role(client, person(directory, "bob"), "admin", retired_key).status_code == 401
     assert client.get("/directory/people").status_code == 401
 
 
@@ -318,10 +316,6 @@ def route(request: pytest.FixtureRequest) -> tuple[str, str]:
     return found
 
 
-def test_the_moderator_code_still_works(client: TestClient, route: tuple[str, str]) -> None:
-    assert allowed(moderate(client, route, CODE_AUTH))
-
-
 def test_an_admin_moderates_any_session(
     client: TestClient, key: rsa.RSAPrivateKey, directory: DirectoryRepository, route: Any
 ) -> None:
@@ -377,20 +371,15 @@ def test_a_ruling_records_the_moderator_who_made_it(
 ) -> None:
     participant = str(store.join_team(UUID(SESSION), "Red Foxes", NOW).participant)
     by_token = submit(store, participant, 1, "pending")
-    by_code = submit(store, participant, 2, "pending")
     admin = person(directory, "ada", "admin")
     url = f"/sessions/{SESSION}/submissions/{{}}/ruling"
 
     client.post(
         url.format(by_token), json={"ruling": "approve"}, headers=bearer(key, admin, "admin")
     )
-    client.post(url.format(by_code), json={"ruling": "reject"}, headers=CODE_AUTH)
 
     rows = db.execute("SELECT submission_id, pid FROM rulings ORDER BY id").fetchall()
-    assert [(row["submission_id"], row["pid"]) for row in rows] == [
-        (by_token, admin),
-        (by_code, None),
-    ]
+    assert [(row["submission_id"], row["pid"]) for row in rows] == [(by_token, admin)]
 
 
 # --- demotion takes effect at once ---------------------------------------------------------------
@@ -421,10 +410,6 @@ def test_demoting_an_organiser_stops_their_access_at_once(
 # --- the hunt designer ---------------------------------------------------------------------------
 
 
-def test_the_organiser_key_still_works(client: TestClient) -> None:
-    assert client.get("/designer/drafts", headers=KEY_AUTH).status_code == 200
-
-
 @pytest.mark.parametrize(("role", "status"), [("organiser", 200), ("admin", 200), ("player", 403)])
 def test_the_designer_takes_a_token_with_a_designing_role(
     client: TestClient,
@@ -446,8 +431,9 @@ def test_publishing_as_an_organiser_makes_them_its_moderator(
 ) -> None:
     organiser = person(directory, "bob", "organiser")
     draft = ready_draft(DraftStore(database))
-    review(client, draft, p1="accepted", p2="accepted", p3="accepted", p4="rejected")
     headers = bearer(key, organiser, "organiser")
+    AUTH.update(headers)  # the review helper signs in with this
+    review(client, draft, p1="accepted", p2="accepted", p3="accepted", p4="rejected")
 
     response = client.post(f"/designer/drafts/{draft}/publish", json=HUNT, headers=headers)
 
@@ -455,16 +441,6 @@ def test_publishing_as_an_organiser_makes_them_its_moderator(
     session = UUID(response.json()["session"])
     assert SessionModerators(database).is_moderator(session, organiser)
     assert allowed(moderate(client, ("GET", f"/sessions/{session}/overview"), headers))
-
-
-def test_publishing_with_the_key_adds_no_moderator(
-    client: TestClient, database: Database, db: psycopg.Connection[DictRow]
-) -> None:
-    draft = ready_draft(DraftStore(database))
-    review(client, draft, p1="accepted", p2="accepted", p3="accepted", p4="rejected")
-
-    assert client.post(f"/designer/drafts/{draft}/publish", json=HUNT, headers=KEY_AUTH).is_success
-    assert db.execute("SELECT 1 FROM session_moderators").fetchall() == []
 
 
 def test_a_draft_records_the_organiser_who_started_it(
@@ -546,29 +522,15 @@ def test_an_organiser_manages_only_the_sessions_they_moderate(
     assert client.post(moderators_url(), json=body, headers=headers).status_code == 201
 
 
-def test_the_organiser_key_manages_moderators_too(
-    client: TestClient, directory: DirectoryRepository, db: psycopg.Connection[DictRow]
-) -> None:
-    bob = person(directory, "bob", "organiser")
-
-    response = client.post(moderators_url(), json={"email": "bob@example.com"}, headers=KEY_AUTH)
-
-    assert response.status_code == 201
-    assert db.execute("SELECT added_by FROM session_moderators").fetchall() == [{"added_by": None}]
-    removed = client.delete(f"{moderators_url()}/{bob}", headers=KEY_AUTH)
-    assert removed.status_code == 204
-    assert client.delete(f"{moderators_url()}/{bob}", headers=KEY_AUTH).status_code == 404
-
-
-def test_managing_moderators_needs_a_credential_and_a_known_session(
-    client: TestClient,
+def test_managing_moderators_needs_a_token_and_a_known_session(
+    client: TestClient, key: rsa.RSAPrivateKey, directory: DirectoryRepository
 ) -> None:
     body = {"email": "bob@example.com"}
 
     assert client.post(moderators_url(), json=body).status_code == 401
-    assert client.post(moderators_url(), json=body, headers=CODE_AUTH).status_code == 401
     unknown = moderators_url("00000000-0000-4000-8000-000000000000")
-    assert client.post(unknown, json=body, headers=KEY_AUTH).status_code == 404
+    admin = bearer(key, person(directory, "ada", "admin"), "admin")
+    assert client.post(unknown, json=body, headers=admin).status_code == 404
 
 
 # --- the first admin -----------------------------------------------------------------------------

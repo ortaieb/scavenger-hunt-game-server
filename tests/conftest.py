@@ -1,17 +1,22 @@
 import os
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Literal
 
+import jwt
 import psycopg
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from migration_files import applied_version, newest_version
 from psycopg.rows import DictRow, dict_row
 from pydantic import TypeAdapter
 
-from game_server.config import get_settings
+from game_server.config import Settings, get_settings
 from game_server.database import Database, close_databases, database_config, open_database
 from game_server.directory.clerk import clerk_api
+from game_server.directory.repository import DirectoryRepository
 from game_server.directory.routes import provision_rate_limiter
 from game_server.proximity import hint_rate_limiter
 from game_server.published_sessions import PublishedSessionRows
@@ -175,3 +180,63 @@ def load_sessions(
         return SessionRepository().beside(PublishedSessionRows(database))  # cold: read back
 
     return load
+
+
+CLERK_ISSUER = "https://example.clerk.accounts.dev"
+CLERK_ORIGIN = "https://play.example.com"
+SignIn = Callable[..., dict[str, str]]
+
+
+@pytest.fixture(scope="session")
+def clerk_key() -> rsa.RSAPrivateKey:
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@pytest.fixture
+def sign_in(clerk_key: rsa.RSAPrivateKey, monkeypatch: pytest.MonkeyPatch) -> SignIn:
+    """Signs a person in with a real Clerk-style token: `sign_in(role="admin")` returns headers.
+
+    Trusts the test key through the environment, so every `Settings()` verifies these tokens.
+    The role is granted in the directory, which is the source of truth for it.
+    """
+    public = clerk_key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    private = clerk_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    monkeypatch.setenv("GAME_SERVER_CLERK_JWT_KEY", public.decode())
+    monkeypatch.setenv("GAME_SERVER_CLERK_ISSUER", CLERK_ISSUER)
+    monkeypatch.setenv("GAME_SERVER_CLERK_AUTHORIZED_PARTIES", CLERK_ORIGIN)
+    # Not `get_settings()`: it is cached, and a test may still set its own environment.
+    directory = DirectoryRepository(open_database(database_config(Settings())))
+
+    def sign(role: str = "admin", user: str | None = None) -> dict[str, str]:
+        user = user or f"user_{role}"
+        pid = directory.get_or_create_person(user, f"{user}@example.com")
+        directory.set_role(pid, role, None)
+        now = int(time.time())
+        claims = {
+            "exp": now + 600,
+            "nbf": now - 10,
+            "iat": now - 10,
+            "iss": CLERK_ISSUER,
+            "sub": user,
+            "sid": f"sess_{user}",
+            "azp": CLERK_ORIGIN,
+            "sts": "active",
+            "pid": str(pid),
+            "role": role,
+        }
+        token = jwt.encode(claims, private, algorithm="RS256")
+        return {"Authorization": f"Bearer {token}"}
+
+    return sign
+
+
+@pytest.fixture
+def admin_headers(sign_in: SignIn) -> dict[str, str]:
+    """`Authorization` headers for a signed-in admin, who may moderate any session."""
+    return sign_in("admin")

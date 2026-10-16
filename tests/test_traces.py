@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 import anthropic
 import pytest
+from conftest import SignIn
 from fastapi.testclient import TestClient
 from httpx2 import Response
 from images import jpeg, scene
@@ -40,8 +41,8 @@ from game_server.submissions import NewSubmission, SubmissionStore
 
 SESSION = "aeffe667-4f9f-4108-b5e2-56ae821fe413"
 OTHER = "0b5e9c1e-2f7a-4d8e-9a57-3c1f6f0d2b44"
-MODERATOR = "MOD-8H3T-QX"
-OTHER_MODERATOR = "MOD-2KV9-ZP"
+MODERATOR = "MOD-8H3T-QX"  # the session's retired code: it opens nothing, and must not leak
+ADMIN: dict[str, str] = {}  # the signed-in admin's headers, set for each test
 FOX, HERON = "FOX-7Q2K", "HERON-4MXP"
 START = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 DURING = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
@@ -93,14 +94,13 @@ POSE_UNSURE = CheckResult(
 )
 
 
-def session_json(session_id: str, moderator: str, suffix: str = "") -> dict[str, Any]:
+def session_json(session_id: str, suffix: str = "") -> dict[str, Any]:
     return {
         "id": session_id,
         "name": "Hunt",
         "location": "Here",
         "start-time": START.isoformat(),
         "end-time": (START + timedelta(hours=3)).isoformat(),
-        "moderator-code": moderator,
         "checkpoints": [
             {
                 "sequence": n,
@@ -119,6 +119,12 @@ def session_json(session_id: str, moderator: str, suffix: str = "") -> dict[str,
     }
 
 
+@pytest.fixture(autouse=True)
+def signed_in_admin(admin_headers: dict[str, str]) -> None:
+    ADMIN.clear()
+    ADMIN.update(admin_headers)
+
+
 @pytest.fixture
 def client(
     tmp_path: Path, mocker: MockerFixture, load_sessions: Callable[[str], SessionRepository]
@@ -134,11 +140,7 @@ def client(
     app.dependency_overrides[get_referee] = lambda: referee
     settings = Settings(image_base_path=tmp_path / "images")
     app.dependency_overrides[get_settings] = lambda: settings
-    sessions = load_sessions(
-        json.dumps(
-            [session_json(SESSION, MODERATOR), session_json(OTHER, OTHER_MODERATOR, "-OTHER")]
-        )
-    )
+    sessions = load_sessions(json.dumps([session_json(SESSION), session_json(OTHER, "-OTHER")]))
     app.dependency_overrides[get_session_repository] = lambda: sessions
     app.dependency_overrides[get_clock] = lambda: lambda: DURING
     with TestClient(app) as test_client:
@@ -146,10 +148,7 @@ def client(
 
 
 def get_traces(client: TestClient, session: str = SESSION, **params: Any) -> Response:
-    code = MODERATOR if session == SESSION else OTHER_MODERATOR
-    return client.get(
-        f"/sessions/{session}/traces", params=params, headers={"Authorization": f"Bearer {code}"}
-    )
+    return client.get(f"/sessions/{session}/traces", params=params, headers=ADMIN)
 
 
 def traces(client: TestClient, **params: Any) -> dict[str, Any]:
@@ -319,7 +318,7 @@ def test_a_traced_submission(client: TestClient, store: SubmissionStore) -> None
 
 def test_a_photo_judged_by_the_referee_shows_its_call(client: TestClient) -> None:
     fox = join(client)
-    client.post(f"/sessions/{SESSION}/start", headers={"Authorization": f"Bearer {MODERATOR}"})
+    client.post(f"/sessions/{SESSION}/start", headers=ADMIN)
     client.post(f"/sessions/{SESSION}/participants/{fox}/arrive", json={"checkpoint": 1})
     photo = photograph(client, fox).json()
 
@@ -350,7 +349,7 @@ def test_a_photo_judged_by_the_referee_shows_its_call(client: TestClient) -> Non
 
 def test_a_photo_the_referee_was_not_consulted_on_has_no_trace(client: TestClient) -> None:
     fox = join(client)
-    client.post(f"/sessions/{SESSION}/start", headers={"Authorization": f"Bearer {MODERATOR}"})
+    client.post(f"/sessions/{SESSION}/start", headers=ADMIN)
     photograph(client, fox)  # without checking in
 
     body = traces(client)
@@ -588,10 +587,10 @@ def test_prompts_hold_each_hash_on_the_page_once(
 
 @pytest.mark.parametrize(
     "authorization",
-    [None, "Bearer MOD-WRONG-1", f"Bearer {OTHER_MODERATOR}", f"Bearer {FOX}"],
-    ids=["no-code", "wrong", "other-session", "join-code"],
+    [None, "Bearer MOD-WRONG-1", f"Bearer {MODERATOR}", f"Bearer {FOX}"],
+    ids=["no-token", "wrong", "retired-moderator-code", "join-code"],
 )
-def test_moderator_code_required(
+def test_a_moderator_token_is_required(
     client: TestClient, store: SubmissionStore, authorization: str | None
 ) -> None:
     record(store, referee=OK)
@@ -600,17 +599,16 @@ def test_moderator_code_required(
     response = client.get(f"/sessions/{SESSION}/traces", headers=headers)
 
     assert response.status_code == 401
-    assert response.json() == {
-        "detail": "moderator code required",
-        "code": "moderator_unauthorised",
-    }
-    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_a_player_is_forbidden(client: TestClient, sign_in: SignIn) -> None:
+    response = client.get(f"/sessions/{SESSION}/traces", headers=sign_in("player"))
+
+    assert response.status_code == 403
 
 
 def test_unknown_session_is_404(client: TestClient) -> None:
-    response = client.get(
-        f"/sessions/{uuid4()}/traces", headers={"Authorization": f"Bearer {MODERATOR}"}
-    )
+    response = client.get(f"/sessions/{uuid4()}/traces", headers=ADMIN)
 
     assert response.status_code == 404
     assert response.json() == {"detail": "unknown session"}
@@ -618,7 +616,7 @@ def test_unknown_session_is_404(client: TestClient) -> None:
 
 def test_the_traces_reveal_no_coordinates_codes_or_participants(client: TestClient) -> None:
     fox = join(client)
-    client.post(f"/sessions/{SESSION}/start", headers={"Authorization": f"Bearer {MODERATOR}"})
+    client.post(f"/sessions/{SESSION}/start", headers=ADMIN)
     arrival = client.post(f"/sessions/{SESSION}/participants/{fox}/arrive", json={"checkpoint": 1})
     photograph(client, fox)
     photograph(client, fox)  # the check-in is used up: no trace

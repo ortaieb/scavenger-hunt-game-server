@@ -37,11 +37,15 @@ def send_due(outbox: ClerkOutbox, clerk: ClerkUsers, clock: Clock) -> int:
     while writes := outbox.claim(clock(), BATCH):
         for write in writes:
             try:
-                clerk.write_identity(write.clerk_user_id, write.pid, write.role)
+                if write.kind == "revoke_sessions":
+                    clerk.revoke_sessions(write.clerk_user_id)
+                else:
+                    clerk.write_identity(write.clerk_user_id, write.pid, write.role)
             except ClerkError as exc:
                 outbox.retry_later(write, clock())
                 logger.warning(
-                    "Clerk write for person %s failed (%s, attempt %d): retrying later",
+                    "Clerk %s for person %s failed (%s, attempt %d): retrying later",
+                    write.kind,
                     write.pid,
                     exc,
                     write.attempts + 1,

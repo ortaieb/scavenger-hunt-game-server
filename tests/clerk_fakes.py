@@ -22,6 +22,7 @@ class FakeClerk:
         self.emails: dict[str, str] = {}
         self.users: dict[str, ClerkIdentity] = {}
         self.writes: list[tuple[str, UUID, str]] = []
+        self.revoked: list[str] = []
         self.email_reads = 0
         self.fail_reads = False
         self.fail_writes = False
@@ -37,6 +38,12 @@ class FakeClerk:
             raise ClerkError("ConnectError")
         self.writes.append((user_id, pid, role))
         self.users[user_id] = ClerkIdentity(user_id, str(pid), str(pid), role)
+
+    def revoke_sessions(self, user_id: str) -> int:
+        if self.fail_writes:
+            raise ClerkError("ConnectError")
+        self.revoked.append(user_id)
+        return 1
 
     def identities(self) -> Iterator[ClerkIdentity]:
         if self.fail_reads:

@@ -31,6 +31,30 @@ class Person:
 
 
 @dataclass(frozen=True)
+class RoleChange:
+    """A role set on a person: what it was, what it is, and the Clerk user to tell."""
+
+    pid: UUID
+    from_role: str
+    to_role: str
+    clerk_user_id: str
+
+    @property
+    def changed(self) -> bool:
+        """Whether the role is different from before."""
+        return self.from_role != self.to_role
+
+
+@dataclass(frozen=True)
+class Listed:
+    """A person as an admin screen lists them."""
+
+    pid: UUID
+    display_name: str | None
+    role: str
+
+
+@dataclass(frozen=True)
 class Identity:
     """What Clerk should hold for a person: their pid and their platform role."""
 
@@ -103,6 +127,63 @@ class DirectoryRepository:
                 "SELECT role FROM directory.role_grants WHERE pid = %s", (pid,)
             ).fetchone()
         return "player" if row is None else str(row[0])
+
+    def set_role(self, pid: UUID, role: str, changed_by: UUID | None) -> RoleChange | None:
+        """Give an active person a platform role, logged in `role_changes` with who did it;
+        None if there's no such active person. `player` removes their grant. Setting the role
+        they already have changes and logs nothing."""
+        with self._database.transaction() as conn:
+            row = conn.execute(
+                "SELECT p.clerk_user_id, coalesce(g.role, 'player')"
+                " FROM directory.people p LEFT JOIN directory.role_grants g ON g.pid = p.pid"
+                " WHERE p.pid = %s AND p.status = 'active' FOR UPDATE OF p",
+                (pid,),
+            ).fetchone()
+            if row is None:
+                return None
+            change = RoleChange(pid, str(row[1]), role, str(row[0]))
+            if not change.changed:
+                return change
+            if role == "player":
+                conn.execute("DELETE FROM directory.role_grants WHERE pid = %s", (pid,))
+            else:
+                conn.execute(
+                    "INSERT INTO directory.role_grants (pid, role, granted_by, granted_at)"
+                    " VALUES (%s, %s, %s, now()) ON CONFLICT (pid) DO UPDATE"
+                    " SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by,"
+                    " granted_at = EXCLUDED.granted_at",
+                    (pid, role, changed_by),
+                )
+            conn.execute(
+                "INSERT INTO directory.role_changes (pid, from_role, to_role, changed_by)"
+                " VALUES (%s, %s, %s, %s)",
+                (pid, change.from_role, role, changed_by),
+            )
+        return change
+
+    def people_with_roles(self, roles: Collection[str]) -> list[Listed]:
+        """Active people whose role is one of `roles`, with their display names."""
+        with self._database.connection() as conn:
+            rows = conn.execute(
+                "SELECT p.pid, f.display_name, coalesce(g.role, 'player') AS role"
+                " FROM directory.people p"
+                " LEFT JOIN directory.role_grants g ON g.pid = p.pid"
+                " LEFT JOIN directory.profiles f ON f.pid = p.pid"
+                " WHERE p.status = 'active' AND coalesce(g.role, 'player') = ANY(%s)"
+                " ORDER BY role, f.display_name NULLS LAST, p.pid",
+                (list(roles),),
+            ).fetchall()
+        return [Listed(*row) for row in rows]
+
+    def find_pid_by_email(self, email: str) -> UUID | None:
+        """The active person with this email address (ignoring case), if exactly one has it."""
+        with self._database.connection() as conn:
+            rows = conn.execute(
+                "SELECT p.pid FROM directory.people p JOIN directory.profiles f ON f.pid = p.pid"
+                " WHERE p.status = 'active' AND lower(f.email) = lower(%s) LIMIT 2",
+                (email.strip(),),
+            ).fetchall()
+        return rows[0][0] if len(rows) == 1 else None
 
     def active_identities(self) -> dict[str, Identity]:
         """Every active person's identity, by Clerk user id."""

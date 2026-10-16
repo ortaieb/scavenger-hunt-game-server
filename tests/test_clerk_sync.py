@@ -120,7 +120,7 @@ def test_a_failed_write_is_retried_after_the_backoff(
     assert send_due(outbox, clerk, clock) == 1
 
     assert [r.getMessage() for r in caplog.records] == [
-        f"Clerk write for person {pid} failed (ConnectError, attempt 1): retrying later"
+        f"Clerk identity for person {pid} failed (ConnectError, attempt 1): retrying later"
     ]
 
 

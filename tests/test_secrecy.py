@@ -259,6 +259,16 @@ def every_route_response(
     accounts = {  # signed events and Clerk tokens: their own tests cover them signed in
         ("POST", "/internal/clerk-events"): [client.post("/internal/clerk-events", json={})],
         ("POST", "/me/provision"): [client.post("/me/provision")],  # 401
+        ("PUT", "/directory/people/{pid}/role"): [
+            client.put(f"/directory/people/{UNKNOWN}/role", json={"role": "admin"})  # 401
+        ],
+        ("GET", "/directory/people"): [client.get("/directory/people")],  # 401
+        ("POST", "/sessions/{session}/moderators"): [
+            client.post(f"/sessions/{SESSION}/moderators", json={"email": "a@example.com"})
+        ],  # 401
+        ("DELETE", "/sessions/{session}/moderators/{pid}"): [
+            client.delete(f"/sessions/{SESSION}/moderators/{UNKNOWN}")  # 401
+        ],
     }
     for route, route_responses in (
         *opening.items(),

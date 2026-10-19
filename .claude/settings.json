@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run mypy *)",
+      "Bash(uv run pytest *)",
+      "Bash(make check *)"
+    ]
+  },
+  "enabledPlugins": {
+    "pyright-lsp@claude-plugins-official": true
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/check-build.sh",
+            "args": [],
+            "timeout": 600,
+            "statusMessage": "Running mypy and pytest..."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -129,3 +129,29 @@ Rules for Claude (and everyone):
 - Keep functions small and single-purpose; extract rather than let one function grow past ~40 lines.
 - Public functions and classes get a docstring; keep it to what the signature doesn't already say.
 - No bare `except:` — catch specific exceptions.
+
+## PR Workflow
+- Before opening any PR, run the FULL test suite plus lint and mypy/typecheck locally. Do not open a PR with known failures.
+- If tests or type checks fail, fix ALL failures. Never fix only a few files 'to show the pattern'. If you cannot finish, say plainly what is still broken. Do not report the PR as done.
+- In the PR description, state what was verified (unit tests, lint, typecheck) and what was NOT verified (live server, browser, real Clerk instance).
+
+### Issue Scope
+Tasks labeled as docs or manual/production steps (e.g. issue #129-style) should still get a PR with the documentation or runbook changes. Do not decline them; ask if unsure.
+
+## Development Environment
+
+### Environment Preflight
+
+Before starting issue work, check prerequisites and report any that are missing all at once:
+- `gh auth status`
+- `uv --version`
+- `node --version`
+- `docker info`
+- the test Postgres DB is running
+
+If any are missing, stop and tell me. Do not work around them silently.
+
+## Auth & Deployment (Clerk + Railway)
+- Auth uses Clerk JWTs. Custom claims must be configured in the Clerk dashboard under the session token template. When you see 'missing claims' sign-in errors, check that config first.
+- Deployment is on Railway. When code adds a new env var, list it explicitly so it can be added in Railway.
+- Browser console snippets must not use top-level await (Safari). Wrap them in an async IIFE.

@@ -1,0 +1,64 @@
+[
+  {
+    "id": "aeffe667-4f9f-4108-b5e2-56ae821fe413",
+    "name": "Chiswick Hunt",
+    "location": "Around Chiswick, London",
+    "start-time": "2026-01-01T00:00:00+00:00",
+    "end-time": "2027-01-01T23:59:59+00:00",
+    "checkpoints": [
+      {
+        "sequence": 1,
+        "name": "Train Bridge",
+        "clue": "Just behind.",
+        "location": {
+          "lat": 51.49146210115171,
+          "long": -0.2693732120162387
+        },
+        "proximity": 60,
+        "challenge": {
+          "scene": "Any background",
+          "pose": "Selfie, look down"
+        }
+      },
+      {
+        "sequence": 2,
+        "name": "Train Bridge",
+        "clue": "Cross the tracks.",
+        "location": {
+          "lat": 51.487981,
+          "long": -0.280940
+        },
+        "proximity": 60,
+        "challenge": {
+          "scene": "Train tracks from the bridge.",
+          "pose": "Selfie, look up."
+        }
+      },
+      {
+        "sequence": 3,
+        "name": "Next to school",
+        "clue": "Outside the red shutters.",
+        "location": {
+          "lat": 51.487472889161104,
+          "long": -0.28126969210030495
+        },
+        "proximity": 50,
+        "challenge": {
+          "scene": "Big red shuttlers gate",
+          "pose": "Look up"
+        }
+      }
+    ],
+    "teams": [
+      {
+        "name": "Red Foxes",
+        "join-code": "FOX-XXXX",
+        "order": [
+          1,
+          2,
+          3
+        ]
+      }
+    ]
+  }
+]

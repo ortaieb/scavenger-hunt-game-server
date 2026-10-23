@@ -352,13 +352,12 @@ def test_the_query_covers_the_box_and_every_kind(client: OsmClient, http: FakeHt
     assert query.count('["access"!~"^(private|no|customers)$"]') == 7
 
 
-def test_kinds_narrow_the_query(client: OsmClient, http: FakeHttp) -> None:
+def test_the_query_asks_for_every_kind_whatever_the_kinds(
+    client: OsmClient, http: FakeHttp
+) -> None:
     query = query_for(client, http, ["historic", "tourism=artwork"])
 
-    assert 'nwr["historic"~"^(boundary_stone|building|city_gate|memorial|milestone' in query
-    assert 'nwr["tourism"~"^(artwork)$"]' in query
-    for absent in ("amenity", "man_made", "leisure", '"building"]', "museum"):
-        assert absent not in query
+    assert query == osm.overpass_query(SMALL.bbox, dict(osm.KINDS))
 
 
 def test_kinds_also_narrow_the_results(client: OsmClient, http: FakeHttp) -> None:
@@ -511,15 +510,25 @@ def test_cached_places_make_no_request(client: OsmClient, http: FakeHttp) -> Non
     assert len(http.calls) == 1
 
 
-def test_other_kinds_or_boxes_are_cached_apart(client: OsmClient, http: FakeHttp) -> None:
-    http.replies = [ok({"elements": []}) for _ in range(3)]
+def test_other_boxes_are_cached_apart(client: OsmClient, http: FakeHttp) -> None:
+    http.replies = [ok({"elements": []}) for _ in range(2)]
     other = SMALL.model_copy(update={"bbox": SMALL.bbox.model_copy(update={"south": 51.489})})
 
     client.find_places(SMALL)
-    client.find_places(SMALL, ["leisure"])
     client.find_places(other)
 
-    assert len(http.calls) == 3
+    assert len(http.calls) == 2
+
+
+def test_other_kinds_in_the_same_box_make_no_new_request(client: OsmClient, http: FakeHttp) -> None:
+    http.replies = [ok(fixture("overpass_edge_cases.json"))]
+
+    everything = client.find_places(SMALL)
+    leisure = client.find_places(SMALL, ["leisure"])
+
+    assert len(http.calls) == 1
+    assert [p.osm for p in leisure] == ["way/2"]
+    assert {p.osm for p in leisure} < {p.osm for p in everything}
 
 
 def test_the_cache_lasts_an_hour(client: OsmClient, http: FakeHttp, clock: FakeClock) -> None:

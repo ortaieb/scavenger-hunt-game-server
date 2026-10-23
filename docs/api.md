@@ -1516,8 +1516,10 @@ gets the server blocked. So every request identifies itself
 (`User-Agent: scavenger-hunt-game-server/<version> (+https://github.com/ortaieb/scavenger-hunt-game-server)`)
 and has a timeout; Nominatim gets at most one request a second; a `429` or `504` is retried
 once, after a backoff; and results are kept in memory for an hour, by the area's name or by the
-box and the kinds, so asking again makes no request. Each request is logged with the service,
-its status, the number of results and how long it took, never the query.
+box, so asking again makes no request. Overpass is asked once per box, for every kind of place:
+the kinds a search names only filter its answer, so narrowing them makes no new request. Each
+request is logged with the service, its status, the number of results and how long it took,
+never the query.
 
 When the map data can't be had, the error's `code` is `map_unavailable` (unreachable, or still
 `429`/`5xx` after the retry) or `map_timeout`. An area that isn't found isn't an error: there's

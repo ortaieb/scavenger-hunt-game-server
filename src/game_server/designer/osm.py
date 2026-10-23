@@ -94,8 +94,8 @@ MAX_PLACES = 200
 SAME_PLACE_M = 30.0
 
 Service = Literal["nominatim", "overpass"]
-# The box's south, west, north and east, and the kinds searched for.
-PlacesKey = tuple[tuple[float, float, float, float], tuple[str, ...]]
+# The box's south, west, north and east.
+BoxKey = tuple[float, float, float, float]
 MapErrorCode = Literal["map_unavailable", "map_timeout"]
 
 
@@ -253,7 +253,7 @@ class OsmClient:
         self._lock = threading.Lock()
         self._last_nominatim: float | None = None
         self._areas = TtlCache[str, Area | None](CACHE_SECONDS, monotonic)
-        self._places = TtlCache[PlacesKey, tuple[Place, ...]](CACHE_SECONDS, monotonic)
+        self._places = TtlCache[BoxKey, JsonValue](CACHE_SECONDS, monotonic)
 
     def find_area(self, query: str) -> Area | None:
         """The area best matching `query`, clipped to the size limit; None if nothing matches."""
@@ -268,18 +268,22 @@ class OsmClient:
         return area
 
     def find_places(self, area: Area, kinds: Sequence[str] | None = None) -> list[Place]:
-        """The named, public places of the allowed kinds in the area, best-documented first."""
+        """The named, public places of the allowed kinds in the area, best-documented first.
+
+        Overpass is asked once per box, for every kind; `kinds` only filters its answer, so
+        narrowing the kinds makes no new request.
+        """
         allowed = narrow_kinds(kinds)
         box = area.bbox
-        key = ((box.south, box.west, box.north, box.east), tuple(sorted(allowed_key(allowed))))
+        key = (box.south, box.west, box.north, box.east)
         cached = self._places.get(key)
-        if cached is not None:
-            return list(cached[0])
-        query = overpass_query(area.bbox, allowed)
-        body = self._request("overpass", "POST", self._overpass_url, data={"data": query})
-        places = parse_places(body, allowed)
-        self._places.put(key, tuple(places))
-        return places
+        if cached is None:
+            query = overpass_query(box, dict(KINDS))
+            body = self._request("overpass", "POST", self._overpass_url, data={"data": query})
+            self._places.put(key, body)  # shortcut: the raw answer is kept, an hour per box
+        else:
+            body = cached[0]
+        return parse_places(body, allowed)
 
     def _request(
         self,
@@ -417,12 +421,6 @@ def narrow_kinds(kinds: Sequence[str] | None) -> Allowed:
         elif allowed.get(key, frozenset()) != values:
             allowed[key] = (allowed.get(key) or frozenset()) | {value}
     return allowed
-
-
-def allowed_key(allowed: Allowed) -> Iterable[str]:
-    """`allowed` as plain strings, for a cache key."""
-    for key, values in allowed.items():
-        yield from ([key] if values is None else (f"{key}={value}" for value in values))
 
 
 def overpass_query(bbox: BoundingBox, allowed: Allowed) -> str:

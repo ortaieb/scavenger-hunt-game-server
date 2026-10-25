@@ -306,6 +306,7 @@ def every_route_response(
 
 ORGANISER: dict[str, str] = {}  # the signed-in organiser's headers, set for each test
 DRAFTS = ("POST", "/designer/drafts")
+MANUAL = ("POST", "/designer/drafts/manual")
 DRAFT_LIST = ("GET", "/designer/drafts")
 DRAFT = ("GET", "/designer/drafts/{draft}")
 EDIT = ("PATCH", "/designer/drafts/{draft}/checkpoints/{position}")
@@ -337,11 +338,36 @@ def designer_responses(
     ]
     assert reads[1].json()["status"] == "ready"  # not vacuous: the full draft was read
     reviewing = review_responses_for(client, draft)
+    manual = manual_responses(client)
     lists = [
         client.get("/designer/drafts", headers=ORGANISER),
         client.get("/designer/drafts", headers={"Authorization": f"Bearer {MODERATOR_CODE}"}),
     ]
-    return {DRAFTS: starts, DRAFT_LIST: lists, DRAFT: reads, **reviewing}
+    return {DRAFTS: starts, MANUAL: manual, DRAFT_LIST: lists, DRAFT: reads, **reviewing}
+
+
+def manual_responses(client: TestClient) -> list[Response]:
+    """A hand-made draft: refused without a token, refused for breaking a rule, stored."""
+    pins = [(51.4880, -0.2600), (51.4910, -0.2600), (51.4910, -0.2540)]
+    body = {
+        "area": "Chiswick, London",
+        "theme": "Riverside",
+        "checkpoints": [
+            {
+                "name": f"Pin {n}",
+                "location": {"lat": lat, "long": long},
+                "clue": "Where oars were kept.",
+                "scene": "A wooden shed with wide doors.",
+                "pose": "Row an imaginary boat",
+            }
+            for n, (lat, long) in enumerate(pins, start=1)
+        ],
+    }
+    return [
+        client.post("/designer/drafts/manual", json=body),  # 401
+        client.post("/designer/drafts/manual", json={**body, "checkpoints": []}, headers=ORGANISER),
+        client.post("/designer/drafts/manual", json=body, headers=ORGANISER),  # 201
+    ]
 
 
 def review_responses_for(client: TestClient, draft: str) -> dict[tuple[str, str], list[Response]]:
@@ -612,6 +638,7 @@ def test_the_calls_cover_success_and_error_paths(
     assert statuses[("POST", "/sessions/{session}/stop")] == [200, 201, 409]
     assert statuses[OVERVIEW] == [200, 401, 404]
     assert statuses[DRAFTS] == [202, 401, 409, 422]
+    assert statuses[MANUAL] == [201, 401, 422]
     assert statuses[DRAFT_LIST] == [200, 401]
     assert statuses[DRAFT] == [200, 401, 404, 422]
     assert statuses[EDIT] == [200, 401, 404, 409, 422]

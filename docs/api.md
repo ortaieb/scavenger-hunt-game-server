@@ -1269,6 +1269,55 @@ Unknown fields are rejected. The response is `202` with the draft's id, and its 
 | `422`  | Invalid body. As elsewhere, no submitted value is echoed |
 | `503`  | `{"detail": "the hunt designer is not available", "code": "designer_disabled"}` when the runner can't run, e.g. the `agent` runner with no Anthropic key. Nothing is stored |
 
+### `POST /designer/drafts/manual`
+
+Lay out a hunt by hand: the organiser's own checkpoints in route order, stored at once as a
+`ready` draft. From there the review ([`PATCH`](#patch-designerdraftsdraftcheckpointsposition))
+and [publish](#post-designerdraftsdraftpublish) routes apply unchanged. It doesn't use the agent,
+so it works with the designer disabled and beside a running design.
+
+```json
+{
+  "area": "Chiswick, London",
+  "theme": "Riverside pubs",
+  "max-walk-km": 10,
+  "checkpoints": [
+    {
+      "name": "The old boathouse",
+      "location": { "lat": 51.48, "long": -0.25 },
+      "clue": "…",
+      "scene": "…",
+      "pose": "…",
+      "proximity": 30
+    }
+  ]
+}
+```
+
+| Field | Rules |
+|-------|-------|
+| `area`, `theme` | 3–200 characters each, after trimming spaces |
+| `max-walk-km` | A number, 0.5–10. Default 10 |
+| `checkpoints` | 3–8, in route order: positions are 1…n |
+| `checkpoints[].name` | 1–100 characters |
+| `checkpoints[].proximity` | Metres, 20–100. Default 30 |
+
+Unknown fields are rejected. The draft is checked by the rules the agent's drafts are held to:
+text limits, a clue or pose that doesn't name the place, proximity, minimum spacing and a loop
+within `max-walk-km`. Breaking one answers `422` with the problems and stores nothing.
+
+The draft is `ready`, with `runner: "manual"`, no progress or problems, 0 turns and $0. Its
+`request` is `{area, theme, checkpoints: n, max-walk-km}`; its `area` is the pins' extent plus a
+margin; each checkpoint's `place` is `{osm: "manual/<n>", name, kind: "manual", location}`, with
+an empty `rationale` and `review: "pending"`. A pin can't be moved afterwards (the `PATCH` body has
+no location): make a new draft.
+
+| Status | When |
+|--------|------|
+| `201`  | Stored. The draft, as [`GET /designer/drafts/{draft}`](#get-designerdraftsdraft) returns it, with its URL in `Location` |
+| `401`  | Token required |
+| `422`  | Invalid body, or `{"detail": "draft problems", "problems": [...]}` |
+
 ### `GET /designer/drafts`
 
 The drafts, newest first, at most 50:
@@ -1284,13 +1333,15 @@ The drafts, newest first, at most 50:
       "created-at": "2026-10-08T09:00:00Z",
       "finished-at": "2026-10-08T09:03:41Z",
       "checkpoints": 3,
-      "cost-usd": 0.42
+      "cost-usd": 0.42,
+      "runner": "agent"
     }
   ]
 }
 ```
 
-`area` and `theme` are as requested; `checkpoints` is how many the draft has. Answers `200`, or
+`area` and `theme` are as requested; `checkpoints` is how many the draft has; `runner` is what
+made it (`manual` for a draft laid out by hand). Answers `200`, or
 `401` without a token.
 
 ### `GET /designer/drafts/{draft}`
@@ -1985,6 +2036,7 @@ Results are structured content with output schemas, in the routes' shapes (kebab
 | Tool | Kind | Arguments | Returns |
 |---|---|---|---|
 | `start_hunt_design` | Write; open-world: reads OpenStreetMap and calls the Claude API, up to $1 a run | `area`, `theme`, `checkpoints` (3–8, default 3), `max_walk_km` (0.5–10, default 3) | `id`, `status: "running"` and `designer_link` (`<web app>/designer?draft=<id>`, `null` without `GAME_SERVER_WEB_APP_URL`) |
+| `create_manual_hunt_draft` | Write | `area`, `theme`, `checkpoints` (3–8, as the [`manual` body](#post-designerdraftsmanual)'s), `max_walk_km` (0.5–10, default 10) | The `ready` draft, as [`GET /designer/drafts/{draft}`](#get-designerdraftsdraft). Breaking a rule is a `draft_problems` error |
 | `list_hunt_drafts` | Read | none | The newest 50, as [`GET /designer/drafts`](#get-designerdrafts) |
 | `get_hunt_draft` | Read | `draft_id`, `wait_seconds` (0–20, default 0) | The draft in full, as [`GET /designer/drafts/{draft}`](#get-designerdraftsdraft). With `wait_seconds` it returns as soon as the status changes, or at the timeout |
 | `edit_hunt_checkpoint` | Write | `draft_id`, `position`, `edit` (as the [`PATCH` body](#patch-designerdraftsdraftcheckpointsposition)) | The checkpoint as saved |

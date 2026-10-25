@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 from game_server.clock import Clock, utc_iso
 from game_server.config import Settings
+from game_server.designer.manual import ManualDraftRequest, build_manual_draft
 from game_server.designer.review import (
     CheckpointEdit,
     CodeSource,
@@ -53,6 +54,7 @@ __all__ = [
     "SessionStoppedError",
     "UnknownCheckpointError",
     "UnknownDraftError",
+    "create_manual_draft",
     "edit_checkpoint",
     "publish_draft",
     "rule",
@@ -96,6 +98,24 @@ def start_design(
     store.create(draft_id, request, runner.name, clock().astimezone(UTC), pid)
     logger.info("Draft %s created status running runner %s", draft_id, runner.name)
     runner.start(draft_id, request)
+    return draft_id
+
+
+def create_manual_draft(
+    store: DraftStore,
+    clock: Clock,
+    request: ManualDraftRequest,
+    min_spacing_m: float,
+    pid: UUID | None = None,
+) -> UUID:
+    """Store the organiser's own checkpoints as a `ready` draft; its id. No agent involved.
+
+    Raises `DraftProblemsError` if they break a rule; nothing is stored then.
+    """
+    draft_request, area, checkpoints = build_manual_draft(request, min_spacing_m)
+    draft_id = uuid4()
+    store.create_manual(draft_id, draft_request, area, checkpoints, clock().astimezone(UTC), pid)
+    logger.info("Draft %s created status ready runner manual", draft_id)
     return draft_id
 
 

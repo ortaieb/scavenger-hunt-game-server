@@ -179,6 +179,7 @@ class DraftSummary:
     cost_usd: Decimal
     created_at: datetime
     finished_at: datetime | None
+    runner: str
 
 
 class DesignerBusyError(Exception):
@@ -280,6 +281,32 @@ class DraftStore:
         except pg_errors.UniqueViolation as exc:  # hunt_drafts_one_running
             raise DesignerBusyError from exc
 
+    def create_manual(
+        self,
+        draft_id: UUID,
+        request: DraftRequest,
+        area: DraftArea,
+        checkpoints: Sequence[DraftCheckpoint],
+        now: datetime,
+        pid: UUID | None = None,
+    ) -> None:
+        """Store a hand-made draft, `ready` at once; it never runs, so it can't be busy."""
+        with self._database.transaction() as conn:
+            conn.execute(
+                "INSERT INTO hunt_drafts (id, status, request, area, checkpoints, runner,"
+                " created_at, finished_at, pid)"
+                " VALUES (%s, 'ready', %s, %s, %s, 'manual', %s, %s, %s)",
+                (
+                    draft_id,
+                    Jsonb(request.model_dump(mode="json", by_alias=True)),
+                    Jsonb(area.model_dump(mode="json", by_alias=True)),
+                    _json(checkpoints),
+                    now,
+                    now,
+                    pid,
+                ),
+            )
+
     @contextmanager
     def locked(self, draft_id: UUID) -> Iterator[LockedDraft | None]:
         """The draft, locked for update until the block ends; None if there's no such draft.
@@ -307,8 +334,8 @@ class DraftStore:
         with self._database.connection() as conn:
             rows = conn.execute(
                 "SELECT id, status, request->>'area', request->>'theme',"
-                " jsonb_array_length(checkpoints), cost_usd, created_at, finished_at"
-                " FROM hunt_drafts ORDER BY created_at DESC, id LIMIT %s",
+                " jsonb_array_length(checkpoints), cost_usd, created_at, finished_at,"
+                " runner FROM hunt_drafts ORDER BY created_at DESC, id LIMIT %s",
                 (limit,),
             ).fetchall()
         return [DraftSummary(*row) for row in rows]

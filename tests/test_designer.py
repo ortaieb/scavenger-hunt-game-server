@@ -216,6 +216,7 @@ def test_the_list_is_newest_first(
         "finished-at": "2026-10-08T09:02:00Z",
         "checkpoints": 3,
         "cost-usd": 0.0,
+        "runner": "stub",
     }
 
 

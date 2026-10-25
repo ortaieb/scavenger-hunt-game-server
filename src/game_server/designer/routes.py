@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 
 from game_server.clock import Clock, get_clock, utc_iso
 from game_server.config import Settings, get_settings
+from game_server.designer.manual import ManualDraftRequest
 from game_server.designer.review import (
     CheckpointEdit,
     CodeSource,
@@ -50,6 +51,7 @@ from game_server.organiser_services import (
     UnknownCheckpointError,
     UnknownDraftError,
 )
+from game_server.organiser_services import create_manual_draft as create_manual_service
 from game_server.organiser_services import edit_checkpoint as edit_service
 from game_server.organiser_services import publish_draft as publish_service
 from game_server.organiser_services import start_design as start_design_service
@@ -100,6 +102,7 @@ class DraftListItemOut(_KebabModel):
     finished_at: str | None
     checkpoints: int
     cost_usd: float
+    runner: str
 
 
 class DraftListOut(_KebabModel):
@@ -228,6 +231,32 @@ def start_design(
     return DraftCreatedOut(id=draft_id, status="running")
 
 
+@router.post(
+    "/manual",
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        422: {"description": "Invalid body, or the checkpoints break a rule: draft problems"}
+    },
+)
+def create_manual_draft(
+    body: ManualDraftRequest,
+    response: Response,
+    clock: Annotated[Clock, Depends(get_clock)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    store: Annotated[DraftStore, Depends(get_draft_store)],
+    organiser: Annotated[OrganiserAccess, Depends(organiser_access)],
+) -> DraftOut:
+    """Lay out a hunt by hand: a `ready` draft, to review and publish like the designer's."""
+    draft_id = create_manual_service(
+        store, clock, body, settings.designer_min_spacing_m, organiser.pid
+    )
+    response.headers["Location"] = f"/designer/drafts/{draft_id}"
+    draft = store.get(draft_id)
+    if draft is None:  # stored a moment ago: only a concurrent erase would remove it
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown draft")
+    return draft_out(draft)
+
+
 def draft_list_out(drafts: Sequence[DraftSummary]) -> DraftListOut:
     """The drafts as listed."""
     return DraftListOut(
@@ -241,6 +270,7 @@ def draft_list_out(drafts: Sequence[DraftSummary]) -> DraftListOut:
                 finished_at=utc_iso(draft.finished_at) if draft.finished_at else None,
                 checkpoints=draft.checkpoints,
                 cost_usd=float(draft.cost_usd),
+                runner=draft.runner,
             )
             for draft in drafts
         ]

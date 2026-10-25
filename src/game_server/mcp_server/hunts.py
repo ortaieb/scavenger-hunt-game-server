@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from game_server import organiser_services as services
 from game_server.config import Settings
+from game_server.designer.manual import ManualCheckpoint, ManualDraftRequest
 from game_server.designer.review import CheckpointEdit, PublishRequest
 from game_server.designer.routes import (
     DRAFTS_LISTED,
@@ -44,7 +45,7 @@ def _web_link(settings: Settings, path: str) -> str | None:
 
 
 def register_hunt_tools(server: MCPServer, settings: Settings, run: McpServices) -> None:
-    """Add the five hunt tools to `server`."""
+    """Add the six hunt tools to `server`."""
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=True))
     def start_hunt_design(
@@ -82,6 +83,44 @@ def register_hunt_tools(server: MCPServer, settings: Settings, run: McpServices)
             status="running",
             designer_link=_web_link(settings, f"/designer?draft={draft}"),
         )
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False))
+    def create_manual_hunt_draft(
+        area: Annotated[
+            str, Field(min_length=3, max_length=200, description="e.g. `Chiswick, London`")
+        ],
+        theme: Annotated[str, Field(min_length=3, max_length=200)],
+        checkpoints: Annotated[
+            list[ManualCheckpoint], Field(min_length=3, max_length=8, description="In route order")
+        ],
+        max_walk_km: Annotated[float, Field(ge=0.5, le=10)] = 10,
+    ) -> DraftOut:
+        """Lay out a hunt by hand: 3-8 checkpoints in route order, stored as a `ready` draft.
+
+        No agent is involved. The checkpoints are held to the designer's rules (a clue or pose
+        can't name its place, proximity 20-100 m, minimum spacing, the loop within
+        `max_walk_km`). Review the draft with `edit_hunt_checkpoint`, then `publish_hunt`.
+        """
+        try:
+            body = ManualDraftRequest.model_validate(
+                {
+                    "area": area,
+                    "theme": theme,
+                    "max-walk-km": max_walk_km,
+                    "checkpoints": [c.model_dump() for c in checkpoints],
+                }
+            )
+            draft_id = services.create_manual_draft(
+                run.drafts(), run.clock, body, settings.designer_min_spacing_m
+            )
+        except ValidationError as exc:
+            raise tool_error("invalid_request", str(exc.errors(include_input=False))) from None
+        except services.DraftProblemsError as exc:
+            raise _problems(exc) from None
+        created = run.drafts().get(draft_id)
+        if created is None:
+            raise tool_error("unknown_draft", "unknown draft")
+        return draft_out(created)
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
     def list_hunt_drafts() -> DraftListOut:
